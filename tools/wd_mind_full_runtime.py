@@ -1240,7 +1240,8 @@ def _flat_check(memory):
 
 
 def query_flat_memory(*, enabled=False, memory=None, lane=None, own_lane_only=False,
-                      query=None, as_of_utc=None, query_encoder=None, max_age_seconds=899):
+                      query=None, as_of_utc=None, query_encoder=None, max_age_seconds=899,
+                      include_historical=False):
     """Return source-referenced candidates; never infer a lane's latest task."""
     result = None
     try:
@@ -1248,7 +1249,8 @@ def query_flat_memory(*, enabled=False, memory=None, lane=None, own_lane_only=Fa
                 or type(lane) is not str or lane not in reader._LANES
                 or type(own_lane_only) is not bool or type(query) is not str or not query.strip()
                 or len(query) > 4000 or not callable(query_encoder) or isinstance(query_encoder, type)
-                or type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 899):
+                or type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 899
+                or type(include_historical) is not bool):
             raise ValueError('query')
         when = reader._utc(as_of_utc)
         records = _flat_check(memory)
@@ -1273,7 +1275,7 @@ def query_flat_memory(*, enabled=False, memory=None, lane=None, own_lane_only=Fa
             stamp = reader._utc(record['time_utc'])
             age = (when - stamp).total_seconds()
             provenance = record['provenance']
-            if (age < 0 or age > max_age_seconds
+            if (age < 0 or (not include_historical and age > max_age_seconds)
                     or reader._utc(provenance['available_utc']) >= when - reader.dt.timedelta(seconds=1)
                     or ('valid_until_utc' in provenance and when >= reader._utc(provenance['valid_until_utc']))
                     or reader._q4_self_match(query, reader.decode_text(record['stored_text']))):
@@ -1304,6 +1306,9 @@ def query_flat_memory(*, enabled=False, memory=None, lane=None, own_lane_only=Fa
             record = lookup[hit['doc_id_sha256']]
             hit['source_agent'] = record['meta']['agent']
             hit['source_time_utc'] = record['time_utc']
+            if include_historical:
+                hit['event_age_seconds_upper_bound'] = math.ceil((when - reader._utc(record['time_utc'])).total_seconds())
+                hit['source_valid_until_utc'] = record['provenance'].get('valid_until_utc')
         checkpoint()
         result = {'schema': 'wd.mind-flat-f32-query.v1',
                   'status': 'SEMANTIC_CANDIDATE' if resolved else 'ABSTAIN',
@@ -1505,21 +1510,23 @@ class _FlatRequestHandler:
             now = reader.dt.datetime.now(reader.dt.timezone.utc)
             result = query_flat_memory(enabled=True, memory=self._memory, lane=bound_lane,
                 own_lane_only=frozen['scope'] == 'own',
-                query=frozen['query'], as_of_utc=reader._utc_text(now), query_encoder=self._adapter.query)
+                query=frozen['query'], as_of_utc=reader._utc_text(now), query_encoder=self._adapter.query,
+                include_historical=True)
             self._source_check()
             self._running_owner()
             if request != frozen:
                 raise ValueError('request_changed')
             expires = None
             if result['results']:
-                expires = min(reader._utc(hit['source_time_utc']) + reader.dt.timedelta(seconds=899)
-                              for hit in result['results'])
-                if reader.dt.datetime.now(reader.dt.timezone.utc) > expires:
+                source_expiries = [reader._utc(hit['source_valid_until_utc'])
+                                   for hit in result['results'] if hit['source_valid_until_utc'] is not None]
+                expires = min(source_expiries) if source_expiries else None
+                if expires is not None and reader.dt.datetime.now(reader.dt.timezone.utc) >= expires:
                     result = dict(result, status='ABSTAIN', results=[])
                     expires = None
             response = {'schema': 'wd.mind-flat-owner-response.v1', 'lane': bound_lane, 'scope': frozen['scope'],
                         'authority': 'none', 'expires_utc': None if expires is None else reader._utc_text(expires),
-                        'expiry_scope': 'record_age_only', 'snapshot_freshness': 'UNKNOWN', 'result': result}
+                        'expiry_scope': 'source_validity_only', 'snapshot_freshness': 'UNKNOWN', 'result': result}
         except Exception:
             pass
         finally:
@@ -2133,6 +2140,106 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return {'schema':'wd.mind-flat-owner-refresh.v1', 'status':'REFRESHED', 'authority':'none'}
 
+    def query_local(self, *, enabled=False, lane=None, scope=None, query=None):
+        """Query this retained owner in-process; the caller is not authenticated here."""
+        if (enabled is not True or type(lane) is not str or lane not in self._lanes
+                or type(scope) is not str or scope not in ('own', 'shared')
+                or type(query) is not str or not query.strip() or len(query) > 4000 or '\x00' in query):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        if not self._lock.acquire(blocking=False):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        output, pending, checking, generation = None, None, False, None
+        try:
+            if self._state != 'READY' or type(self._handler) is not _FlatRequestHandler:
+                raise ValueError('owner_not_ready')
+            checking = True
+            generation = self._generation
+            self._check_factory()
+            policy_pin = _local_generation_policy_pin(self)
+            reply = self._handler._handle_for_lane({'schema':'wd.mind-flat-owner-request.v1',
+                'lane':lane, 'query':query, 'scope':scope}, lane)
+            if (type(reply) is not dict or reply.get('schema') != 'wd.mind-flat-owner-response.v1'
+                    or reply.get('lane') != lane or reply.get('scope') != scope
+                    or reply.get('authority') != 'none' or reply.get('snapshot_freshness') != 'UNKNOWN'
+                    or type(reply.get('result')) is not dict):
+                raise ValueError('owner_reply')
+            result = reply['result']
+            hits = result.get('results')
+            if (result.get('schema') != 'wd.mind-flat-f32-query.v1'
+                    or result.get('authority') != 'none' or result.get('status') not in ('SEMANTIC_CANDIDATE', 'ABSTAIN')
+                    or type(hits) is not list or len(hits) > 3
+                    or (result['status'] == 'SEMANTIC_CANDIDATE') != bool(hits)):
+                raise ValueError('query_result')
+            proposals = []
+            for hit in hits:
+                if (type(hit) is not dict or not reader._hex(hit.get('ref_sha256'))
+                        or not reader._hex(hit.get('doc_id_sha256'))):
+                    raise ValueError('query_hit')
+                proposals.append({'ref_sha256':hit['ref_sha256'], 'doc_id_sha256':hit['doc_id_sha256'],
+                                  'ref_kind':'sha256_of_projected_metadata', 'canonical_event':False})
+            now = reader.dt.datetime.now(reader.dt.timezone.utc)
+            verified = reader.resolve_content_results(proposals, reader._utc_text(now), _complete=True, **self._snapshot)
+            if len(verified) != len(hits):
+                raise ValueError('selected_count')
+            records = _flat_check(self._handler._memory)
+            by_doc = {reader._sha(key.encode()):record for key, record in records.items()}
+            visible, selected_records = [], []
+            for hit, fresh in zip(hits, verified):
+                record = by_doc.get(hit['doc_id_sha256'])
+                if (type(record) is not dict or fresh.get('ref_sha256') != hit['ref_sha256']
+                        or fresh.get('doc_id_sha256') != hit['doc_id_sha256']
+                        or fresh.get('stored_text') != hit.get('stored_text')
+                        or fresh.get('source_reference') != hit.get('source_reference')
+                        or fresh['source_reference'].get('sha256') != record['provenance']['source_event_ref']
+                        or record['meta']['agent'] not in reader._BUILD_LANES
+                        or hit.get('source_agent') != record['meta']['agent']
+                        or hit.get('source_time_utc') != record['time_utc']
+                        or (scope == 'own' and record['meta']['agent'] != lane)):
+                    raise ValueError('selected_source')
+                stamp = reader._utc(record['time_utc'])
+                finished = reader.dt.datetime.now(reader.dt.timezone.utc)
+                age = (finished - stamp).total_seconds()
+                expiry = record['provenance'].get('valid_until_utc')
+                if age < 0 or (expiry is not None and finished >= reader._utc(expiry)):
+                    raise ValueError('selected_time')
+                visible.append({'text':reader.decode_text(fresh['stored_text']),
+                    'source_event_sha256':fresh['source_reference']['sha256'],
+                    'event_time_utc_floor':record['time_utc'], 'source_agent':record['meta']['agent'],
+                    'event_age_seconds_upper_bound':math.ceil(age)})
+                selected_records.append(record)
+            self._handler._source_check()
+            self._handler._running_owner()
+            self._check_factory()
+            if (self._generation is not generation or self._state != 'READY'
+                    or not hmac.compare_digest(policy_pin, _local_generation_policy_pin(self))):
+                raise ValueError('controls_changed')
+            finished = reader.dt.datetime.now(reader.dt.timezone.utc)
+            for hit, record in zip(visible, selected_records):
+                age = (finished - reader._utc(record['time_utc'])).total_seconds()
+                expiry = record['provenance'].get('valid_until_utc')
+                if age < 0 or (expiry is not None and finished >= reader._utc(expiry)):
+                    raise ValueError('selected_time_changed')
+                hit['event_age_seconds_upper_bound'] = math.ceil(age)
+            controls = self._binding._PrivateBinding__controls
+            if type(controls) is not tuple or not controls or type(controls[0]) is not bytes:
+                raise ValueError('fleet_binding')
+            output = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':lane,
+                      'fleet_sha256':reader._sha(controls[0]), 'sender_authentication':'UNKNOWN',
+                      'index_match':'UNKNOWN', 'same_user_aba':'UNKNOWN',
+                      'current_status_freshness':'UNKNOWN', 'results':visible}
+        except BaseException as exc:
+            pending = _flat_cancellation(exc)
+            if checking or pending is not None:
+                self._state = 'HOLD'
+        finally:
+            generation = None
+            self._lock.release()
+        if pending is not None:
+            raise pending from None
+        if output is None:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return output
+
     def _prepare_consistent_delivery(self, *, enabled=False, request=None, expected_nonce=None,
                                      expected_identifier_policy_sha256=None, max_total_bytes=None):
         """Return one generation's candidates and prepared export, never transmit."""
@@ -2597,7 +2704,7 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None):
                                   'expiry_scope', 'snapshot_freshness', 'result'}
                 or reply['schema'] != 'wd.mind-flat-owner-response.v1'
                 or reply['lane'] != frozen['lane'] or reply['scope'] != frozen['scope']
-                or reply['authority'] != 'none' or reply['expiry_scope'] != 'record_age_only'
+                or reply['authority'] != 'none' or reply['expiry_scope'] != 'source_validity_only'
                 or reply['snapshot_freshness'] != 'UNKNOWN' or type(reply['result']) is not dict):
             raise ValueError('reply')
         content = reply['result']
@@ -2628,8 +2735,9 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None):
             seen.add(key)
             candidates.append(row)
         if candidates:
-            if (type(reply['expires_utc']) is not str
-                    or reader.dt.datetime.now(reader.dt.timezone.utc) > reader._utc(reply['expires_utc'])):
+            if (reply['expires_utc'] is not None and
+                    (type(reply['expires_utc']) is not str
+                     or reader.dt.datetime.now(reader.dt.timezone.utc) >= reader._utc(reply['expires_utc']))):
                 candidates = []
         elif reply['expires_utc'] is not None:
             raise ValueError('expiry')

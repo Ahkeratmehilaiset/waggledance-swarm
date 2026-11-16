@@ -9,6 +9,7 @@ import struct
 import subprocess
 import time
 import threading
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,108 @@ from tools import wd_mind_runtime_manifest as verifier
 from tools import wd_mind_runtime_process as anchor
 from tools import wd_mind_e5_client as e5_client
 from test_wd_mind_runtime_process import candidate
+
+
+def _verified_parent_result(*, timestamp, age, freshness='UNKNOWN'):
+    return {
+        'schema': 'wd.mind-flat-verified-session.v1', 'authority': 'none',
+        'lane': 'codex-lead-1', 'fleet_sha256': 'b' * 64,
+        'sender_authentication': 'UNKNOWN', 'index_match': 'UNKNOWN',
+        'same_user_aba': 'UNKNOWN', 'current_status_freshness': freshness,
+        'results': [{'text': 'synthetic', 'source_event_sha256': 'a' * 64,
+                     'event_time_utc_floor': timestamp, 'source_agent': 'codex-lead-1',
+                     'event_age_seconds_upper_bound': age}],
+    }
+
+
+def _validate_parent_result(result):
+    pair = SimpleNamespace(_metadata={'lane': 'codex-lead-1'})
+    raw = json.dumps(result).encode('utf-8')
+    return json.loads(child._RetainedParentPair._validated_result(pair, raw, 'b' * 64))
+
+
+def test_parent_result_accepts_historical_event_and_reports_age():
+    timestamp = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    result = _validate_parent_result(_verified_parent_result(timestamp=timestamp, age=1))
+    assert result['current_status_freshness'] == 'UNKNOWN'
+    assert result['results'][0]['event_time_utc_floor'] == timestamp
+    assert result['results'][0]['event_age_seconds_upper_bound'] >= 172800
+
+
+@pytest.mark.parametrize('timestamp,age,freshness', [
+    ((datetime.now(timezone.utc) + timedelta(days=1)).isoformat(), 0, 'UNKNOWN'),
+    ('2026-01-01T00:00:00', 1, 'UNKNOWN'),
+    ('2026-01-01T00:00:00Z', -1, 'UNKNOWN'),
+    ('2026-01-01T00:00:00Z', True, 'UNKNOWN'),
+    ('2026-01-01T00:00:00Z', 1, 'FRESH'),
+])
+def test_parent_result_refuses_invalid_time_age_or_status(timestamp, age, freshness):
+    with pytest.raises(ValueError):
+        _validate_parent_result(_verified_parent_result(timestamp=timestamp, age=age, freshness=freshness))
+
+
+def test_local_manifest_query_is_default_off_and_refuses_an_unpinned_bundle(tmp_path):
+    args = {'bundle_root': str(tmp_path), 'expected_manifest_sha256': 'a' * 64,
+            'identifier_policy_bytes': b'synthetic', 'expected_identifier_policy_sha256': 'b' * 64,
+            'operator_approval_reference_sha256': 'c' * 64, 'lane': 'codex-lead-1'}
+    with pytest.raises(child.LaunchRefused, match='^mind_e5_start_refused$'):
+        child.create_local_manifest_query(**args)
+    with pytest.raises(child.LaunchRefused, match='^mind_e5_start_refused$'):
+        child.create_local_manifest_query(enabled=True, **args)
+
+
+def test_local_manifest_query_retains_owner_after_interrupted_start():
+    class HeldOwner:
+        def start(self): raise KeyboardInterrupt()
+        def status(self): return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+        def close(self): return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+    adapter = child._LocalManifestQuery(HeldOwner(), 'codex-lead-1', 'synthetic', 'a' * 64)
+    with pytest.raises(KeyboardInterrupt):
+        adapter.start()
+    assert adapter.status() == {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+    assert adapter.close() == {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+
+
+@pytest.mark.parametrize('lane,scope', [
+    ('codex-lead-1', 'own'), ('codex-tools-1', 'own'), ('fable-5', 'own'),
+    ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
+])
+def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, tmp_path, lane, scope):
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_e5_client as client
+    controls = (b'synthetic-fleet', b'synthetic-roster', b'synthetic-policy')
+    fleet_sha = hashlib.sha256(controls[0]).hexdigest()
+    calls = []
+    class Owner:
+        def start(self): calls.append('start'); return {'state': 'READY', 'owned': True, 'authority': 'none'}
+        def status(self): return {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+        def close(self): calls.append('close'); return {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+        def query_local(self, **kwargs):
+            calls.append(kwargs)
+            result = _verified_parent_result(timestamp=(datetime.now(timezone.utc)-timedelta(days=1)).isoformat(), age=1)
+            result.update(lane=lane, fleet_sha256=fleet_sha)
+            return result
+    held = Owner()
+    monkeypatch.setattr(runtime, 'create_operator_pinned_policy_anchor', lambda **kwargs: calls.append(('anchor', kwargs)))
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: calls.append(('binding', kwargs)) or object())
+    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: calls.append(('factory', kwargs)) or object())
+    monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: calls.append(('owner', kwargs)) or held)
+    monkeypatch.setattr(runtime, '_bundle_inputs', lambda root, manifest: controls)
+    adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
+        expected_manifest_sha256='a'*64, identifier_policy_bytes=b'synthetic',
+        expected_identifier_policy_sha256='b'*64, operator_approval_reference_sha256='c'*64, lane=lane)
+    assert [row[0] for row in calls] == ['anchor', 'binding', 'factory', 'owner']
+    assert calls[2][1]['bulk_contract_sha256'] == client.BULK_CONTRACT_SHA256
+    assert 'start' not in calls
+    assert adapter.start()['state'] == 'READY'
+    answer = json.loads(adapter.query())
+    assert answer['lane'] == lane and answer['fleet_sha256'] == fleet_sha
+    assert answer['authority'] == 'none' and answer['sender_authentication'] == 'UNKNOWN'
+    assert answer['current_status_freshness'] == 'UNKNOWN'
+    assert answer['results'][0]['event_age_seconds_upper_bound'] >= 86400
+    assert {'enabled': True, 'lane': lane, 'scope': scope, 'query': runtime._STARTUP_PIPE_QUERY} in calls
+    assert adapter.close() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    assert adapter.status()['owned'] is True
 
 
 def digest(data):

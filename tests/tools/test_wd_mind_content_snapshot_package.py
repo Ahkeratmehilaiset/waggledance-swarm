@@ -72,18 +72,28 @@ def test_flat_consumer_owner_resolves_actual_source(package, fixtures, tmp_path,
     assert result['authority'] == 'none' and result['index_match'] == 'UNKNOWN' and result['results']
 
 
+def test_flat_consumer_owner_allows_verified_historical_source(package, fixtures, tmp_path, monkeypatch):
+    from datetime import timedelta
+    owner, proposals, _, clock = _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch)
+    clock.value += timedelta(days=2)
+    result = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    assert result['results']
+    assert all(hit['event_age_seconds_upper_bound'] >= 900 and hit['event_time_utc_floor']
+               for hit in result['results'])
+
+
 @pytest.mark.parametrize('fault', ['schema','projection','vector','vector_norm','pairs','ids'])
 def test_flat_consumer_owner_rejects_bad_format_or_memory(package, fixtures, tmp_path, monkeypatch, fault):
     with pytest.raises(package.SnapshotPackageRefused):
         _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch, fault)
 
 
-@pytest.mark.parametrize('fault', ['reference','stale','row','scope','controls','encoder_controls'])
+@pytest.mark.parametrize('fault', ['reference','future','row','scope','controls','encoder_controls'])
 def test_flat_consumer_owner_rejects_untrusted_proposal(package, fixtures, tmp_path, monkeypatch, fault):
     from datetime import timedelta
     owner, proposals, snapshot, clock = _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch)
     if fault == 'reference': proposals[0]['source_event_sha256'] = '0' * 64
-    elif fault == 'stale': clock.value += timedelta(minutes=20)
+    elif fault == 'future': clock.value -= timedelta(minutes=20)
     elif fault == 'row':
         path = Path(snapshot['messages']['source_path'])
         lines = path.read_bytes().splitlines(keepends=True)
@@ -99,17 +109,14 @@ def test_flat_consumer_owner_rejects_untrusted_proposal(package, fixtures, tmp_p
                       scope='own' if fault == 'scope' else 'shared')
 
 
-@pytest.mark.parametrize('micros,accepted', [(899000000, True), (899000001, False), (900000000, False)])
-def test_flat_consumer_owner_enforces_strict_delivery_age(package, fixtures, tmp_path, monkeypatch, micros, accepted):
+@pytest.mark.parametrize('micros', [899000000, 899000001, 900000000])
+def test_flat_consumer_owner_reports_historical_delivery_age(package, fixtures, tmp_path, monkeypatch, micros):
     from datetime import datetime, timedelta, timezone
     owner, proposals, _, clock = _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch)
     clock.value = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=micros)
-    if accepted:
-        result = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
-        assert all(hit['event_age_seconds_upper_bound'] == 899 for hit in result['results'])
-    else:
-        with pytest.raises(package.SnapshotPackageRefused):
-            owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    result = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    assert all(hit['event_age_seconds_upper_bound'] == (micros + 999999) // 1000000
+               for hit in result['results'])
 
 
 def test_flat_consumer_rechecks_encoder_after_source_resolve(package, fixtures, tmp_path, monkeypatch):
@@ -281,14 +288,14 @@ def test_consumer_owner_independently_resolves_source_rows(package, fixtures, tm
     assert [hit['source_event_sha256'] for hit in answer['results']] == [row['source_event_sha256'] for row in proposals]
 
 
-@pytest.mark.parametrize('fault', ['reference', 'doc', 'source', 'stale', 'row', 'scope', 'controls'])
+@pytest.mark.parametrize('fault', ['reference', 'doc', 'source', 'future', 'row', 'scope', 'controls'])
 def test_consumer_owner_refuses_untrusted_or_stale_proposals(package, fixtures, tmp_path, monkeypatch, fault):
     from datetime import timedelta
     owner, proposals, snapshot, clock = _consumer_owner_fixture(package, fixtures, tmp_path, monkeypatch)
     if fault == 'reference': proposals[0]['ref_sha256'] = '0' * 64
     elif fault == 'doc': proposals[0]['doc_id_sha256'] = '0' * 64
     elif fault == 'source': proposals[0]['source_event_sha256'] = '0' * 64
-    elif fault == 'stale': clock.value += timedelta(minutes=20)
+    elif fault == 'future': clock.value -= timedelta(minutes=20)
     elif fault == 'row':
         path = Path(snapshot['messages']['source_path'])
         lines = path.read_bytes().splitlines(keepends=True)

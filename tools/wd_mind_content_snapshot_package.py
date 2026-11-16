@@ -777,7 +777,7 @@ class _ConsumerSourceOwner:
                     raise ValueError('source')
                 floor = reader._utc(record['time_utc'])
                 age = (datetime.now(timezone.utc) - floor).total_seconds()
-                if age < 0 or math.ceil(age) >= 900 or reader._utc(record['available_utc']) > datetime.now(timezone.utc):
+                if age < 0 or reader._utc(record['available_utc']) > datetime.now(timezone.utc):
                     raise ValueError('stale')
                 hits.append({'text': item['stored_text'], 'source_event_sha256': source_ref,
                              'event_time_utc_floor': record['time_utc'], 'source_agent': record['meta']['agent']})
@@ -785,11 +785,11 @@ class _ConsumerSourceOwner:
                 raise ValueError('controls_changed')
             if type(self._gate) is _ConsumerFlatGate:
                 self._gate._check_delivery_binding()
-            # A response cannot carry partial output or stale material at return.
+            # Recheck time at delivery; historical records remain eligible.
             finished = datetime.now(timezone.utc)
             for hit in hits:
                 age = (finished - reader._utc(hit['event_time_utc_floor'])).total_seconds()
-                if age < 0 or math.ceil(age) >= 900:
+                if age < 0:
                     raise ValueError('delivery_stale')
                 hit['event_age_seconds_upper_bound'] = math.ceil(age)
             output = {'authority': 'none', 'sender_authentication': 'UNKNOWN',

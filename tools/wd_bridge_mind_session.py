@@ -607,12 +607,12 @@ def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, b
                     or type(hit['event_age_seconds_upper_bound']) is not int):
                 raise ValueError('hit')
             age = (finished - reader._utc(hit['event_time_utc_floor'])).total_seconds()
-            if age < 0 or math.ceil(age) >= 900:
-                raise ValueError('stale')
+            if age < 0:
+                raise ValueError('future_event')
             results.append(dict(hit, event_age_seconds_upper_bound=math.ceil(age)))
         output = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':lane,
                   'fleet_sha256':controls[2], 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN',
-                  'same_user_aba':'UNKNOWN', 'results':results}
+                  'same_user_aba':'UNKNOWN', 'current_status_freshness':'UNKNOWN', 'results':results}
     except Exception:
         pass
     if output is None:

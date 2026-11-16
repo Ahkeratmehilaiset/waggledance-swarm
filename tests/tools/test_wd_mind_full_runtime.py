@@ -757,6 +757,7 @@ assert sys.stdin.buffer.read()==b'synthetic-mex1'
 fleet=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest()
 result={'schema':'wd.mind-flat-verified-session.v1','authority':'none','lane':'codex-lead-1',
  'fleet_sha256':fleet,'sender_authentication':'UNKNOWN','index_match':'UNKNOWN','same_user_aba':'UNKNOWN',
+ 'current_status_freshness':'UNKNOWN',
  'results':[{'text':'synthetic','source_event_sha256':'a'*64,'event_time_utc_floor':'2026-01-01T00:00:00Z',
  'source_agent':'codex-lead-1','event_age_seconds_upper_bound':1}]}
 sys.stdout.write(json.dumps(result))
@@ -870,6 +871,84 @@ def _refresh_generation_test_owner(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query',
                         lambda self: self._PrivateBinding__snapshot)
     return runtime, owner, (binding, old_snapshot, old_memory), (new_binding, new_snapshot, new_memory)
+
+
+def _direct_query_test_owner(monkeypatch, tmp_path):
+    """Synthetic orchestration; not evidence of an authenticated caller or live source."""
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    owner._handler._memory = runtime._PrivateFlatMemory(binding, owner._snapshot, b'fake', (), b'', b'encoder')
+    owner._handler._frozen_flat = (b'fake', (), b'', b'encoder')
+    record_id = 'synthetic-id'
+    doc_id = runtime.reader._sha(record_id.encode())
+    ref, event_ref = 'a'*64, 'b'*64
+    text = 'synthetic accepted message'
+    record = {'record_id':record_id, 'time_utc':'2026-01-01T00:00:00Z',
+              'meta':{'agent':'codex-lead-1'},
+              'provenance':{'source_event_ref':event_ref}}
+    monkeypatch.setattr(runtime, '_flat_check', lambda memory: {record_id:record})
+    monkeypatch.setattr(runtime, '_local_generation_policy_pin', lambda owner: 'c'*64)
+    monkeypatch.setattr(runtime.reader, 'decode_text', lambda value: value)
+    source = {'ref_sha256':ref, 'doc_id_sha256':doc_id, 'ref_kind':'sha256_of_projected_metadata',
+              'canonical_event':False, 'stored_text':text,
+              'source_reference':{'sha256':event_ref, 'kind':'sha256_of_canonical_event_json',
+                                  'verified':'MATCH_WITHIN_PREFIX', 'sender_authentication':'UNKNOWN'}}
+    monkeypatch.setattr(runtime.reader, 'resolve_content_results', lambda *args, **kwargs: [dict(source)])
+    hit = dict(source, source_agent='codex-lead-1', source_time_utc=record['time_utc'],
+               source_valid_until_utc=None, event_age_seconds_upper_bound=1)
+    def handle(self, request, lane):
+        assert lane == 'codex-lead-1' and request['scope'] == 'own'
+        return {'schema':'wd.mind-flat-owner-response.v1', 'lane':lane, 'scope':'own',
+                'authority':'none', 'expires_utc':None, 'expiry_scope':'source_validity_only',
+                'snapshot_freshness':'UNKNOWN', 'result':{'schema':'wd.mind-flat-f32-query.v1',
+                'authority':'none', 'status':'SEMANTIC_CANDIDATE', 'results':[hit]}}
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_handle_for_lane', handle)
+    return runtime, owner, factory, record, source, hit
+
+
+def test_single_owner_direct_query_rechecks_selected_source_and_keeps_unknown_freshness(tmp_path, monkeypatch):
+    runtime, owner, _, _, _, _ = _direct_query_test_owner(monkeypatch, tmp_path)
+    result = owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
+    assert result['schema'] == 'wd.mind-flat-verified-session.v1'
+    assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
+    assert result['current_status_freshness'] == 'UNKNOWN' and len(result['results']) == 1
+    assert result['results'][0]['source_event_sha256'] == 'b'*64
+    assert result['results'][0]['event_age_seconds_upper_bound'] > 900
+    assert result['results'][0]['text'] == 'synthetic accepted message'
+
+
+@pytest.mark.parametrize('fault', ['source', 'policy', 'factory'])
+def test_single_owner_direct_query_refuses_mutation_and_retains_hold(tmp_path, monkeypatch, fault):
+    runtime, owner, factory, _, source, _ = _direct_query_test_owner(monkeypatch, tmp_path)
+    if fault == 'source': source['source_reference'] = dict(source['source_reference'], sha256='e'*64)
+    elif fault == 'policy': monkeypatch.setattr(runtime, '_local_generation_policy_pin', lambda owner: (_ for _ in ()).throw(ValueError()))
+    else: factory._manifest = '0'*64
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
+    assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+
+
+def test_single_owner_direct_query_bad_request_does_not_close_owner(tmp_path, monkeypatch):
+    runtime, owner, _, _, _, _ = _direct_query_test_owner(monkeypatch, tmp_path)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='')
+    assert owner.status() == {'state':'READY', 'owned':True, 'authority':'none'}
+
+
+def test_single_owner_direct_query_refuses_source_expiry_during_final_checks(tmp_path, monkeypatch):
+    runtime, owner, _, record, _, _ = _direct_query_test_owner(monkeypatch, tmp_path)
+    original = runtime._FlatRequestHandler._source_check
+    def expire(self):
+        original(self)
+        record['provenance']['valid_until_utc'] = '2020-01-01T00:00:00Z'
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_source_check', expire)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
+    assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
 
 
 def _test_staged_refresh(runtime, owner, new, snapshot=None):
@@ -1732,6 +1811,8 @@ try:
         def mutate(stage):
             if mode == 'package_source_' + stage:
                 path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+            if mode == 'package_stale_history_source_mutation' and stage == 'query':
+                path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
             if mode == 'package_immutable_source_' + stage:
                 path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
             if mode == 'package_immutable_generation_' + stage:
@@ -2275,6 +2356,34 @@ try:
             mutate('query')
             if mode == 'package_orthogonal': return (0.0, 1.0) + (0.0,) * 382
             return (1.0,) + (0.0,) * 383
+        if mode == 'package_direct_owner_source_recheck':
+            import threading
+            from types import SimpleNamespace
+            lanes = {'codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2'}
+            handler = runtime._FlatRequestHandler(binding, product.snapshot, 'codex-lead-1', lanes,
+                None, SimpleNamespace(query=encode_query), None, 1, None)
+            handler._memory = product
+            handler._frozen_flat = (product.manifest, product.ids, product.vectors, product.encoder_binding)
+            runtime._FlatRequestHandler._running_owner = lambda self: None
+            runtime._SingleManifestOwner._check_factory = lambda self: None
+            owner = object.__new__(runtime._SingleManifestOwner)
+            owner._generation = (binding, product.snapshot, handler)
+            owner._lanes, owner._state, owner._lock = frozenset(lanes), 'READY', threading.Lock()
+            first = owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
+                                      query='yhteyskatko uudelleenyritys')
+            path = pathlib.Path(sys.argv[3]); original = path.read_bytes()
+            changed = original.replace(b'ordinary', b'Ordinary')
+            assert changed != original and len(changed) == len(original)
+            path.write_bytes(changed)
+            try:
+                owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
+                                  query='yhteyskatko uudelleenyritys')
+            except runtime.FullRuntimeRefused:
+                refused = True
+            else:
+                refused = False
+            print(json.dumps({'result':'ok', 'first_hits':len(first['results']),
+                              'source_mutation_refused':refused, 'state':owner._state})); sys.exit(0)
         if mode.startswith('package_historical'):
             if mode == 'package_historical_orthogonal':
                 encode_query = lambda text: (0.0,1.0) + (0.0,)*382
@@ -2303,8 +2412,11 @@ try:
         lane = 'claude-rco-1' if mode == 'package_rco' else ('codex-tools-1' if mode == 'package_other' else 'codex-lead-1')
         result = runtime.query_flat_memory(enabled=True, memory=product, lane=lane,
             own_lane_only=mode != 'package_general', query='yhteyskatko uudelleenyritys',
-            as_of_utc=('2026-01-01T00:17:00Z' if mode == 'package_stale' else '2026-01-01T00:02:00Z'),
-            query_encoder=encode_query)
+            as_of_utc=('2025-12-31T23:00:00Z' if mode == 'package_future_history' else
+                       '2026-01-01T00:17:00Z' if mode == 'package_stale' or mode.startswith('package_stale_history')
+                       else '2026-01-01T00:02:00Z'),
+            query_encoder=encode_query, **({'include_historical': True} if mode.startswith('package_stale_history')
+                                           or mode == 'package_future_history' else {}))
         projection, _, _ = reader._verified_complete(binding.snapshot_for_query())
         records = {sha(record['record_id'].encode()): record for record in projection['messages']['records']}
         references_match = all(hit['doc_id_sha256'] in records and
@@ -2616,6 +2728,63 @@ def test_general_query_reports_own_task_unknown_for_another_lanes_hit(synthetic_
 def test_flat_query_abstains_on_orthogonal_or_stale_hits(synthetic_bundle, scenario):
     result = invoke(synthetic_bundle, scenario)
     assert result['status'] == 'ABSTAIN' and result['hits'] == 0
+
+
+def test_flat_query_explicit_history_retains_verified_older_hits(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_stale_history')
+    assert result['status'] == 'SEMANTIC_CANDIDATE'
+    assert result['hits'] > 0 and result['refs'] is True
+
+
+def test_historical_query_excludes_future_and_rechecks_source(synthetic_bundle):
+    future = invoke(synthetic_bundle, 'package_future_history')
+    assert future['status'] == 'ABSTAIN' and future['hits'] == 0
+    assert invoke(synthetic_bundle, 'package_stale_history_source_mutation') == {'result': 'refused'}
+
+
+def test_single_owner_direct_query_rechecks_real_synthetic_source_between_calls(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_direct_owner_source_recheck')
+    assert result['result'] == 'ok' and result['first_hits'] > 0
+    assert result['source_mutation_refused'] is True and result['state'] == 'HOLD'
+
+
+def test_owner_and_mapper_keep_historical_candidates_with_unknown_freshness(monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    handler = object.__new__(runtime._FlatRequestHandler)
+    handler._lock, handler._closed, handler._failed = threading.Lock(), False, False
+    handler._memory, handler._lanes = object(), frozenset({'codex-lead-1'})
+    handler._adapter = SimpleNamespace(query=lambda _: None)
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_running_owner', lambda self: None)
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_source_check', lambda self: None)
+    calls = []
+    source_expiry = [None]
+    def query(**kwargs):
+        calls.append(kwargs)
+        return {'schema':'wd.mind-flat-f32-query.v1', 'status':'SEMANTIC_CANDIDATE',
+                'authority':'none', 'relevance':'UNVERIFIED', 'index_match':'NOT_APPLICABLE',
+                'own_latest_task':'UNKNOWN', 'results':[{'ref_sha256':'a'*64, 'doc_id_sha256':'b'*64,
+                    'source_reference':{'sha256':'c'*64, 'kind':'sha256_of_canonical_event_json',
+                                        'verified':'MATCH_WITHIN_PREFIX', 'sender_authentication':'UNKNOWN'},
+                    'source_time_utc':'2026-01-01T00:00:00Z', 'source_valid_until_utc':source_expiry[0],
+                    'event_age_seconds_upper_bound':1000000}]}
+    monkeypatch.setattr(runtime, 'query_flat_memory', query)
+    request = {'schema':'wd.mind-flat-owner-request.v1', 'lane':'codex-lead-1', 'query':'work', 'scope':'own'}
+    answer = handler._handle_for_lane(request, 'codex-lead-1')
+    assert calls[-1]['include_historical'] is True
+    assert answer['snapshot_freshness'] == 'UNKNOWN'
+    assert answer['expiry_scope'] == 'source_validity_only' and answer['expires_utc'] is None
+    pipe = runtime.map_pipe_candidates(enabled=True, handler=handler, request={
+        'schema':'wd.mind-pipe-request.v1', 'query_id':'startup_work_overview',
+        'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'})
+    assert pipe['status'] == 'CANDIDATES' and pipe['candidates'][0]['source_event_sha256'] == 'c'*64
+    source_expiry[0] = '2020-01-01T00:00:00Z'
+    expired = handler._handle_for_lane(request, 'codex-lead-1')
+    assert expired['result']['status'] == 'ABSTAIN' and expired['result']['results'] == []
+    source_expiry[0] = '2999-01-01T00:00:00Z'
+    valid = handler._handle_for_lane(request, 'codex-lead-1')
+    assert valid['result']['status'] == 'SEMANTIC_CANDIDATE' and valid['expires_utc'] is not None
 
 
 @pytest.mark.parametrize('fault', ['package_fake_binding', 'package_source_passage', 'package_bundle_passage',

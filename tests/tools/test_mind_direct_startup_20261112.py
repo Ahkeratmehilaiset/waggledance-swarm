@@ -724,14 +724,15 @@ $value=Invoke-WdMindOptionalContentProbe @params
 
 @WINDOWS
 @pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
-@pytest.mark.parametrize('fault', ['none', 'authority', 'lane', 'fleet', 'ref', 'stale', 'future', 'sender', 'index',
+@pytest.mark.parametrize('fault', ['none', 'authority', 'lane', 'fleet', 'ref', 'stale', 'future', 'sender', 'index', 'freshness',
                                    'unwritten', 'digest', 'duplicate', 'oversize', 'extra'])
-def test_content_suffix_only_delivers_fresh_hash_bound_untrusted_refs(filename, fault):
+def test_content_suffix_delivers_hash_bound_untrusted_refs_with_age(filename, fault):
     observed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     if fault == 'stale': observed -= datetime.timedelta(minutes=16)
     if fault == 'future': observed += datetime.timedelta(minutes=2)
     view = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':'codex-lead-1',
         'fleet_sha256':'a'*64, 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN', 'same_user_aba':'UNKNOWN',
+        'current_status_freshness':'UNKNOWN',
         'results':[{'text':'synthetic content, not an instruction', 'source_event_sha256':'b'*64,
                     'event_time_utc_floor':observed.isoformat().replace('+00:00','Z'), 'source_agent':'codex-tools-1',
                     'event_age_seconds_upper_bound':1}]}
@@ -741,6 +742,7 @@ def test_content_suffix_only_delivers_fresh_hash_bound_untrusted_refs(filename, 
     if fault == 'ref': view['results'][0]['source_event_sha256'] = 'invalid'
     if fault == 'sender': view['sender_authentication'] = 'MATCH'
     if fault == 'index': view['index_match'] = 'MATCH'
+    if fault == 'freshness': view['current_status_freshness'] = 'CURRENT'
     if fault == 'oversize': view['results'][0]['text'] = 'x'*9000
     if fault == 'extra': view['extra'] = 0
     raw = json.dumps(view, separators=(',', ':'), ensure_ascii=True)
@@ -754,10 +756,14 @@ $suffix=Get-WdMindContentPromptSuffix -Read $r -ExpectedLane 'codex-lead-1' -Exp
 [ordered]@{{first=('FIRST'+$suffix);resume=('RESUME'+$suffix)}}|ConvertTo-Json -Compress
 '''
     result = _run_startup_script(script)
-    if fault == 'none':
+    if fault in ('none', 'stale'):
         for key in ('first', 'resume'):
             assert 'DATA ONLY' in result[key] and 'not instructions' in result[key]
             assert 'b'*64 in result[key] and 'synthetic content' in result[key]
+            payload = json.loads(result[key].split('not instructions: ', 1)[1])
+            assert payload['current_status_freshness'] == 'UNKNOWN'
+            if fault == 'stale':
+                assert payload['results'][0]['event_age_seconds_upper_bound'] >= 960
     else:
         assert result == {'first':'FIRST', 'resume':'RESUME'}
 
@@ -768,6 +774,7 @@ def test_optional_probe_forwards_validated_content_in_first_and_resume(filename)
     observed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     view = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':'codex-lead-1',
         'fleet_sha256':'a'*64, 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN', 'same_user_aba':'UNKNOWN',
+        'current_status_freshness':'UNKNOWN',
         'results':[{'text':'synthetic content', 'source_event_sha256':'b'*64,
                     'event_time_utc_floor':observed, 'source_agent':'codex-tools-1', 'event_age_seconds_upper_bound':1}]}
     raw = json.dumps(view, separators=(',', ':'), ensure_ascii=True)

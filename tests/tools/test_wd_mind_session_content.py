@@ -807,14 +807,80 @@ def test_flat_consumer_resolves_source_as_untrusted_data(flat_consumer_case, tur
     result = run()
     assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
     assert result['index_match'] == 'UNKNOWN' and result['fleet_sha256'] == 'a' * 64
+    assert set(result) == {'schema', 'authority', 'lane', 'fleet_sha256', 'sender_authentication',
+                           'index_match', 'same_user_aba', 'current_status_freshness', 'results'}
+    assert result['current_status_freshness'] == 'UNKNOWN'
     assert [item['source_event_sha256'] for item in result['results']] == [p['source_event_sha256'] for p in proposals]
     assert all(item['event_age_seconds_upper_bound'] < 900 for item in result['results'])
 
 
-@pytest.mark.parametrize('fault', ['ref', 'source', 'nonce', 'lane', 'scope', 'duplicate', 'oversize',
-                                   'duplicate_json_key', 'stale', 'row', 'fleet', 'encoder'])
-def test_flat_consumer_refuses_untrusted_or_changed_inputs(flat_consumer_case, monkeypatch, fault):
+@pytest.mark.parametrize('offset_seconds', [900, 1200, 86400])
+def test_flat_consumer_delivers_historical_hits_with_age_and_unknown_freshness(
+        flat_consumer_case, monkeypatch, offset_seconds):
     from datetime import timedelta
+    _, owner, proposals, _, clock, response = flat_consumer_case
+    # Advance the session clock independently to exercise its final delivery
+    # check while keeping the real source owner's verification in place.
+    monkeypatch.setattr(session, 'datetime', SimpleNamespace(
+        now=lambda tz: clock.value + timedelta(seconds=offset_seconds - 120)))
+    original_resolve = type(owner).resolve
+    resolved = []
+    def tracked_resolve(self, **kwargs):
+        resolved.append(1)
+        return original_resolve(self, **kwargs)
+    monkeypatch.setattr(type(owner), 'resolve', tracked_resolve)
+    result = session.query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=response(),
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+    assert len(resolved) == 2
+    assert result['current_status_freshness'] == 'UNKNOWN'
+    assert [item['source_event_sha256'] for item in result['results']] == [p['source_event_sha256'] for p in proposals]
+    for item in result['results']:
+        assert item['event_time_utc_floor']
+        assert item['event_age_seconds_upper_bound'] == offset_seconds
+
+
+def test_flat_consumer_rejects_future_event_at_final_delivery(flat_consumer_case, monkeypatch):
+    from datetime import timedelta
+    _, owner, _, _, clock, response = flat_consumer_case
+    monkeypatch.setattr(session, 'datetime', SimpleNamespace(now=lambda tz: clock.value - timedelta(minutes=20)))
+    with pytest.raises(session.MindContentSessionRefused):
+        session.query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=response(),
+            bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+
+
+def test_flat_consumer_resolves_historical_source_without_a_recent_window(flat_consumer_case):
+    from datetime import timedelta
+    _, owner, proposals, _, clock, response = flat_consumer_case
+    clock.value += timedelta(minutes=20)
+    result = session.query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=response(),
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+    assert result['current_status_freshness'] == 'UNKNOWN'
+    assert [item['source_event_sha256'] for item in result['results']] == [p['source_event_sha256'] for p in proposals]
+    assert all(item['event_age_seconds_upper_bound'] >= 900 for item in result['results'])
+
+
+def test_flat_consumer_rejects_changed_historical_source(flat_consumer_case, monkeypatch):
+    from datetime import timedelta
+    _, owner, proposals, snapshot, clock, response = flat_consumer_case
+    monkeypatch.setattr(session, 'datetime', SimpleNamespace(now=lambda tz: clock.value + timedelta(days=1)))
+    path = Path(snapshot['messages']['source_path'])
+    rows = path.read_bytes().splitlines(keepends=True)
+    index = next(i for i, row in enumerate(rows)
+                 if content._sha(content._canonical(json.loads(row))) == proposals[0]['source_event_sha256'])
+    rows[index] = rows[index].replace(b'"message":', b'"messagE":', 1)
+    path.write_bytes(b''.join(rows))
+    with pytest.raises(session.MindContentSessionRefused):
+        session.query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=response(),
+            bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+
+
+@pytest.mark.parametrize('fault', ['ref', 'source', 'nonce', 'lane', 'scope', 'duplicate', 'oversize',
+                                   'duplicate_json_key', 'row', 'fleet', 'encoder'])
+def test_flat_consumer_refuses_untrusted_or_changed_inputs(flat_consumer_case, monkeypatch, fault):
     package, owner, proposals, snapshot, clock, response = flat_consumer_case
     value = json.loads(response())
     if fault == 'ref': value['candidates'][0]['ref_sha256'] = '0' * 64
@@ -823,7 +889,6 @@ def test_flat_consumer_refuses_untrusted_or_changed_inputs(flat_consumer_case, m
     if fault == 'lane': value['lane'] = 'fable-5'
     if fault == 'scope': value['scope'] = 'own'
     if fault == 'duplicate': value['candidates'].append(dict(value['candidates'][0]))
-    if fault == 'stale': clock.value += timedelta(minutes=20)
     if fault == 'row':
         path = Path(snapshot['messages']['source_path'])
         rows = path.read_bytes().splitlines(keepends=True)

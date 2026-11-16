@@ -576,20 +576,26 @@ class _RetainedParentPair:
         result = json.loads(raw.decode('utf-8'), object_pairs_hook=runtime.prefix._unique_object,
                             parse_constant=runtime.reader._bad_constant)
         expected_keys = {'schema','authority','lane','fleet_sha256','sender_authentication',
-                         'index_match','same_user_aba','results'}
+                         'index_match','same_user_aba','current_status_freshness','results'}
         if (type(result) is not dict or set(result) != expected_keys
                 or result['schema'] != 'wd.mind-flat-verified-session.v1' or result['authority'] != 'none'
                 or result['lane'] != self._metadata['lane'] or result['fleet_sha256'] != fleet_sha
                 or result['sender_authentication'] != 'UNKNOWN' or result['index_match'] != 'UNKNOWN'
-                or result['same_user_aba'] != 'UNKNOWN' or type(result['results']) is not list
+                or result['same_user_aba'] != 'UNKNOWN' or result['current_status_freshness'] != 'UNKNOWN'
+                or type(result['results']) is not list
                 or not 1 <= len(result['results']) <= 3):
             raise ValueError('result_binding')
         for hit in result['results']:
             if (type(hit) is not dict or set(hit) != {'text','source_event_sha256','event_time_utc_floor',
                     'source_agent','event_age_seconds_upper_bound'} or type(hit['text']) is not str
                     or not _HEX.fullmatch(hit['source_event_sha256']) or type(hit['event_age_seconds_upper_bound']) is not int
-                    or not 0 <= hit['event_age_seconds_upper_bound'] < 900):
+                    or hit['event_age_seconds_upper_bound'] < 0):
                 raise ValueError('result_hit')
+            age = (runtime.reader.dt.datetime.now(runtime.reader.dt.timezone.utc)
+                   - runtime.reader._utc(hit['event_time_utc_floor'])).total_seconds()
+            if age < 0:
+                raise ValueError('result_hit')
+            hit['event_age_seconds_upper_bound'] = max(hit['event_age_seconds_upper_bound'], math.ceil(age))
         return runtime.reader._canonical(result)
 
     def _run_pipeline(self):
@@ -751,6 +757,95 @@ def _startup_scope_for_lane(lane):
     if lane in ('codex-lead-1', 'codex-tools-1', 'fable-5'):
         return 'own'
     raise ValueError('lane')
+
+
+class _LocalManifestQuery:
+    """Retain one pinned owner in this process; no lane identity is authenticated.
+
+    The caller must retain this object through STARTING or HOLD and must not
+    terminate an owned worker on a timeout. Neither startup latency nor
+    automatic refresh is provided by this adapter.
+    """
+    __slots__ = ('_owner', '_metadata', '_bundle', '_manifest')
+
+    def __init__(self, owner, lane, bundle, manifest):
+        self._owner = owner
+        self._metadata = {'lane': lane}
+        self._bundle, self._manifest = bundle, manifest
+
+    def __repr__(self):
+        return '<PrivateMindLocalManifestQuery>'
+
+    def start(self):
+        return self._owner.start()
+
+    def status(self):
+        return self._owner.status()
+
+    def close(self):
+        return self._owner.close()
+
+    def query(self):
+        from tools import wd_mind_full_runtime as runtime
+        try:
+            lane = self._metadata['lane']
+            scope = _startup_scope_for_lane(lane)
+            controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
+            fleet_sha = hashlib.sha256(controls[0]).hexdigest()
+            result = self._owner.query_local(enabled=True, lane=lane, scope=scope,
+                                             query=runtime._STARTUP_PIPE_QUERY)
+            raw = runtime.reader._canonical(result)
+            if not 0 < len(raw) <= 16384:
+                raise ValueError('result_size')
+            # The owner re-reads and screens selected source rows. Validate the
+            # lane-facing envelope and recalculate age at this last boundary.
+            return _RetainedParentPair._validated_result(self, raw, fleet_sha)
+        except Exception:
+            raise LaunchRefused('mind_e5_start_refused') from None
+
+
+def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
+                                identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
+                                operator_approval_reference_sha256=None, lane=None,
+                                worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5):
+    """Prepare, but do not start, a pinned in-process Mind owner.
+
+    The manifest and operator-policy inputs must come independently from the
+    authorized caller. Matching hashes do not authenticate that caller. The
+    retained result must be kept alive across a start, query, timeout or HOLD.
+    """
+    result = binding = factory = owner = None
+    try:
+        from tools import wd_mind_full_runtime as runtime
+        from tools import wd_mind_e5_client as client
+        if (enabled is not True or type(bundle_root) is not str
+                or type(expected_manifest_sha256) is not str
+                or type(identifier_policy_bytes) is not bytes
+                or type(expected_identifier_policy_sha256) is not str
+                or type(operator_approval_reference_sha256) is not str):
+            raise ValueError('input')
+        _startup_scope_for_lane(lane)
+        runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256,
+            operator_policy_sha256=expected_identifier_policy_sha256,
+            operator_approval_reference_sha256=operator_approval_reference_sha256)
+        binding = runtime.assemble_full_runtime(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=identifier_policy_bytes,
+            expected_identifier_policy_sha256=expected_identifier_policy_sha256)
+        factory = runtime.create_manifest_worker_factory(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256, worker_timeout_seconds=worker_timeout_seconds,
+            lock_timeout_seconds=lock_timeout_seconds, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+        owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=lane,
+            worker_factory=factory, shutdown_timeout=shutdown_timeout)
+        # Return the owner before any start operation can launch a worker.
+        result = _LocalManifestQuery(owner, lane, bundle_root, expected_manifest_sha256)
+    except Exception:
+        pass
+    finally:
+        identifier_policy_bytes = binding = factory = owner = None
+    if result is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return result
 
 
 def _owner_child_entry(*, control_stream, data_stream, candidate_stream,

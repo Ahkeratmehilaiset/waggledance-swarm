@@ -1986,11 +1986,14 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
             if remaining <= 0:
                 raise ValueError("deadline")
             if bulk_contract_sha256 is not None:
-                client = client_module.GracefulE5WorkerClient(owner, timeout=remaining,
-                    encoder_binding_sha256=binding_sha, bulk_contract_sha256=bulk_contract_sha256)
+                client = client_module.GracefulE5WorkerClient(owner, timeout=timeout,
+                    encoder_binding_sha256=binding_sha, bulk_contract_sha256=bulk_contract_sha256,
+                    handshake_deadline=deadline)
             else:
-                client = client_module.GracefulE5WorkerClient(owner, timeout=remaining,
-                                                             encoder_binding_sha256=binding_sha)
+                client = client_module.GracefulE5WorkerClient(owner, timeout=timeout,
+                    encoder_binding_sha256=binding_sha, handshake_deadline=deadline)
+            if time.monotonic() >= deadline:
+                raise ValueError("deadline")
             owner.mark_ready()
         result = {"client": client, "encoder_binding_bytes": binding_bytes, "encoder_binding_sha256": binding_sha,
                 "authority": "none", "network_isolation": "UNKNOWN", "native_closure": "UNKNOWN",

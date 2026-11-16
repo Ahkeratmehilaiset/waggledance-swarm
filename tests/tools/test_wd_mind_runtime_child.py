@@ -1051,6 +1051,71 @@ def test_graceful_launch_retains_owner_on_post_spawn_failure(staged_graceful, mo
         finish(owner, process)
 
 
+def test_graceful_launch_preserves_per_call_timeout_after_slow_start(staged_graceful, monkeypatch, synthetic_windows_subprocess):
+    from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
+    from test_wd_mind_e5_client import response
+    process = OwnedProcess(response(0, 0), on_eof=False)
+    clock = [time.monotonic()]
+    monkeypatch.setattr(child, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+
+    class Job(OwnedJob):
+        def __init__(self, *, kill_on_close, _owner=None):
+            assert kill_on_close is False
+            super().__init__()
+        def attach(self, value):
+            assert value is process
+
+    def popen(*args, **kwargs):
+        clock[0] += 0.8
+        return process
+
+    monkeypatch.setattr(child, '_Job', Job)
+    monkeypatch.setattr(subprocess, 'Popen', popen)
+    staged_graceful['timeout'] = 1
+    result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
+    owner = result['owner']
+    try:
+        assert result['status'] == 'READY'
+        assert result['client']._timeout == 1.0
+    finally:
+        finish(owner, process)
+
+
+def test_graceful_launch_rechecks_deadline_after_handshake(staged_graceful, monkeypatch, synthetic_windows_subprocess):
+    from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
+    from test_wd_mind_e5_client import response
+    from tools import wd_mind_e5_client as e5
+    process = OwnedProcess(response(0, 0), on_eof=False)
+    clock = [time.monotonic()]
+    monkeypatch.setattr(child, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    real_client = e5.GracefulE5WorkerClient
+
+    class LateClient(real_client):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            clock[0] += 2
+
+    class Job(OwnedJob):
+        def __init__(self, *, kill_on_close, _owner=None):
+            assert kill_on_close is False
+            super().__init__()
+        def attach(self, value):
+            assert value is process
+
+    monkeypatch.setattr(e5, 'GracefulE5WorkerClient', LateClient)
+    monkeypatch.setattr(child, '_Job', Job)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: process)
+    staged_graceful['timeout'] = 1
+    captured = []
+    result = child.start_e5_worker_graceful(enabled=True, owner_sink=captured.append, **staged_graceful)
+    owner = result['owner']
+    try:
+        assert captured == [owner] and result['status'] == 'HOLD'
+        assert result['client'] is None and owner.status()['owned'] and not owner._job.closed
+    finally:
+        finish(owner, process)
+
+
 def test_graceful_expired_preflight_never_spawns(staged_graceful, monkeypatch):
     clock = [time.monotonic()]
     monkeypatch.setattr(child, "time", SimpleNamespace(monotonic=lambda: clock[0]))

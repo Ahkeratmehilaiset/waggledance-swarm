@@ -4686,10 +4686,9 @@ def test_mind_lane_prefers_the_pool_reviewer_and_keeps_one_rco(tmp_path: Path) -
         [_mind_vote("fable-5", "build_consensus_pass", 20)
          | {"agent_uuid": "00000000-0000-4000-8000-000000000000"}],             # another identity
         [_mind_vote("codex-tools-1", "build_consensus_pass", 20)],              # Lead's own family
-        [_mind_vote("grok-scout-1", "build_consensus_pass", 20)],               # not in the review pool
+        [_mind_vote("grok-scout-1", "build_consensus_pass", 20)],               # no bridge identity, not in the pool
         [_mind_vote("claude-rco-1", "build_consensus_pass", 20)],               # the lane that holds the RCO slot
         [_mind_vote("claude-rco-2", "build_consensus_pass", 20)],               # an RCO build approval is not its pass
-        [_mind_vote("claude-rco-3", "build_consensus_pass", 20)],
         [_mind_vote("fable-5", "build_consensus_pass", 20),
          _mind_vote("fable-5", "changes_requested", 21)],                       # later block
     ],
@@ -4702,6 +4701,38 @@ def test_mind_lane_lead_author_refuses_anything_but_a_real_reviewer_approval(
     assert report["mind_class_lane"]["engaged"] is False
     assert report["mind_class_lane_evidence"] is None
     assert "consensus_lane" not in report["bridge_consensus"]
+
+
+def test_mind_lane_enrolled_third_rco_counts_by_its_pass_never_by_a_build_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_bridge_rco_enrollment import install_synthetic_enrollment
+
+    proof = install_synthetic_enrollment(tmp_path, monkeypatch, provisioned=True)
+
+    def vote(status: str) -> dict:
+        event = _mind_vote("claude-rco-3", status, 20)
+        event.update({key: proof[key] for key in ("agent_uuid", "session_id", "run_id")})
+        event["payload"] = dict(event["payload"], execution_evidence=proof["payload"]["execution_evidence"])
+        return event
+
+    # Control: this enrolled identity is a valid second RCO in Lead's place by its own pass ...
+    passed = _mind_lead_author_gate(tmp_path / "pass", [vote("rco_pass")])
+    assert passed["decision"] == "auto_merge_plan_ready", passed["reasons"]
+    assert sorted(row["agent"] for row in passed["bridge_consensus"]["required_identities"]) == [
+        "claude-rco-1", "claude-rco-3",
+    ]
+    assert {row["role"] for row in passed["bridge_consensus"]["required_identities"]} == {"opposite_family_rco", "rco"}
+    # ... so its build approval is refused for its role, not for its identity.
+    built = _mind_lead_author_gate(tmp_path / "build", [vote("build_consensus_pass")])
+    assert built["decision"] == "operator_review_required", built
+    assert built["mind_class_lane"]["engaged"] is False
+    assert built["mind_class_lane_evidence"] is None
+    # Without the enrollment the same pass does not count either: the control above is not a default.
+    monkeypatch.delenv("WD_BRIDGE_BUNDLE_ROOT")
+    monkeypatch.delenv("WD_REBOOT_EXPECTED_MANIFEST_HASH")
+    bare = _mind_lead_author_gate(tmp_path / "bare", [vote("rco_pass")])
+    assert bare["mind_class_lane"]["engaged"] is False
 
 
 def test_mind_lane_pool_reviewer_approval_after_its_own_block_counts(tmp_path: Path) -> None:

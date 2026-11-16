@@ -168,7 +168,7 @@ try {
   $mindPolicyArguments = @(Get-WdMindFleetPolicyArguments -PolicyPath $MindOperatorPolicyPath `
       -PolicySha256 $MindOperatorPolicySha256 -ApprovalSha256 $MindOperatorApprovalReferenceSha256)
 } catch {
-  Write-Warning 'Mind policy inputs refused; lanes will start without Mind content.'
+  Write-Warning 'Mind policy inputs refused; lanes will start without Mind content.' -WarningAction Continue
 }
 $modeWasDefaulted = -not $Apply -and -not $DryRun
 $launcherMode = Resolve-WdLauncherMode `

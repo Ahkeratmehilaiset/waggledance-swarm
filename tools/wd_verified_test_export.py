@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Run tests on a byte-verified Git export, not a checkout or development tree.
 
-Execution currently refuses before creating a tree: exact owned-Job identity
-and race-free Windows path traversal have not been established.
-The Windows PowerShell companion is intended to execute this program inside the
-caller-owned bounded Job Object. D15 is an unmodified, hash-checked pytest hook, not an OS
-sandbox: it does not attest child-process file access or resolve all links.
-Nothing here creates refs, modifies a checkout, or grants a bridge claim.
+Use only from a trusted caller's pinned PowerShell companion. Its own Job result,
+not this process's output or job-membership check, is the bounded-run evidence.
+Same-user Windows rename/reparse races are not excluded. D15 is an unmodified,
+hash-checked pytest hook, not an OS sandbox: it does not attest child-process
+file access or resolve all links. Nothing creates refs or grants a bridge claim.
 """
 from __future__ import annotations
 
@@ -21,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import xml.etree.ElementTree as ET
 
 HOOK_SHA256 = '9bb5415cd1e922ee7e0892ff7aa3c9e8251f58ab54044c5b810edb49dff77541'
 _SHA256 = re.compile(r'^[0-9a-f]{64}$')
@@ -79,7 +79,10 @@ def _tree_entries(raw: bytes) -> dict[str, str]:
 
 
 def _git(git: str, repo: str, *args: str) -> list[str]:
-    return [git, '--no-replace-objects', '--no-optional-locks', '-C', repo, *args]
+    # Git archive may otherwise expand LF to CRLF based on host checkout config.
+    # Committed export attributes can still change bytes: the comparison refuses.
+    return [git, '--no-replace-objects', '--no-optional-locks',
+            '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-C', repo, *args]
 
 
 def _checked_directory(root: Path, parts: list[str]) -> Path:
@@ -195,13 +198,18 @@ def _inside_windows_job() -> bool:
     return bool(kernel.IsProcessInJob(kernel.GetCurrentProcess(), None, ctypes.byref(inside)) and inside.value)
 
 
-def _execution_boundary_proven() -> bool:
-    """No proof yet binds this process to the wrapper's exact job and limits.
-
-    Path checks also have a Windows rename/reparse TOCTOU. Until both boundaries
-    are independently established, the command intentionally refuses execution.
-    """
-    return False
+def _junit_counts(data: bytes) -> dict[str, int]:
+    if not data or len(data) > 16 * 1024 * 1024:
+        raise ValueError('junit')
+    root = ET.fromstring(data)
+    cases = list(root.iter('testcase'))
+    skipped = sum(case.find('skipped') is not None for case in cases)
+    failed = sum(case.find('failure') is not None for case in cases)
+    errors = sum(case.find('error') is not None for case in cases)
+    passed = len(cases) - skipped - failed - errors
+    if not cases or passed < 1 or failed or errors or passed + skipped != len(cases):
+        raise ValueError('junit')
+    return {'tests_total': len(cases), 'tests_passed': passed, 'tests_skipped': skipped}
 
 
 def _validate_workspace(git: str, repo: Path, workspace: Path) -> None:
@@ -221,8 +229,8 @@ def _validate_workspace(git: str, repo: Path, workspace: Path) -> None:
 
 
 def _run(config: dict) -> dict:
-    if not _execution_boundary_proven():
-        raise ValueError('execution_boundary_unproven')
+    # A positive result is a diagnostic only: any other job may also satisfy it.
+    # The trusted pinned PowerShell caller must check its own bounded Job result.
     if not _inside_windows_job():
         raise ValueError('job_membership_required')
     keys = {'git', 'git_sha256', 'repo', 'workspace', 'commit', 'work', 'hook', 'python_sha256', 'targets'}
@@ -286,13 +294,18 @@ def _run(config: dict) -> dict:
     after = _verify_tree(str(git), str(repo), target, entries, audit_allowed=True)
     if before != after or not report.is_file() or not junit.is_file():
         raise ValueError('postcheck')
+    _plain(report)
+    _plain(junit)
+    counts = _junit_counts(junit.read_bytes())
     records = [json.loads(line) for line in report.read_text(encoding='utf-8').splitlines()]
     if not records or records[-1].get('kind') != 'summary' or records[-1].get('refused') != 0 or records[-1].get('exit') != 0 or result.returncode != 0:
         raise ValueError('pytest_or_hook')
-    return {'schema': 'wd.verified-test-export.v1', 'commit': config['commit'], 'files': len(entries),
+    return {'schema': 'wd.test-export-intermediate.v1', 'authority': 'none', **counts,
+            'commit': config['commit'], 'files': len(entries),
             'tree_manifest_sha256': before, 'hook_sha256': HOOK_SHA256, 'pytest_exit': result.returncode,
             'junit_sha256': _sha(junit.read_bytes()), 'hook_report_sha256': _sha(report.read_bytes()),
-            'scope': 'export_test_only', 'child_filesystem_attestation': 'UNKNOWN'}
+            'scope': 'export_test_only', 'selection_coverage': 'UNKNOWN',
+            'child_filesystem_attestation': 'UNKNOWN'}
 
 
 def main() -> int:
@@ -301,8 +314,18 @@ def main() -> int:
         result = _run(config)
         print(json.dumps(result, sort_keys=True))
         return 0
-    except Exception:
-        print(json.dumps({'schema': 'wd.verified-test-export.v1', 'status': 'refused'}))
+    except Exception as exc:
+        safe_reasons = {'job_membership_required', 'config', 'pin', 'absolute_path_required',
+                        'work_directory', 'executable_pin', 'hook_pin', 'targets', 'target',
+                        'untracked_target', 'commit', 'nested_workspace', 'workspace_binding',
+                        'unsafe_name', 'tree_record', 'non_regular_git_entry', 'duplicate_path',
+                        'empty_tree', 'archive_member', 'archive_member_too_large',
+                        'archive_truncated', 'archive_missing', 'archive', 'reparse_point',
+                        'not_directory', 'blob_header', 'blob_mismatch', 'git_cat_file',
+                        'extra_file', 'postcheck', 'pytest_or_hook', 'junit'}
+        reason = str(exc) if type(exc) is ValueError and str(exc) in safe_reasons else 'internal_error'
+        print(json.dumps({'schema': 'wd.test-export-intermediate.v1', 'authority': 'none',
+                          'status': 'refused', 'reason': reason}))
         return 2
 
 

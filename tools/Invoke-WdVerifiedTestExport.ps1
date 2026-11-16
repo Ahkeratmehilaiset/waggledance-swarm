@@ -284,8 +284,6 @@ function Invoke-WdVerifiedTestExport {
         [ValidateRange(1,1800)][int] $TimeoutSeconds = 1200,
         [ValidateRange(1,262144)][int] $MaxOutputBytes = 262144
     )
-    # Disabled until owned-Job identity and race-free path creation are proven.
-    throw 'verified_export_boundary_unproven'
     $ErrorActionPreference = 'Stop'
     foreach ($value in @($Workspace,$Repository,$GitExecutable,$PythonExecutable,$D15HookPath)) {
         if (-not [IO.Path]::IsPathRooted($value) -or [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($value)) -cne 'C:\') { throw 'verified_export_refused' }
@@ -315,11 +313,29 @@ function Invoke-WdVerifiedTestExport {
     $config=[ordered]@{git=[IO.Path]::GetFullPath($GitExecutable);git_sha256=$GitSha256;repo=[IO.Path]::GetFullPath($Repository);workspace=$workspacePath;commit=$Commit;work=$work;hook=[IO.Path]::GetFullPath($D15HookPath);python_sha256=$PythonSha256;targets=@($Targets)}
     $configBytes=[Text.UTF8Encoding]::new($false).GetBytes(($config | ConvertTo-Json -Depth 8 -Compress))
     $result=Invoke-WdQ4ProcessJob -Executable ([IO.Path]::GetFullPath($PythonExecutable)) -Arguments @('-B',$script:WdVerifiedExportRunnerPath) -WorkingDirectory $work -ScratchRoot $scratch -InputBytes $configBytes -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes $MaxOutputBytes -DetailedOutcome
-    if ($result.Outcome -cne 'completed' -or $result.Cleanup -cne 'confirmed' -or $result.ExitCode -ne 0 -or $null -eq $result.Stdout) { throw 'verified_export_refused' }
-    $lines=([Text.Encoding]::UTF8.GetString([byte[]]$result.Stdout) -split "`r?`n") | Where-Object { $_.Trim() }
+    if ($result.Outcome -cne 'completed' -or $result.Cleanup -cne 'confirmed' -or $null -eq $result.Stdout) { throw ('verified_export_refused:job:{0}:{1}' -f $result.Outcome,$result.Cleanup) }
+    $lines=@(([Text.Encoding]::UTF8.GetString([byte[]]$result.Stdout) -split "`r?`n") | Where-Object { $_.Trim() })
     if (-not $lines) { throw 'verified_export_refused' }
     try { $receipt=$lines[-1] | ConvertFrom-Json -ErrorAction Stop } catch { throw 'verified_export_refused' }
-    if ($receipt.schema -cne 'wd.verified-test-export.v1' -or $receipt.commit -cne $Commit -or
-        $receipt.pytest_exit -ne 0 -or $receipt.scope -cne 'export_test_only') { throw 'verified_export_refused' }
-    return $receipt
+    if ($result.ExitCode -ne 0) {
+        if ($receipt.schema -ceq 'wd.test-export-intermediate.v1' -and $receipt.status -ceq 'refused' -and
+            $receipt.reason -cmatch '^[a-z_]{1,64}$') { throw ('verified_export_refused:' + $receipt.reason) }
+        throw 'verified_export_refused'
+    }
+    if ($receipt.schema -cne 'wd.test-export-intermediate.v1' -or $receipt.authority -cne 'none' -or $receipt.commit -cne $Commit -or
+        $receipt.pytest_exit -ne 0 -or $receipt.scope -cne 'export_test_only' -or $receipt.files -le 0 -or
+        $receipt.tree_manifest_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $receipt.selection_coverage -cne 'UNKNOWN' -or
+        ($receipt.tests_passed -isnot [int] -and $receipt.tests_passed -isnot [long]) -or $receipt.tests_passed -lt 1 -or
+        ($receipt.tests_skipped -isnot [int] -and $receipt.tests_skipped -isnot [long]) -or $receipt.tests_skipped -lt 0 -or
+        $receipt.tests_total -ne ($receipt.tests_passed + $receipt.tests_skipped)) { throw 'verified_export_refused' }
+    $testAudit=Join-Path $work 'export\.codex-audit\verified-export'
+    $hookReport=Join-Path $testAudit 'd15.jsonl'; $junitReport=Join-Path $testAudit 'pytest.xml'
+    foreach ($pair in @(@($hookReport,$receipt.hook_report_sha256),@($junitReport,$receipt.junit_sha256))) {
+        if ($pair[1] -cnotmatch '^[0-9a-f]{64}$' -or
+            (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pair[1]) { throw 'verified_export_refused' }
+    }
+    # This object is meaningful only to the trusted caller invoking this pinned wrapper.
+    # The child's JSON alone never proves the identity or limits of a Job.
+    return [pscustomobject]@{schema='wd.verified-test-export-job-result.v1';status='PARTIAL';selection_coverage='UNKNOWN';job_outcome=$result.Outcome;job_cleanup=$result.Cleanup;job_exit=$result.ExitCode;intermediate=$receipt;audit_directory=$root;hook_report=$hookReport;junit_report=$junitReport;runner_sha256=$RunnerSha256;git_sha256=$GitSha256;python_sha256=$PythonSha256;same_user_path_race='UNKNOWN';child_filesystem_attestation='UNKNOWN'}
 }

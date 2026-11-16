@@ -120,13 +120,41 @@ def test_reparse_attributes_are_refused_without_following_target(tmp_path, monke
         export._plain(path)
 
 
-def test_execution_refuses_when_job_and_path_boundaries_unproven():
-    with pytest.raises(ValueError, match='execution_boundary_unproven'):
+def test_junit_counts_passed_and_skipped_separately():
+    data = b'<testsuites><testsuite><testcase name="a"/><testcase name="b"><skipped/></testcase></testsuite></testsuites>'
+    assert export._junit_counts(data) == {'tests_total': 2, 'tests_passed': 1, 'tests_skipped': 1}
+
+
+@pytest.mark.parametrize('data', [
+    b'<testsuites/>',
+    b'<testsuites><testcase><skipped/></testcase></testsuites>',
+    b'<testsuites><testcase/><testcase><failure/></testcase></testsuites>',
+    b'<testsuites><testcase/><testcase><error/></testcase></testsuites>',
+])
+def test_junit_refuses_empty_all_skipped_failed_and_error(data):
+    with pytest.raises(ValueError, match='junit'):
+        export._junit_counts(data)
+
+
+def test_real_pytest_collect_only_is_not_accepted_as_execution(tmp_path):
+    synthetic = tmp_path / 'test_synthetic.py'
+    synthetic.write_text('def test_example():\n    assert True\n', encoding='utf-8')
+    junit = tmp_path / 'collection.xml'
+    result = subprocess.run([sys.executable, '-B', '-m', 'pytest', '-q', '--collect-only',
+                             '--junitxml=' + str(junit), str(synthetic)], cwd=str(tmp_path),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    assert result.returncode == 0 and junit.is_file()
+    with pytest.raises(ValueError, match='junit'):
+        export._junit_counts(junit.read_bytes())
+
+
+def test_execution_refuses_without_any_windows_job(monkeypatch):
+    monkeypatch.setattr(export, '_inside_windows_job', lambda: False)
+    with pytest.raises(ValueError, match='job_membership_required'):
         export._run({})
 
 
 def test_wrong_d15_pin_refuses_before_creating_export(tmp_path, monkeypatch):
-    monkeypatch.setattr(export, '_execution_boundary_proven', lambda: True)
     monkeypatch.setattr(export, '_inside_windows_job', lambda: True)
     audit = tmp_path / '.codex-audit'
     work = audit / 'work'
@@ -155,12 +183,13 @@ def test_powershell_includes_unmodified_owned_job_and_bounds():
     assert b'Invoke-WdQ4ProcessJob -Executable' in content
     assert b'-TimeoutSeconds $TimeoutSeconds -MaxOutputBytes $MaxOutputBytes -DetailedOutcome' in content
     assert b"$result.Cleanup -cne 'confirmed'" in content
-    wrapper = content.split(b'function Invoke-WdVerifiedTestExport', 1)[1]
-    assert wrapper.index(b"throw 'verified_export_boundary_unproven'") < wrapper.index(b'[IO.Directory]::CreateDirectory')
+    assert b'wd.test-export-intermediate.v1' in content
+    assert b'wd.verified-test-export-job-result.v1' in content
+    assert b"same_user_path_race='UNKNOWN'" in content
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='PowerShell boundary guard is Windows-specific')
-def test_powershell_refuses_before_creating_any_workspace(tmp_path):
+def test_powershell_refuses_unpinned_executables_before_creating_any_workspace(tmp_path):
     powershell = Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     script = Path(__file__).resolve().parents[2] / 'tools' / 'Invoke-WdVerifiedTestExport.ps1'
     workspace = tmp_path / 'must-not-be-created'
@@ -171,8 +200,32 @@ def test_powershell_refuses_before_creating_any_workspace(tmp_path):
                "-Commit ('a'*40) -GitExecutable 'C:\\fake.exe' -GitSha256 ('b'*64) "
                "-PythonExecutable 'C:\\fake.exe' -PythonSha256 ('c'*64) "
                "-RunnerSha256 ('d'*64) -D15HookPath 'C:\\fake.py' -Targets 'tests/a.py' | Out-Null; exit 7 "
-               "} catch { if ($_.Exception.Message -eq 'verified_export_boundary_unproven') { exit 0 }; exit 8 }")
+               "} catch { exit 0 }")
     result = subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-Command', command],
                             capture_output=True, timeout=30)
     assert result.returncode == 0
     assert not workspace.exists()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Owned Job Object is Windows-specific')
+def test_owned_job_timeout_and_output_cap_leave_confirmed_cleanup(tmp_path):
+    powershell = Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    script = Path(__file__).resolve().parents[2] / 'tools' / 'Invoke-WdVerifiedTestExport.ps1'
+    work, scratch = tmp_path / 'work', tmp_path / 'scratch'
+    work.mkdir()
+    scratch.mkdir()
+    def quote(path): return str(path).replace("'", "''")
+    command = (f". '{quote(script)}'; "
+               f"$a=Invoke-WdQ4ProcessJob -Executable '{quote(sys.executable)}' "
+               f"-Arguments @('-c','import time;time.sleep(20)') -WorkingDirectory '{quote(work)}' "
+               f"-ScratchRoot '{quote(scratch)}' -InputBytes ([byte[]]@()) -TimeoutSeconds 1 -MaxOutputBytes 2048 -DetailedOutcome; "
+               f"$b=Invoke-WdQ4ProcessJob -Executable '{quote(sys.executable)}' "
+               f"-Arguments @('-c','print(\"x\"*1048576)') -WorkingDirectory '{quote(work)}' "
+               f"-ScratchRoot '{quote(scratch)}' -InputBytes ([byte[]]@()) -TimeoutSeconds 20 -MaxOutputBytes 512 -DetailedOutcome; "
+               "@($a,$b) | Select-Object Outcome,Cleanup,ExitCode | ConvertTo-Json -Compress")
+    result = subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=40, check=True)
+    values = __import__('json').loads(result.stdout)
+    assert values[0]['Outcome'] == 'timeout' and values[0]['Cleanup'] == 'confirmed'
+    assert values[1]['Outcome'] == 'refused' and values[1]['Cleanup'] == 'confirmed'
+    assert values[0]['ExitCode'] is None and values[1]['ExitCode'] is None

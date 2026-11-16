@@ -21,3 +21,14 @@ ops/windows/reboot/WaggleDanceSwarmAi.png binary
 # The reboot bundle carries an exact, hash-verified copy of the operator's
 # Codex prompt watcher. Never rewrite its bytes during checkout.
 ops/windows/reboot/Watch-CodexPrompts.ps1 binary
+
+# Preserve exact bytes for Mind source and its hash-bound dependencies.
+# The binary macro disables text conversion, textual diff and automatic merge.
+tools/wd_bridge_mind.py binary
+waggledance/core/bridge_log_reader.py binary
+tools/wd_mind_content_prefix_readonly.py binary
+tools/wd_mind_absent_generation_prefix_readonly.py binary
+tools/bridge_compact_view.py binary
+waggledance/__init__.py binary
+tools/wd_mind_content_query_readonly.py binary
+tools/wd_mind_runtime_manifest.py binary

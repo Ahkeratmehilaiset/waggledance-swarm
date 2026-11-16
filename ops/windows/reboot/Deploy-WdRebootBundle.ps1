@@ -917,6 +917,9 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $MindOperatorPolicyPath = '',
+    [string] $MindOperatorPolicySha256 = '',
+    [string] $MindOperatorApprovalReferenceSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -936,6 +939,9 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $MindOperatorPolicyPath = '',
+    [string] $MindOperatorPolicySha256 = '',
+    [string] $MindOperatorApprovalReferenceSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -951,6 +957,9 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string] $Generation,
+    [string] $MindOperatorPolicyPath = '',
+    [string] $MindOperatorPolicySha256 = '',
+    [string] $MindOperatorApprovalReferenceSha256 = '',
     [switch] $ValidateOnly
 )
 '@

@@ -87,8 +87,8 @@ def _snapshot_thaw(frozen):
     return result
 
 
-def _source_check(context, expected_size=None):
-    """Verify exact size, identity, generation and entire pinned prefix."""
+def _source_check(context):
+    """Verify identity, minimum size, generation and entire pinned prefix."""
     bridge, absent = r._narrow_dependencies()
     messages = context['messages']
     source, sidecar = Path(messages['source_path']), Path(messages['generation_path'])
@@ -96,9 +96,6 @@ def _source_check(context, expected_size=None):
     digest = hashlib.sha256()
     with bridge._open_log(source) as stream:
         r._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
-        size = os.fstat(stream.fileno()).st_size
-        if expected_size is not None and size != expected_size:
-            raise ValueError('size_changed')
         remaining = cursor.offset
         while remaining:
             block = stream.read(min(1024 * 1024, remaining))
@@ -109,9 +106,6 @@ def _source_check(context, expected_size=None):
         if not hmac.compare_digest(digest.hexdigest(), context['decision']['source_prefix']['sha256']):
             raise ValueError('prefix_changed')
         r._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
-        if os.fstat(stream.fileno()).st_size != size:
-            raise ValueError('size_changed')
-    return size
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -119,7 +113,6 @@ class _VerifiedState:
     snapshot: tuple
     records: object
     entries: object
-    source_size: int
     report: object
     output_binding: object
     encoder_binding: bytes
@@ -137,7 +130,7 @@ def _prepare_state(values, gate):
     snapshot = {key: values[key] for key in r._Q4_SOURCE_KEYS}
     snapshot['messages'] = dict(snapshot['messages'])
     projection, context, initial_report = gate.verify_snapshot(snapshot)
-    source_size = _source_check(context)
+    _source_check(context)
     cursor = snapshot['messages']['end_cursor']
     snapshot['messages']['end_cursor'] = type(cursor)(cursor.offset, cursor.file_identity, cursor.generation)
     frozen_snapshot = _snapshot_copy(snapshot)
@@ -193,13 +186,13 @@ def _prepare_state(values, gate):
     entries = r._q4_decode_cells_complete_v1(captured, provider, records, retain=True)
     checkpoint()
     _, end_context, _ = gate.verify_snapshot(snapshot, _return_projection=False)
-    _source_check(end_context, source_size)
+    _source_check(end_context)
     output_binding = {key: values[key] for key in (
         'descriptor_sha256', 'memory_sha256', 'projection_sha256', 'encoder_sha256',
         'encoder_binding_sha256', 'index_binding_sha256', 'policy_sha256', 'roster_sha256',
         'decision_sha256', 'approved_tasks_sha256')}
     output_binding['task_scope_sha256'] = output_binding.pop('approved_tasks_sha256')
-    return _VerifiedState(frozen_snapshot, r._freeze_json(records), r._freeze_json(entries), source_size,
+    return _VerifiedState(frozen_snapshot, r._freeze_json(records), r._freeze_json(entries),
         r._freeze_json(initial_report), MappingProxyType(output_binding), values['encoder_binding_bytes'],
         values['encoder_binding_sha256'], values['index_binding_bytes'], values['index_binding_sha256'], scalar_items,
         tuple(sorted(memory['cells'])))
@@ -231,26 +224,22 @@ class _RetainedQueryOwner:
             if not self._lock.acquire(blocking=False):
                 raise ValueError('busy')
             try:
-                return self._query(query_bytes)
-            except BaseException:
-                self._drop()
-                raise
+                if _pid() != self._pid:
+                    raise ValueError('foreign_process')
+                query, when = _parse_query(query_bytes)
+                try:
+                    return self._query(query, when)
+                except BaseException:
+                    self._drop()
+                    raise
             finally:
                 self._lock.release()
         return _public(run)
 
-    def _query(self, query_bytes):
+    def _query(self, query, when):
         state, gate = self._state, self._gate
         if state is None or gate is None or _pid() != self._pid:
             raise ValueError('closed')
-        if type(query_bytes) is not bytes or not 0 < len(query_bytes) <= 65536:
-            raise ValueError('query')
-        query = json.loads(query_bytes, object_pairs_hook=r._unique_pairs, parse_constant=r._bad_constant)
-        if (type(query) is not dict or set(query) != {'situation', 'time'}
-                or type(query['situation']) is not str or not query['situation'].strip()
-                or len(query['situation']) > 4000):
-            raise ValueError('query')
-        when = r._utc(query['time'])
         snapshot = _snapshot_thaw(state.snapshot)
         controls = dict(state.memory_controls)
         controls.update(snapshot)
@@ -262,7 +251,7 @@ class _RetainedQueryOwner:
         _, context, report = gate.verify_snapshot(snapshot, _return_projection=False)
         if r._freeze_json(report) != state.report:
             raise ValueError('report_changed')
-        _source_check(context, state.source_size)
+        _source_check(context)
         encoder_binding = r._pinned(state.encoder_binding, state.encoder_binding_sha)
         index_binding = r._pinned(state.index_binding, state.index_binding_sha)
         r._q4_provider_identity(encoder_provider, encoder_binding, 'query')
@@ -305,8 +294,20 @@ class _RetainedQueryOwner:
         # Do not invoke them after the final selected-row and prefix checks.
         gate.recheck_selection(snapshot)
         _, context, _ = gate.verify_snapshot(snapshot, _return_projection=False)
-        _source_check(context, state.source_size)
+        _source_check(context)
         return output
+
+
+def _parse_query(query_bytes):
+    """Reject malformed caller input without invalidating shared state."""
+    if type(query_bytes) is not bytes or not 0 < len(query_bytes) <= 65536:
+        raise ValueError('query')
+    query = json.loads(query_bytes, object_pairs_hook=r._unique_pairs, parse_constant=r._bad_constant)
+    if (type(query) is not dict or set(query) != {'situation', 'time'}
+            or type(query['situation']) is not str or not query['situation'].strip()
+            or len(query['situation']) > 4000):
+        raise ValueError('query')
+    return query, r._utc(query['time'])
 
 
 def create_retained_query_owner(*, enabled=False, bundle_root=None,

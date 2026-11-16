@@ -231,6 +231,66 @@ def test_candidate_ipc_serves_all_five_lanes_as_unverified_references():
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
+def test_candidate_ipc_five_simultaneous_lane_queries_close_cleanly():
+    lanes = ('codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
+    release_owner = threading.Event()
+    start_gate = threading.Barrier(6, timeout=10)
+    started_gate = threading.Barrier(6, timeout=10)
+    requests, queries, results, errors = {}, {}, {}, []
+
+    class Owner:
+        def candidates(self, request):
+            if not release_owner.wait(10):
+                raise TimeoutError('test owner not released')
+            response = _candidate_frame(request)
+            response['candidates'][0]['source_event_sha256'] = _hash(request['lane'].encode())
+            return response
+
+    name = preflight.local_candidate_pipe_name(manifest_sha256=_hash(os.urandom(32)))
+    service = preflight.create_local_candidate_service(enabled=True, owner=Owner(), pipe_name=name)
+    service.start()
+    workers = []
+    def run(lane):
+        try:
+            start_gate.wait()
+            queries[lane].start()
+            started_gate.wait()
+            results[lane] = queries[lane].wait(timeout=30)
+        except BaseException as exc:
+            errors.append((lane, exc))
+
+    try:
+        for lane in lanes:
+            request = _candidate_request(lane, 'shared' if lane.startswith('claude-') else 'own')
+            request['nonce'] = _hash(('nonce:' + lane).encode())
+            requests[lane] = request
+            queries[lane] = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=request)
+            worker = threading.Thread(target=run, args=(lane,))
+            workers.append(worker)
+            worker.start()
+        start_gate.wait()
+        started_gate.wait()
+        release_owner.set()
+        for worker in workers:
+            worker.join(timeout=35)
+        assert not errors and all(not worker.is_alive() for worker in workers)
+        assert set(results) == set(lanes)
+        for lane in lanes:
+            result = results[lane]
+            assert result['status'] == 'CANDIDATES'
+            frame = json.loads(result['candidate_frame'])
+            assert frame['lane'] == lane and frame['nonce'] == requests[lane]['nonce']
+            assert frame['candidates'][0]['source_event_sha256'] == _hash(lane.encode())
+    finally:
+        release_owner.set()
+        for worker in workers:
+            worker.join(timeout=35)
+        for query in queries.values():
+            assert query.close(timeout=10)['state'] == 'STOPPED'
+        assert service.close(timeout=10)['state'] == 'STOPPED'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
 def test_candidate_ipc_rejects_text_and_retains_owner_on_timeout():
     gate = threading.Event()
     entered = threading.Event()

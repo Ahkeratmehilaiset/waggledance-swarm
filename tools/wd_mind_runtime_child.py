@@ -2156,6 +2156,12 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         control_thread.start()
         while not stop.is_set():
             owner_status = adapter.status()
+            # A query holds the owner's lock; BUSY is not an owner failure.
+            # Only tolerate it after the service has already reported READY.
+            if (type(owner_status) is dict and owner_status.get('state') == 'BUSY'
+                    and service is not None and last_state == 'READY'):
+                stop.wait(0.1)
+                continue
             if type(owner_status) is not dict or owner_status.get('state') not in ('STARTING', 'READY'):
                 failed = True
                 break

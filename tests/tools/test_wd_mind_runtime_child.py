@@ -361,6 +361,77 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
     assert policy.decode() not in json.dumps(statuses)
 
 
+def test_candidate_owner_monitor_keeps_service_alive_during_locked_query(monkeypatch):
+    from tools import wd_mind_runtime_process as process
+
+    ready, busy_seen, queries_done = (threading.Event() for _ in range(3))
+    policy = b'synthetic-policy'
+    source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
+    statuses, results = [], []
+
+    class Input:
+        def read(self, size):
+            value = source.read(size)
+            if value:
+                return value
+            assert queries_done.wait(5)
+            return b'S'
+
+    class Output:
+        def write(self, data):
+            raw = bytes(data)
+            state = json.loads(raw)['state']
+            statuses.append(state)
+            if state == 'READY':
+                ready.set()
+            return len(raw)
+        def flush(self): pass
+
+    class Owner:
+        def __init__(self):
+            self._owner = self
+            self.lock = threading.Lock()
+        def start(self): return {'state': 'STARTING'}
+        def status(self):
+            if not self.lock.acquire(blocking=False):
+                busy_seen.set()
+                return {'state': 'BUSY', 'owned': None}
+            self.lock.release()
+            return {'state': 'READY', 'owned': True}
+        def located_candidates(self, request):
+            with self.lock:
+                if not results:
+                    assert busy_seen.wait(5)
+                results.append(request)
+                return {'status': 'ABSTAIN'}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+
+    owner = Owner()
+    class Service:
+        def start(self):
+            def query():
+                try:
+                    assert ready.wait(5)
+                    owner.located_candidates('first')
+                    owner.located_candidates('second')
+                finally:
+                    queries_done.set()
+            self.worker = threading.Thread(target=query)
+            self.worker.start()
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, *, timeout):
+            self.worker.join(timeout=1)
+            return {'state': 'STOPPED' if not self.worker.is_alive() else 'HOLD'}
+
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: owner)
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    result = child._local_candidate_owner_entry(control_stream=Input(), output_stream=Output(),
+        bundle_root='synthetic', expected_manifest_sha256='a'*64,
+        policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64)
+    assert busy_seen.is_set() and results == ['first', 'second']
+    assert result == 0 and 'HOLD' not in statuses
+
+
 def test_fixed_local_candidate_owner_cli_uses_named_pins(monkeypatch):
     monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a'*64)
     seen = []

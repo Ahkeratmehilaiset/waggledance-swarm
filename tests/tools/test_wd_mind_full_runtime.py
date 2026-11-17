@@ -41,6 +41,24 @@ def test_cached_vectors_reject_changed_or_missing_screened_record(monkeypatch):
         runtime._cache_vectors_from_rows({'old': first}, ((key, passage, vector), (key, passage, vector)))
 
 
+def test_cache_binding_ignores_unrelated_bundle_but_binds_policy_and_model(monkeypatch):
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_checked_encoder_binding', lambda raw, digest: None)
+    monkeypatch.setattr(reader, 'module_sha256s', lambda: {'content_module_sha256': '1' * 64})
+    cursor = SimpleNamespace(offset=12, file_identity='synthetic-file', generation=None)
+    snapshot = {'messages': {'end_cursor': cursor}, 'approved_tasks_bytes': b'synthetic-scope'}
+    args = {'cursor': cursor, 'expected_prefix_sha256': '2' * 64}
+    controls = (b'irrelevant-fleet-metadata', b'roster', b'policy')
+    first = runtime._PrivateBinding(snapshot, Path('bundle-a'), 'a' * 64, controls, args, '3' * 64)
+    second = runtime._PrivateBinding(snapshot, Path('bundle-b'), 'b' * 64, controls, args, '3' * 64)
+    one = runtime._cache_snapshot_binding(first, snapshot, b'encoder', '4' * 64)
+    assert one == runtime._cache_snapshot_binding(second, snapshot, b'encoder', '4' * 64)
+    changed = runtime._PrivateBinding(snapshot, Path('bundle-b'), 'b' * 64, controls, args, '5' * 64)
+    assert one['policy_sha256'] != runtime._cache_snapshot_binding(changed, snapshot, b'encoder', '4' * 64)['policy_sha256']
+    assert one['model_sha256'] != runtime._cache_snapshot_binding(first, snapshot, b'encoder', '6' * 64)['model_sha256']
+
+
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     """Constructing a disabled/default owner must not start a worker."""
     from tools import wd_mind_full_runtime as runtime

@@ -1078,6 +1078,36 @@ def _cache_record_keys(record):
     return reader._sha(reader._canonical(record)), reader._sha(passage.encode('utf-8'))
 
 
+def _cache_snapshot_binding(binding, snapshot, encoder_binding_bytes, encoder_binding_sha256):
+    """Pin inputs that affect screened passages or vectors, independently of bundle ID."""
+    if type(binding) is not _PrivateBinding or type(snapshot) is not dict:
+        raise ValueError('cache_binding')
+    _checked_encoder_binding(encoder_binding_bytes, encoder_binding_sha256)
+    args = binding._PrivateBinding__args
+    controls = binding._PrivateBinding__controls
+    cursor = args['cursor']
+    if (type(cursor.offset) is not int or cursor.offset < 0
+            or type(cursor.file_identity) is not str or not cursor.file_identity
+            or type(controls) is not tuple or len(controls) != 3
+            or not all(type(item) is bytes for item in controls)
+            or not reader._hex(binding._PrivateBinding__policy_pin)
+            or not reader._hex(args['expected_prefix_sha256'])
+            or snapshot['messages']['end_cursor'] != cursor):
+        raise ValueError('cache_binding')
+    policy = {'roster_sha256': reader._sha(controls[1]),
+              'message_policy_sha256': reader._sha(controls[2]),
+              'identifier_policy_sha256': binding._PrivateBinding__policy_pin,
+              'scope_sha256': reader._sha(snapshot['approved_tasks_bytes'])}
+    projection_code = {'modules': reader.module_sha256s(),
+                       'dependencies': reader._REQUIRED_CODE,
+                       'passage_algorithm': 'passage-prefix-utf8-truncate-2000-v1'}
+    return {'source_identity_sha256': reader._sha(reader._canonical(cursor.file_identity)),
+            'source_generation_sha256': reader._sha(reader._canonical(cursor.generation)),
+            'prefix_offset': cursor.offset, 'prefix_sha256': args['expected_prefix_sha256'],
+            'model_sha256': encoder_binding_sha256, 'policy_sha256': reader._sha(reader._canonical(policy)),
+            'projection_code_sha256': reader._sha(reader._canonical(projection_code))}
+
+
 def _cache_vectors_from_rows(by_id, rows):
     """Accept the entire old screened set or reject the entire cache."""
     if type(by_id) is not dict or type(rows) is not tuple:

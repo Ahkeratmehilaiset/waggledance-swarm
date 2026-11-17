@@ -89,7 +89,7 @@ def checked_policy(self):
     checks['policy'] += 1
     return real_policy(self)
 runtime._SingleManifestOwner._check_policy_anchor = checked_policy
-def synthetic_factory(self, *, owner_sink):
+def synthetic_factory(self, *, owner_sink, call_deadline):
     # Rotation must release every preceding worker before reserving the next.
     assert all(item.poll() == 0 for item in processes)
     assert all(item.closed for item in jobs)

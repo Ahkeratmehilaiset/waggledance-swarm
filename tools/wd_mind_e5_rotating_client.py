@@ -125,8 +125,12 @@ class RotatingGracefulE5Client:
             raise ValueError('owner_changed')
         self._owner = owner
 
-    def _start(self):
-        result = self._factory(owner_sink=self._capture_owner)
+    def _start(self, call_deadline):
+        if time.monotonic() >= call_deadline:
+            raise ValueError('deadline')
+        # There is deliberately no legacy owner_sink-only fallback: a factory
+        # unable to receive the original deadline must not create a worker.
+        result = self._factory(owner_sink=self._capture_owner, call_deadline=call_deadline)
         if type(result) is not dict:
             raise ValueError('start')
         returned = result.get('owner')
@@ -138,6 +142,9 @@ class RotatingGracefulE5Client:
         client = result.get('client')
         # Store first, before further fallible checks, to retain its resources.
         self._client = client
+        if time.monotonic() >= call_deadline:
+            self._hold = True
+            raise ValueError('deadline')
         if (result.get('status') != 'READY' or type(client) is not GracefulE5WorkerClient
                 or client.owner is not self._owner or client._binding_sha256 != self._binding
                 or client._bulk_contract_sha256 != self._bulk_contract_sha256
@@ -276,6 +283,8 @@ class RotatingGracefulE5Client:
                         or call_deadline is not None and (type(call_deadline) not in (int, float)
                            or not math.isfinite(call_deadline) or time.monotonic() >= call_deadline)):
                     raise ValueError('arguments')
+                limit = time.monotonic() + self._timeout
+                call_deadline = min(float(call_deadline), limit) if call_deadline is not None else limit
                 frozen = json.dumps(request, sort_keys=True, ensure_ascii=False,
                                     separators=(',', ':'), allow_nan=False).encode('utf-8')
                 request = json.loads(frozen.decode('utf-8'))
@@ -303,7 +312,7 @@ class RotatingGracefulE5Client:
                 if call_deadline is not None and time.monotonic() >= call_deadline:
                     raise ValueError('deadline')
                 if self._client is None:
-                    self._start()
+                    self._start(call_deadline)
 
                 def guarded_frame_check():
                     self._check_worker_identity()

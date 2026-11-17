@@ -940,7 +940,7 @@ def test_rotating_adapter_uses_real_cooperative_pumps_across_rotation(rotating_b
     processes, nonces = [], iter(['a' * 64, 'b' * 64, 'c' * 64])
     monkeypatch.setattr(adapter.secrets, 'token_hex', lambda _: next(nonces))
 
-    def launch(self, *, owner_sink):
+    def launch(self, *, owner_sink, call_deadline):
         assert self is factory
         process = Process(response(0, 0))
         processes.append(process)

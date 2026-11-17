@@ -86,7 +86,7 @@ class Factory:
         self.hold, self.fail_after_sink = hold, fail_after_sink
         self.owners = []
 
-    def __call__(self, *, owner_sink=None):
+    def __call__(self, *, owner_sink=None, call_deadline):
         owner = FakeOwner(hold=self.hold)
         self.owners.append(owner)
         if owner_sink is not None:
@@ -106,6 +106,84 @@ def create(factory, check=lambda: SNAPSHOT):
     return rotation.RotatingGracefulE5Client(
         factory=factory, encoder_binding_sha256=BINDING, snapshot_sha256=SNAPSHOT,
         source_check=check, shutdown_timeout=1, call_timeout=30, bulk_contract_sha256=BULK)
+
+
+def test_factory_receives_same_absolute_caller_deadline(fake_client, monkeypatch):
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(rotation, 'time', SimpleNamespace(monotonic=lambda: clock.value))
+    received = []
+    def factory(*, owner_sink, call_deadline):
+        received.append(call_deadline)
+        return Factory()(owner_sink=owner_sink, call_deadline=call_deadline)
+    rotator = create(factory)
+    try:
+        rotator.encode_supervised(request(123), call_deadline=112.5)
+        assert received == [112.5]
+    finally:
+        rotator.close(timeout=1)
+
+
+@pytest.mark.parametrize('requested', [None, 200.0])
+def test_factory_deadline_is_capped_to_configured_timeout(fake_client, monkeypatch, requested):
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(rotation, 'time', SimpleNamespace(monotonic=lambda: clock.value))
+    received = []
+    def factory(*, owner_sink, call_deadline):
+        received.append(call_deadline)
+        return Factory()(owner_sink=owner_sink, call_deadline=call_deadline)
+    rotator = create(factory)
+    try:
+        rotator.encode_supervised(request(127), call_deadline=requested)
+        assert received == [130.0]
+    finally:
+        rotator.close(timeout=1)
+
+
+def test_expiry_during_source_check_does_not_call_factory(fake_client, monkeypatch):
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(rotation, 'time', SimpleNamespace(monotonic=lambda: clock.value))
+    calls = []
+    def source_check():
+        clock.value = 111.0
+        return SNAPSHOT
+    def factory(*, owner_sink, call_deadline):
+        calls.append(True)
+        return Factory()(owner_sink=owner_sink, call_deadline=call_deadline)
+    rotator = create(factory, source_check)
+    with pytest.raises(rotation.RotationRefused):
+        rotator.encode_supervised(request(128), call_deadline=110.0)
+    assert calls == [] and rotator.owner is None
+
+
+def test_slow_factory_deadline_refusal_retains_unclosed_owner(fake_client, monkeypatch):
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(rotation, 'time', SimpleNamespace(monotonic=lambda: clock.value))
+    owners, calls = [], []
+    def factory(*, owner_sink, call_deadline):
+        calls.append(call_deadline)
+        owner = FakeOwner(hold=True)
+        owners.append(owner)
+        owner_sink(owner)
+        clock.value = call_deadline + 1
+        return {'status': 'READY', 'owner': owner, 'client': FakeClient(owner), 'bulk_contract_sha256': BULK}
+    rotator = create(factory)
+    with pytest.raises(rotation.RotationRefused):
+        rotator.encode_supervised(request(124), call_deadline=110.0)
+    assert calls == [110.0] and rotator.owner is owners[0] and owners[0].owned
+    with pytest.raises(rotation.RotationRefused):
+        rotator.encode_supervised(request(125), call_deadline=120.0)
+    assert len(owners) == 1
+
+
+def test_legacy_factory_is_not_called_without_deadline_support(fake_client):
+    calls = []
+    def old_factory(*, owner_sink):
+        calls.append(True)
+        return Factory()(owner_sink=owner_sink)
+    rotator = create(old_factory)
+    with pytest.raises(rotation.RotationRefused):
+        rotator.encode_supervised(request(126))
+    assert calls == [] and rotator.owner is None
 
 
 def test_rotates_before_exceeding_cumulative_bytes_and_preserves_result(fake_client, monkeypatch):
@@ -324,8 +402,8 @@ def test_worker_uses_bounded_launch_remainder_across_rotations(fake_client, monk
     factory = Factory()
     remaining = iter((29.99, 0.001))
 
-    def launch(*, owner_sink):
-        result = factory(owner_sink=owner_sink)
+    def launch(*, owner_sink, call_deadline):
+        result = factory(owner_sink=owner_sink, call_deadline=call_deadline)
         result['client']._timeout = next(remaining)
         return result
 
@@ -344,8 +422,8 @@ def test_worker_uses_bounded_launch_remainder_across_rotations(fake_client, monk
 def test_worker_rejects_invalid_or_unbounded_launch_remainder(fake_client, bad_timeout):
     factory = Factory()
 
-    def launch(*, owner_sink):
-        result = factory(owner_sink=owner_sink)
+    def launch(*, owner_sink, call_deadline):
+        result = factory(owner_sink=owner_sink, call_deadline=call_deadline)
         result['client']._timeout = bad_timeout
         return result
 
@@ -399,7 +477,7 @@ def test_resource_replacement_in_frame_check_refuses_without_result(fake_client)
 
 def test_owner_conflicts_are_retained_and_no_second_worker_is_started(fake_client):
     owners = [FakeOwner(), FakeOwner()]
-    def bad_factory(*, owner_sink):
+    def bad_factory(*, owner_sink, call_deadline):
         owner_sink(owners[0])
         owner_sink(owners[1])
     client = create(bad_factory)
@@ -413,7 +491,7 @@ def test_owner_conflicts_are_retained_and_no_second_worker_is_started(fake_clien
 
 def test_interruption_after_sink_preserves_captured_owner(fake_client):
     owner = FakeOwner()
-    def interrupted(*, owner_sink):
+    def interrupted(*, owner_sink, call_deadline):
         owner_sink(owner)
         raise KeyboardInterrupt()
     client = create(interrupted)
@@ -434,7 +512,7 @@ def test_rotation_uses_real_cooperative_pumps_and_protocol(monkeypatch):
     monkeypatch.setattr(lifecycle, 'BULK_STDOUT_BYTES', budget)
     processes = []
 
-    def factory(*, owner_sink):
+    def factory(*, owner_sink, call_deadline):
         process = Process(response(0, 0))
         processes.append(process)
 

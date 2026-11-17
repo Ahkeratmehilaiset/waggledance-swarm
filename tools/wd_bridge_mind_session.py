@@ -520,6 +520,43 @@ def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None,
     return output
 
 
+# Startup limits source bytes returned by unbuffered bridge-log reads. This is
+# independent of the result-frame bound and does not bound other file IO.
+_STARTUP_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
+
+
+class _SourceReadBudget:
+    __slots__ = ('_remaining', '_lock')
+
+    def __init__(self, limit):
+        if type(limit) is not int or limit <= 0:
+            raise ValueError('source_budget')
+        self._remaining, self._lock = limit, threading.Lock()
+
+    def require(self, count):
+        if type(count) is not int or count < 0:
+            raise ValueError('source_budget')
+        with self._lock:
+            if count > self._remaining:
+                raise ValueError('source_budget')
+
+    def reserve(self, count):
+        if type(count) is not int or count < 0:
+            raise ValueError('source_budget')
+        with self._lock:
+            if count > self._remaining:
+                raise ValueError('source_budget')
+            self._remaining -= count
+
+
+def _bounded_source_read(stream, budget, size):
+    if type(size) is not int or size < 0:
+        raise ValueError('source_budget')
+    if budget is not None:
+        budget.reserve(size)
+    return stream.read(size)
+
+
 class _SelectedReadDeadline(Exception):
     pass
 
@@ -643,13 +680,14 @@ def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
 class _SelectedRowResolver:
     """Process-local source verifier. Pipe peers supply locations, never text or pins."""
     __slots__ = ('_root', '_pin', '_policy_sha', '_approval_sha', '_controls', '_runtime_controls',
-                 '_cursor', '_prefix_sha', '_private', '_pid', '_lock', '_closed')
+                 '_cursor', '_prefix_sha', '_private', '_pid', '_lock', '_closed', '_source_budget')
 
-    def __init__(self, root, pin, policy_sha, approval_sha, controls, runtime_controls, cursor, prefix_sha, private):
+    def __init__(self, root, pin, policy_sha, approval_sha, controls, runtime_controls, cursor, prefix_sha, private, source_budget=None):
         self._root, self._pin = root, pin
         self._policy_sha, self._approval_sha = policy_sha, approval_sha
         self._controls, self._runtime_controls = controls, runtime_controls
         self._cursor, self._prefix_sha, self._private = cursor, prefix_sha, private
+        self._source_budget = source_budget
         self._pid, self._lock, self._closed = os.getpid(), threading.Lock(), False
 
     def __repr__(self):
@@ -702,10 +740,10 @@ class _SelectedRowResolver:
                     raise ValueError('row_boundary')
                 if offset > 0:
                     stream.seek(offset - 1)
-                    if stream.read(1) != b'\n':
+                    if _bounded_source_read(stream, self._source_budget, 1) != b'\n':
                         raise ValueError('row_boundary')
                 stream.seek(offset)
-                line = stream.read(size)
+                line = _bounded_source_read(stream, self._source_budget, size)
                 if len(line) != size or not line.endswith(b'\n') or b'\n' in line[:-1]:
                     raise ValueError('row_length')
                 rows = bridge._parse_rows(line, starts_at_zero=(offset == 0))
@@ -791,9 +829,13 @@ class _SelectedRowResolver:
             self._check_controls(); deadline()
             from tools import wd_mind_retained_query as retained
             context = self._context()
+            if self._source_budget is not None:
+                self._source_budget.reserve(self._cursor.offset)
             retained._source_check(context); deadline()
             first = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
             self._check_controls(); deadline()
+            if self._source_budget is not None:
+                self._source_budget.reserve(self._cursor.offset)
             retained._source_check(context); deadline()
             self._check_controls(); deadline()
             final = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
@@ -819,7 +861,7 @@ class _SelectedRowResolver:
 
 def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                                  identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
-                                 expected_approval_reference_sha256=None):
+                                 expected_approval_reference_sha256=None, source_read_limit=None):
     """Capture a locally pinned LF-complete prefix without deriving a projection or vectors.
 
     All inputs are independent caller-supplied pins. Prefix and selected rows are
@@ -834,6 +876,7 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
                 or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(), expected_identifier_policy_sha256)
                 or type(expected_approval_reference_sha256) is not str or not _SHA256.fullmatch(expected_approval_reference_sha256)):
             raise ValueError('input')
+        source_budget = None if source_read_limit is None else _SourceReadBudget(source_read_limit)
         _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256)
         from tools import wd_mind_content_query_readonly as reader
         from tools import wd_mind_content_snapshot_package as package
@@ -855,6 +898,9 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
             hmac.new(key, identifier_policy_bytes, hashlib.sha256).hexdigest(), allow_empty_v2=True)
         source, sidecar = Path(controls[0]), Path(controls[1])
         bridge, absent = reader._narrow_dependencies()
+        # The tail reader may read one extra byte to check the leading boundary.
+        if source_budget is not None:
+            source_budget.reserve(bridge.MAX_MAX_BYTES + 1)
         tail = bridge.read_bridge_log_tail_lines(source, tail_rows=1, max_bytes=bridge.MAX_MAX_BYTES,
                                                 generation_path=sidecar)
         if (tail.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
@@ -864,16 +910,20 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
         cursor = bridge.BridgeCursor(tail.end_offset, tail.file_identity, tail.generation)
         if bridge._validate_cursor(cursor):
             raise ValueError('source_cursor')
+        if source_budget is not None:
+            # This single startup query needs one initial and three retained
+            # prefix checks; refuse before scanning if they cannot all fit.
+            source_budget.require(1 + 4 * cursor.offset)
         with bridge._open_log(source) as stream:
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
             stream.seek(cursor.offset - 1)
-            if stream.read(1) != b'\n':
+            if _bounded_source_read(stream, source_budget, 1) != b'\n':
                 raise ValueError('source_boundary')
             stream.seek(0)
             digest = hashlib.sha256()
             remaining = cursor.offset
             while remaining:
-                block = stream.read(min(1024 * 1024, remaining))
+                block = _bounded_source_read(stream, source_budget, min(1024 * 1024, remaining))
                 if not block:
                     raise ValueError('source_short')
                 digest.update(block)
@@ -881,8 +931,10 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
         result = _SelectedRowResolver(bundle_root, expected_manifest_sha256,
             expected_identifier_policy_sha256, expected_approval_reference_sha256, controls,
-            runtime_controls, cursor, digest.hexdigest(), private)
+            runtime_controls, cursor, digest.hexdigest(), private, source_budget)
         from tools import wd_mind_retained_query as retained
+        if source_budget is not None:
+            source_budget.reserve(cursor.offset)
         retained._source_check(result._context())
         result._check_controls()
         return result
@@ -1422,7 +1474,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
                 state['resolver'] = create_selected_row_resolver(enabled=True, bundle_root=bundle_root,
                     expected_manifest_sha256=manifest_pin, identifier_policy_bytes=policy,
                     expected_identifier_policy_sha256=policy_pin,
-                    expected_approval_reference_sha256=approval)
+                    expected_approval_reference_sha256=approval, source_read_limit=_STARTUP_SOURCE_READ_LIMIT)
                 policy = None
                 if time.monotonic() >= deadline:
                     raise ValueError('deadline')

@@ -1278,8 +1278,8 @@ def test_review_set_job_failure_retains_job_only_hold_channel(staged_graceful, m
         lifecycle.reserve(enabled=True)
 
 
-def test_review_spawn_and_job_close_failure_return_owner_without_raw_error(staged_graceful, monkeypatch,
-                                                                          synthetic_worker_admission, synthetic_held_keeper):
+def test_review_uncertain_spawn_retained_with_synthetic_keeper(staged_graceful, monkeypatch,
+                                                              synthetic_worker_admission, synthetic_held_keeper):
     from test_wd_mind_e5_lifecycle import Job
     from tools import wd_mind_e5_lifecycle as lifecycle
     job, failed = Job(), threading.Event()

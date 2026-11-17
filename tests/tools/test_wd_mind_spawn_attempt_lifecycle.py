@@ -168,3 +168,57 @@ def test_shutdown_between_attempt_and_bind_still_drains_cooperatively():
         assert process.stdin.closed and job.closed
     finally:
         adoption_allowed.set()
+
+
+def test_actual_keeper_waits_on_ambiguous_attempt_without_releasing(monkeypatch):
+    owner, job = lifecycle._Owner(require_spawn_attempt=True), _Job()
+    owner.mark_job_attempt()
+    owner.set_job(job)
+    owner.mark_spawn_attempt()
+    assert owner.shutdown(timeout=0)['owned'] is True
+    entered, release = threading.Event(), threading.Event()
+    observed = []
+
+    class _StopSyntheticWait(Exception):
+        pass
+
+    def barrier_wait(*args, **kwargs):
+        entered.set()
+        release.wait(2)
+        raise _StopSyntheticWait
+
+    def exercise_keeper():
+        try:
+            owner._keep()
+        except _StopSyntheticWait:
+            observed.append('waited')
+
+    monkeypatch.setattr(owner._condition, 'wait', barrier_wait)
+    thread = threading.Thread(target=exercise_keeper, daemon=True)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        assert not job.closed and owner._owned is True
+    finally:
+        release.set()
+        thread.join(timeout=2)
+    assert not thread.is_alive() and observed == ['waited']
+    assert owner.status()['state'] == 'HOLD' and owner.status()['owned'] is True
+
+
+def test_actual_keeper_drains_bound_synthetic_worker_before_release():
+    from test_wd_mind_e5_lifecycle import Process
+
+    owner = lifecycle.reserve(enabled=True, require_spawn_attempt=True)
+    job, process = _Job(), Process()
+    try:
+        owner.mark_job_attempt()
+        owner.set_job(job)
+        owner.mark_spawn_attempt()
+        owner.bind(process)
+        status = owner.shutdown(timeout=2)
+        owner._keeper.join(timeout=2)
+        assert status['owned'] is False and status['state'] == 'EXITED'
+        assert process.stdin.closed and job.closed and not owner._keeper.is_alive()
+    finally:
+        process.finish()

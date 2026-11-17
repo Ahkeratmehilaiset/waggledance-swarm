@@ -29,7 +29,7 @@ sys.modules[_full_spec.name] = _full_fixtures
 _full_spec.loader.exec_module(_full_fixtures)
 
 
-def _instrument_source_streams(monkeypatch, source):
+def _instrument_source_streams(monkeypatch, source, tagger=None):
     """Count every source read, including reads bypassing a budget helper."""
     dependencies = reader._narrow_dependencies()
     original = prefix.bridge._open_log
@@ -49,12 +49,12 @@ def _instrument_source_streams(monkeypatch, source):
         def read(self, *args):
             data = self._wrapped.read(*args)
             with lock:
-                reads.append(('read', len(data)))
+                reads.append(('read', len(data)) if tagger is None else ('read', len(data), tagger()))
             return data
         def readline(self, *args):
             data = self._wrapped.readline(*args)
             with lock:
-                reads.append(('readline', len(data)))
+                reads.append(('readline', len(data)) if tagger is None else ('readline', len(data), tagger()))
             return data
 
     def opened(path):
@@ -300,8 +300,9 @@ def test_real_retained_query_charges_three_prefixes_and_selected_rows(
 
 
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
+@pytest.mark.parametrize('exhaust', [False, True], ids=['complete', 'mid_query_exhausted'])
 def test_candidate_request_charges_real_synthetic_source_reads(
-        synthetic_checkout_pins, flat_consumer_case, monkeypatch, located):
+        synthetic_checkout_pins, flat_consumer_case, monkeypatch, located, exhaust):
     import json
 
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
@@ -332,19 +333,106 @@ def test_candidate_request_charges_real_synthetic_source_reads(
     budgets = []
     original = runtime._startup_owner_source_budget
     def capture(snapshot):
-        budget = original(snapshot)
+        budget = (prefix._SourceReadBudget(context['messages']['end_cursor'].offset + 1)
+                  if exhaust else original(snapshot))
         budgets.append(budget)
         return budget
     monkeypatch.setattr(runtime, '_startup_owner_source_budget', capture)
     request = {'schema': 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
                'query_id': 'startup_work_overview', 'nonce': '0' * 64,
                'lane': 'codex-lead-1', 'scope': 'shared'}
-    result = (owner.located_candidates if located else owner.candidates)(request)
+    call = owner.located_candidates if located else owner.candidates
+    if exhaust:
+        with pytest.raises(runtime.FullRuntimeRefused):
+            call(request)
+        consumed = sum(size for _, size in actual_reads)
+        limit = context['messages']['end_cursor'].offset + 1
+        assert context['messages']['end_cursor'].offset <= consumed <= limit
+        assert budgets[0]._remaining == limit - consumed
+        assert owner._state == 'HOLD' and owner._source_budget is budgets[0]
+        return
+    result = call(request)
     assert result['status'] == 'CANDIDATES' and result['candidates']
     assert len({id(item) for item in budgets}) == 1
     assert sum(size for _, size in actual_reads) > 3 * context['messages']['end_cursor'].offset
     assert budgets[0]._remaining == 1024 ** 3 - sum(size for _, size in actual_reads)
     assert owner._state == 'READY' and owner._source_budget is None
+
+
+def test_startup_client_and_owner_account_separate_real_source_reads(
+        synthetic_checkout_pins, flat_consumer_case, monkeypatch):
+    """In-process synthetic IPC; no live log, process, pipe or native model."""
+    import io
+    import json
+    from tools import wd_bridge_mind_session as session
+    from tools import wd_mind_runtime_process as process
+
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    package, source_owner, _proposals, snapshot, clock, _response = flat_consumer_case
+    _fixtures._located_candidates(flat_consumer_case, monkeypatch)
+    source_owner._controls = package._consumer_bundle_controls(source_owner._root, source_owner._pin)
+    _projection, context, _ = source_owner._gate.verify_snapshot(snapshot)
+    records = json.loads(snapshot['projection_bytes'])['messages']['records']
+    owner = object.__new__(runtime._SingleManifestOwner)
+    retained = object.__new__(runtime._RetainedFlatQueryState)
+    handler = object.__new__(runtime._FlatRequestHandler)
+    memory = SimpleNamespace(ids=source_owner._gate._ids, vectors=source_owner._gate._vectors)
+    handler._retained, handler._memory = retained, memory
+    handler._adapter = SimpleNamespace(query=lambda _text: [1.0] + [0.0] * 383)
+    handler._lane, handler._lanes = 'claude-rco-1', frozenset({'claude-rco-1'})
+    handler._lock, handler._closed, handler._failed = threading.Lock(), False, False
+    owner._generation = (None, snapshot, handler)
+    owner._prewarm_generation, owner._retained = owner._generation, retained
+    owner._lanes, owner._state, owner._lock = handler._lanes, 'READY', threading.Lock()
+    owner._source_budget = None
+    retained._owner, retained._handler, retained._memory = owner, handler, memory
+    retained._records = {record['record_id']: record for record in records}
+    retained._source_owner = source_owner
+    monkeypatch.setattr(runtime._RetainedFlatQueryState, '_controls', lambda _self: context)
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_running_owner', lambda _self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory_or_hold', lambda _self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
+    monkeypatch.setattr(reader.dt, 'datetime', clock)
+
+    owner_budgets, clients = [], []
+    original_budget = runtime._startup_owner_source_budget
+    def capture_owner(snapshot):
+        budget = original_budget(snapshot)
+        owner_budgets.append(budget)
+        return budget
+    monkeypatch.setattr(runtime, '_startup_owner_source_budget', capture_owner)
+    original_resolver = session.create_selected_row_resolver
+    def capture_resolver(**kwargs):
+        resolver = original_resolver(**kwargs)
+        clients.append(resolver)
+        return resolver
+    monkeypatch.setattr(session, 'create_selected_row_resolver', capture_resolver)
+    policy = snapshot['identifier_policy_binding'][0]
+    monkeypatch.setattr(session, '_selected_pin_read', lambda *_args: policy)
+
+    class InProcessQuery:
+        def __init__(self, request): self.request = request
+        def start(self): self.frame = reader._canonical(owner.located_candidates(self.request))
+        def wait(self, **_kwargs):
+            return {'status': 'CANDIDATES', 'authority': 'none', 'sender_authentication': 'UNKNOWN',
+                    'source_verification': 'UNVERIFIED', 'candidate_frame': self.frame}
+        def status(self): return {'state': 'STOPPED'}
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **kwargs: InProcessQuery(kwargs['request']))
+    reads = _instrument_source_streams(monkeypatch, snapshot['messages']['source_path'],
+        tagger=lambda: 'owner' if owner._source_budget is not None else 'client')
+    args = ['--mind-local-candidate-read', '--policy-path', 'synthetic-policy',
+            '--policy-sha256', reader._sha(policy), '--approval-reference-sha256', 'c' * 64,
+            '--lane', 'claude-rco-1', '--timeout-seconds', '90']
+    output, error = io.BytesIO(), io.BytesIO()
+    assert session._local_candidate_entry(args, output, error, source_owner._root, source_owner._pin) == 0
+    result = json.loads(output.getvalue())
+    assert result['results'] and result['authority'] == 'none'
+    owner_read = sum(size for _kind, size, tag in reads if tag == 'owner')
+    client_read = sum(size for _kind, size, tag in reads if tag == 'client')
+    assert owner_read and client_read
+    assert owner_read == 1024 ** 3 - owner_budgets[0]._remaining
+    assert client_read <= 1024 ** 3 - clients[0]._source_budget._remaining
+    assert owner_read + client_read <= 2 * 1024 ** 3
 
 
 def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatch):

@@ -2333,7 +2333,7 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
 
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
                                  policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
-                                 _admission=None):
+                                 _admission=None, _host_start_gate=None, _host_stop=None):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2344,6 +2344,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     stop, service_done = threading.Event(), threading.Event()
     service_error, control_error = [], []
     last_state, failed = None, False
+
+    class _HostStopBeforeStart(Exception):
+        pass
 
     def emit(state):
         nonlocal last_state
@@ -2393,7 +2396,18 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             operator_approval_reference_sha256=approval_reference_sha256, lane='codex-lead-1',
             policy_path=policy_path, _admission=_admission)
         policy = None
-        if adapter.start().get('state') != 'STARTING':
+        # A host-accepted STOP and adapter-start commitment share one gate.
+        # CLI stream callers have no host gate and retain their old semantics.
+        if (_host_start_gate is None) != (_host_stop is None):
+            raise ValueError('host_start_guard')
+        if _host_start_gate is None:
+            start_status = adapter.start()
+        else:
+            with _host_start_gate:
+                if _host_stop.is_set():
+                    raise _HostStopBeforeStart()
+                start_status = adapter.start()
+        if start_status.get('state') != 'STARTING':
             raise ValueError('owner_start')
         emit('STARTING')
         control_thread = threading.Thread(target=read_stop, name='mind-local-control', daemon=False)
@@ -2426,6 +2440,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     break
                 emit('READY')
             stop.wait(0.1)
+    except _HostStopBeforeStart:
+        pass
     except BaseException:
         failed = True
     finally:

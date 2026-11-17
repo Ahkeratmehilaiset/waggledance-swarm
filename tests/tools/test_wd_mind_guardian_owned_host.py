@@ -140,6 +140,80 @@ def test_stop_after_entry_commit_keeps_uncertain_owner_in_hold(tmp_path, monkeyp
     assert owner.status()['state'] == 'HOLD'
 
 
+@pytest.mark.parametrize('guard_quiescent', [True, False])
+def test_stop_after_entry_before_adapter_start_releases_synthetic_guard(tmp_path, monkeypatch, guard_quiescent):
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+
+    monkeypatch.setattr(host, '_BOOTSTRAP_PROVEN', True)
+    monkeypatch.setattr(absent, '_read_pinned', lambda *args: b'synthetic-policy')
+    owner = _new(tmp_path, enabled=True)
+    actions = []
+
+    class Admission:
+        def __init__(self, guard, evidence): self.evidence = evidence
+        def quiescent(self): return guard_quiescent
+        def release_clean(self):
+            assert self.evidence['clean'] is True
+            actions.append('released')
+        def abandon(self): actions.append('abandoned')
+
+    class Adapter:
+        def start(self):
+            actions.append('started')
+            return {'state': 'STARTING'}
+        def close(self):
+            actions.append('closed')
+            return {'state': 'STOPPED', 'owned': False}
+
+    def create_adapter(**kwargs):
+        assert owner.request_stop()['state'] == 'HOLD'
+        return Adapter()
+
+    monkeypatch.setattr(child, '_reserve_local_owner', lambda root: object())
+    monkeypatch.setattr(child, '_LocalAdmission', Admission)
+    monkeypatch.setattr(child, 'create_local_manifest_query', create_adapter)
+    owner._run()
+    assert actions == (['closed', 'released', 'abandoned'] if guard_quiescent
+                       else ['closed', 'abandoned'])
+    assert owner.status()['state'] == ('STOPPED' if guard_quiescent else 'HOLD')
+
+
+def test_adapter_start_gate_does_not_accept_stop_mid_commit(tmp_path, monkeypatch):
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+
+    monkeypatch.setattr(host, '_BOOTSTRAP_PROVEN', True)
+    monkeypatch.setattr(absent, '_read_pinned', lambda *args: b'synthetic-policy')
+    owner = _new(tmp_path, enabled=True)
+    actions = []
+
+    class Admission:
+        def __init__(self, guard, evidence): self.evidence = evidence
+        def quiescent(self): return True
+        def release_clean(self): assert self.evidence['clean'] is True
+        def abandon(self): pass
+
+    class Adapter:
+        def start(self):
+            actions.append(owner.request_stop()['state'])
+            return {'state': 'STARTING'}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+
+    class ControlThread:
+        def __init__(self, *, target, **kwargs): self.target = target
+        def start(self):
+            actions.append(owner.request_stop()['state'])
+            self.target()
+        def is_alive(self): return False
+
+    monkeypatch.setattr(child, '_reserve_local_owner', lambda root: object())
+    monkeypatch.setattr(child, '_LocalAdmission', Admission)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    monkeypatch.setattr(child.threading, 'Thread', ControlThread)
+    owner._run()
+    assert actions == ['BUSY', 'HOLD']
+    assert owner.status()['state'] == 'STOPPED'
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='reservation uses Windows byte locks')
 def test_owned_host_retains_guard_until_voluntary_stop(tmp_path, monkeypatch):
     marker = tmp_path / child._OWNER_RESERVATION_NAME

@@ -137,7 +137,8 @@ class _OwnedHost:
             result = child._guarded_local_entry(child._local_candidate_owner_entry,
                 control_stream=self._control, output_stream=self._output, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, policy_path=self._policy_path,
-                policy_sha256=self._policy_sha, approval_reference_sha256=self._approval_sha)
+                policy_sha256=self._policy_sha, approval_reference_sha256=self._approval_sha,
+                _host_start_gate=self._launch_gate, _host_stop=self._stop)
         except BaseException:
             pass
         with self._lock:

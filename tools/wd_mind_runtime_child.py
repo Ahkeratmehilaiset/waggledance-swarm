@@ -61,8 +61,8 @@ _PATHS = ("runtime-root", "runtime-manifest", "memory", "descriptor", "lock-file
 _MAX_QUERY = 65536
 _MAX_OUTPUT = 262144
 _SHARED_SCOPE = "wd.q4-shared-projected-events.v1"
-# One fixed fleet-wide lock name preserves the reader-slot sharing contract.
-# It is an inert sentinel under the operator's audit tree; no lock file is opened.
+# Fixed audit root for the reader-slot sentinel and cooperating owner marker.
+# Owner startup only opens an existing marker; it never provisions one.
 _AUDIT_ROOT = Path(r"C:\Python\project2\.codex-audit")
 _OWNER_RESERVATION_NAME = 'mind-owner-reservation.v1'
 _OWNER_RESERVATION_MAGIC = b'WD_MIND_OWNER_V1\n'

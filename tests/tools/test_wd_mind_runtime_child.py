@@ -1365,7 +1365,8 @@ def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_gracefu
             finish(captured[0], process)
 
 
-def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(staged_graceful, monkeypatch, tmp_path, synthetic_windows_subprocess):
+def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(staged_graceful, monkeypatch, tmp_path,
+                                                                            synthetic_windows_subprocess, synthetic_local_admission):
     from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
     from test_wd_mind_e5_client import response
     from tools import wd_mind_e5_client, wd_mind_full_runtime as runtime
@@ -1386,12 +1387,19 @@ def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(stag
                         'tools_supervisor':{'agent':'codex-tools-1'}}, sort_keys=True).encode()
     snapshot = {'projection_sha256':'b'*64}
     binding = runtime._PrivateBinding(snapshot, tmp_path, 'a'*64, (fleet,), {})
+    admission_owner = object()
+    synthetic_local_admission.bind_owner(admission_owner)
     factory = runtime._ManifestWorkerFactory(str(tmp_path), 'a'*64, {}, tmp_path/'lock', 5, 0,
-                                             wd_mind_e5_client.BULK_CONTRACT_SHA256)
+                                             wd_mind_e5_client.BULK_CONTRACT_SHA256,
+                                             synthetic_local_admission, admission_owner)
+    synthetic_local_admission.bind_factory(admission_owner, factory)
+    synthetic_local_admission.begin_worker(admission_owner, factory)
     monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda self: snapshot)
     monkeypatch.setattr(runtime, '_flat_snapshot', lambda candidate, frozen: frozen)
     def launch(self, *, owner_sink):
-        return child.start_e5_worker_graceful(enabled=True, owner_sink=owner_sink, **staged_graceful)
+        return child.start_e5_worker_graceful(enabled=True, owner_sink=owner_sink,
+            _admission=synthetic_local_admission, _admission_owner=admission_owner,
+            _admission_factory=factory, **staged_graceful)
     def interrupt(self):
         assert entered.wait(2)
         raise KeyboardInterrupt()
@@ -1414,6 +1422,7 @@ def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(stag
         release.set()
         if owner._launch_thread is not None: owner._launch_thread.join(timeout=5)
         if owner._owner is not None: finish(owner._owner, process)
+        synthetic_local_admission.finish_worker_start(admission_owner, factory)
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')

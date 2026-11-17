@@ -1019,11 +1019,12 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
 
 
 class _PrivateFlatMemory:
-    __slots__ = ('binding', 'snapshot', 'manifest', 'ids', 'vectors', 'encoder_binding')
+    __slots__ = ('binding', 'snapshot', 'manifest', 'ids', 'vectors', 'encoder_binding', 'cache_status')
 
-    def __init__(self, binding, snapshot, manifest, ids, vectors, encoder_binding):
+    def __init__(self, binding, snapshot, manifest, ids, vectors, encoder_binding, cache_status='DISABLED'):
         self.binding, self.snapshot, self.manifest = binding, snapshot, manifest
         self.ids, self.vectors, self.encoder_binding = ids, vectors, encoder_binding
+        self.cache_status = cache_status
 
     def __repr__(self):
         return '<PrivateMindFlatMemory>'
@@ -1262,9 +1263,30 @@ def _cache_rows_from_screened_projection(projection, ids, vectors):
     return tuple(rows)
 
 
+class _PrivateVectorCache:
+    """Owner-only adapter; the installed route must supply a pinned module."""
+    __slots__ = ('_module', '_path', '_verify')
+
+    def __init__(self, module, path, verify):
+        if not callable(verify) or not callable(getattr(module, 'load_cache', None)) or not callable(getattr(module, 'write_cache', None)):
+            raise ValueError('cache_provider')
+        self._module, self._path, self._verify = module, path, verify
+
+    def load(self, binding, verify_prefix):
+        self._verify()
+        value = self._module.load_cache(self._path, binding, verify_prefix)
+        self._verify()
+        return value
+
+    def write(self, binding, rows):
+        self._verify()
+        self._module.write_cache(self._path, binding, rows)
+        self._verify()
+
+
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
-                                 prior_memory=None):
+                                 prior_memory=None, vector_cache=None):
     """Use the pinned immutable snapshot helper and retain watcher ownership on HOLD.
 
     This captures the full prefix as immutable bytes and can use substantial RAM;
@@ -1298,7 +1320,23 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             if not records or len(by_id) != len(records):
                 raise ValueError('records')
             ids, vectors = tuple(sorted(by_id)), []
-            reusable = {}
+            reusable, cache_binding = {}, None
+            cache_status = 'DISABLED' if vector_cache is None else 'MISS'
+            if vector_cache is not None and prior_memory is None:
+                if type(vector_cache) is not _PrivateVectorCache:
+                    raise ValueError('cache_provider')
+                try:
+                    cache_binding = _cache_snapshot_binding(binding, frozen, projection,
+                                                            encoder_binding_bytes, encoder_binding_sha256)
+                    def verify_old_prefix(offset, expected):
+                        return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
+                                and reader._hex(expected)
+                                and hmac.compare_digest(reader._sha(immutable_prefix[:offset]), expected))
+                    cached = vector_cache.load(cache_binding, verify_old_prefix)
+                    reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
+                    cache_status = 'HIT'
+                except Exception:
+                    reusable, cache_status = {}, 'MISS'
             if prior_memory is not None:
                 # The old content is reused only after both complete source
                 # snapshots, all controls and the encoder have been checked.
@@ -1357,7 +1395,16 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     or reader._serialized(projection) != frozen['projection_bytes']):
                 raise ValueError('immutable_snapshot_changed')
             output = _PrivateFlatMemory(binding, frozen, reader._canonical(manifest), ids, vectors,
-                                        encoder_binding_bytes)
+                                        encoder_binding_bytes, cache_status)
+            if vector_cache is not None and prior_memory is None and cache_binding is not None:
+                try:
+                    cache_rows = _cache_rows_from_screened_projection(projection, ids, vectors)
+                    vector_cache.write(cache_binding, cache_rows)
+                    output.cache_status = cache_status + '_STORED'
+                except Exception:
+                    output.cache_status = cache_status + '_NOT_STORED'
+                package._unchanged(snapshot, frozen, report, complete=True)
+                _flat_snapshot(binding, frozen)
     except BaseException as exc:
         problem = exc
     finally:
@@ -1391,7 +1438,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
 def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                       encoder_binding_bytes=None, encoder_binding_sha256=None,
                       source_verification=None, watcher_join_timeout_seconds=None, _watcher_lease=None,
-                      _prior_memory=None):
+                      _prior_memory=None, _vector_cache=None):
     """Build one memory-only float32 vector per screened, source-bound record.
 
     Provider identity and supplied encoder metadata are caller-trusted; this
@@ -1409,9 +1456,11 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                 raise ValueError('source_verification')
             return _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                                 encoder_binding_sha256, watcher_join_timeout_seconds, _watcher_lease,
-                                                _prior_memory)
+                                                _prior_memory, _vector_cache)
         if _prior_memory is not None:
             raise ValueError('refresh_requires_immutable_snapshot')
+        if _vector_cache is not None:
+            raise ValueError('cache_requires_immutable_snapshot')
         if watcher_join_timeout_seconds is not None:
             raise ValueError('unexpected_join_timeout')
         snapshot = binding.snapshot_for_query()

@@ -122,6 +122,20 @@ def test_cache_rows_are_hashes_and_vectors_only(monkeypatch):
         runtime._cache_rows_from_screened_projection(projection, ('other',), vector)
 
 
+def test_private_cache_provider_checks_module_before_and_after_io():
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    calls = []
+    module = SimpleNamespace(load_cache=lambda path, binding, check: calls.append('load') or 'result',
+                             write_cache=lambda path, binding, rows: calls.append('write'))
+    provider = runtime._PrivateVectorCache(module, 'synthetic-path', lambda: calls.append('verify'))
+    assert provider.load({}, lambda *_: True) == 'result'
+    provider.write({}, ())
+    assert calls == ['verify', 'load', 'verify', 'verify', 'write', 'verify']
+    with pytest.raises(ValueError, match='cache_provider'):
+        runtime._PrivateVectorCache(module, 'synthetic-path', None)
+
+
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     """Constructing a disabled/default owner must not start a worker."""
     from tools import wd_mind_full_runtime as runtime

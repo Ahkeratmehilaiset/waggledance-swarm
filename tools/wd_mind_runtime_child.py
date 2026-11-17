@@ -1012,16 +1012,20 @@ class _LocalManifestQuery:
     __slots__ = ('_owner', '_metadata', '_bundle', '_manifest', '_policy', '_policy_sha', '_approval_sha', '_policy_path',
                  '_admission', '_admission_anchor',
                  '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_lock', '_cancel',
-                 '_state', '_policy_invalid', '_pending_result')
+                 '_state', '_policy_invalid', '_pending_result', '_host_start_gate', '_host_stop',
+                 '_host_owner_start_inflight')
 
     def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
-                 worker_timeout, lock_timeout, shutdown_timeout, policy_path=None, admission=None):
+                 worker_timeout, lock_timeout, shutdown_timeout, policy_path=None, admission=None,
+                 host_start_gate=None, host_stop=None, host_owner_start_inflight=None):
         self._owner = None
         self._metadata = {'lane': lane}
         self._bundle, self._manifest = bundle, manifest
         self._policy, self._policy_sha, self._approval_sha = policy, policy_sha, approval_sha
         self._policy_path = policy_path
         self._admission = self._admission_anchor = admission
+        self._host_start_gate, self._host_stop = host_start_gate, host_stop
+        self._host_owner_start_inflight = host_owner_start_inflight
         self._worker_timeout, self._lock_timeout, self._shutdown_timeout = worker_timeout, lock_timeout, shutdown_timeout
         self._thread, self._lock, self._cancel = None, threading.Lock(), threading.Event()
         self._state, self._policy_invalid = 'NEW', False
@@ -1087,9 +1091,23 @@ class _LocalManifestQuery:
             with self._lock:
                 self._owner = owner  # Retain before any worker may be launched.
             self._check_external_policy()
-            if self._cancel.is_set():
-                return
-            outcome = owner.start()
+            if self._host_start_gate is None:
+                if self._cancel.is_set():
+                    return
+                outcome = owner.start()
+            else:
+                # Never hold the host gate across the potentially long build.
+                # A host STOP can only be accepted before this commitment or
+                # after owner.start has returned and the owner is retained.
+                with self._host_start_gate:
+                    if self._cancel.is_set() or self._host_stop.is_set():
+                        return
+                    self._host_owner_start_inflight.set()
+                try:
+                    outcome = owner.start()
+                finally:
+                    with self._host_start_gate:
+                        self._host_owner_start_inflight.clear()
             with self._lock:
                 self._state = ('READY' if not self._cancel.is_set() and type(outcome) is dict
                                and outcome.get('state') == 'READY' and outcome.get('owned') is True else 'HOLD')
@@ -1302,7 +1320,8 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
                                 identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
                                 operator_approval_reference_sha256=None, lane=None,
                                 worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5,
-                                policy_path=None, _admission=None):
+                                policy_path=None, _admission=None, _host_start_gate=None,
+                                _host_stop=None, _host_owner_start_inflight=None):
     """Prepare, but do not start, a pinned in-process Mind owner.
 
     The manifest and operator-policy inputs must come independently from the
@@ -1311,7 +1330,9 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
     """
     result = None
     try:
-        if (enabled is not True or type(_admission) is not _LocalAdmission or type(bundle_root) is not str
+        host_args = (_host_start_gate, _host_stop, _host_owner_start_inflight)
+        if (not (all(value is None for value in host_args) or all(value is not None for value in host_args))
+                or enabled is not True or type(_admission) is not _LocalAdmission or type(bundle_root) is not str
                 or type(expected_manifest_sha256) is not str or not _HEX.fullmatch(expected_manifest_sha256)
                 or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
                 or type(expected_identifier_policy_sha256) is not str or not _HEX.fullmatch(expected_identifier_policy_sha256)
@@ -1330,7 +1351,8 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
         # Return before the expensive source preparation or any worker launch.
         result = _LocalManifestQuery(lane, bundle_root, expected_manifest_sha256, identifier_policy_bytes,
             expected_identifier_policy_sha256, operator_approval_reference_sha256,
-            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path, _admission)
+            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path, _admission,
+            _host_start_gate, _host_stop, _host_owner_start_inflight)
         _admission.bind_owner(result)
     except Exception:
         result = None
@@ -2333,7 +2355,8 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
 
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
                                  policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
-                                 _admission=None, _host_start_gate=None, _host_stop=None):
+                                 _admission=None, _host_start_gate=None, _host_stop=None,
+                                 _host_owner_start_inflight=None):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2394,11 +2417,13 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
             expected_identifier_policy_sha256=policy_sha256,
             operator_approval_reference_sha256=approval_reference_sha256, lane='codex-lead-1',
-            policy_path=policy_path, _admission=_admission)
+            policy_path=policy_path, _admission=_admission, _host_start_gate=_host_start_gate,
+            _host_stop=_host_stop, _host_owner_start_inflight=_host_owner_start_inflight)
         policy = None
         # A host-accepted STOP and adapter-start commitment share one gate.
         # CLI stream callers have no host gate and retain their old semantics.
-        if (_host_start_gate is None) != (_host_stop is None):
+        host_args = (_host_start_gate, _host_stop, _host_owner_start_inflight)
+        if not (all(value is None for value in host_args) or all(value is not None for value in host_args)):
             raise ValueError('host_start_guard')
         if _host_start_gate is None:
             start_status = adapter.start()

@@ -96,6 +96,7 @@ class _OwnedHost:
         self._policy_path, self._policy_sha, self._approval_sha = policy_path, policy_sha, approval_sha
         self._lock, self._stop = threading.Lock(), threading.Event()
         self._launch_gate = threading.Lock()
+        self._owner_start_inflight = threading.Event()
         self._thread = None
         self._state, self._reported = ('NEW' if enabled else 'OFF'), None
         self._control, self._output = _StopControl(self._stop), _StatusOutput(self)
@@ -138,7 +139,8 @@ class _OwnedHost:
                 control_stream=self._control, output_stream=self._output, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, policy_path=self._policy_path,
                 policy_sha256=self._policy_sha, approval_reference_sha256=self._approval_sha,
-                _host_start_gate=self._launch_gate, _host_stop=self._stop)
+                _host_start_gate=self._launch_gate, _host_stop=self._stop,
+                _host_owner_start_inflight=self._owner_start_inflight)
         except BaseException:
             pass
         with self._lock:
@@ -149,6 +151,8 @@ class _OwnedHost:
         if not self._launch_gate.acquire(blocking=False):
             return {'state':'BUSY', 'authority':'none', 'crash_ownership':'UNKNOWN'}
         try:
+            if self._owner_start_inflight.is_set():
+                return {'state':'BUSY', 'authority':'none', 'crash_ownership':'UNKNOWN'}
             self._stop.set()
         finally:
             self._launch_gate.release()

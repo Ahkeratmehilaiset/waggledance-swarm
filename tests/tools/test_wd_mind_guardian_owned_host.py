@@ -214,6 +214,88 @@ def test_adapter_start_gate_does_not_accept_stop_mid_commit(tmp_path, monkeypatc
     assert owner.status()['state'] == 'STOPPED'
 
 
+@pytest.mark.parametrize('scenario', ['host_stop_before', 'inflight_cancel', 'cancel_at_commit', 'start_error', 'cli'])
+def test_owner_start_commitment_and_cancel_are_held(tmp_path, monkeypatch, scenario):
+    """Drive _prepare synchronously with a fake owner; no process or thread is created."""
+    from tools import wd_mind_full_runtime as runtime
+
+    monkeypatch.setattr(host, '_BOOTSTRAP_PROVEN', True)
+    host_owner = _new(tmp_path, enabled=True)
+    actions = []
+
+    class Admission:
+        def assert_owner(self, owner): pass
+
+    class ActiveThread:
+        def is_alive(self): return True
+        def join(self, timeout): pass
+
+    class Owner:
+        def start(self):
+            actions.append('start')
+            if scenario == 'inflight_cancel':
+                assert host_owner.request_stop()['state'] == 'BUSY'
+                assert not host_owner._stop.is_set()
+                assert adapter.close()['state'] == 'HOLD'
+                assert adapter.wait(timeout=0)['state'] == 'HOLD'
+            if scenario == 'start_error':
+                raise RuntimeError('synthetic start failure')
+            return {'state': 'READY', 'owned': True}
+        def status(self): return {'state': 'READY', 'owned': True}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+
+    admission, fake_owner = Admission(), Owner()
+    guard = (None, None, None) if scenario == 'cli' else (
+        host_owner._launch_gate, host_owner._stop, host_owner._owner_start_inflight)
+    adapter = child._LocalManifestQuery('codex-lead-1', str(tmp_path), MANIFEST, b'policy', POLICY,
+        APPROVAL, 1, 0, 1, admission=admission, host_start_gate=guard[0], host_stop=guard[1],
+        host_owner_start_inflight=guard[2])
+    if scenario in ('inflight_cancel', 'cancel_at_commit'):
+        adapter._thread = ActiveThread()
+    if scenario == 'cancel_at_commit':
+        class CancelDuringCheck:
+            def __init__(self): self.value, self.checks = False, 0
+            def set(self): self.value = True
+            def is_set(self):
+                old = self.value
+                self.checks += 1
+                if self.checks == 3:
+                    # Reproduce close racing immediately after the in-gate
+                    # cancellation read and before the start commitment.
+                    assert adapter.close()['state'] == 'HOLD'
+                return old
+        adapter._cancel = CancelDuringCheck()
+    checks = []
+    def external_policy(_self):
+        checks.append(True)
+        if scenario == 'host_stop_before' and len(checks) == 2:
+            assert host_owner.request_stop()['state'] == 'HOLD'
+
+    monkeypatch.setattr(child._LocalManifestQuery, '_check_external_policy', external_policy)
+    monkeypatch.setattr(child._LocalManifestQuery, '_check_policy', lambda _self: object())
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: fake_owner)
+    adapter._prepare()
+
+    assert not host_owner._owner_start_inflight.is_set()
+    if scenario == 'host_stop_before':
+        assert actions == []
+        assert adapter._owner is fake_owner
+    else:
+        assert actions == ['start']
+    if scenario in ('inflight_cancel', 'cancel_at_commit'):
+        assert adapter._state == 'HOLD'
+        assert host_owner.request_stop()['state'] == 'HOLD'
+        assert adapter._owner is fake_owner
+    if scenario == 'start_error':
+        assert adapter._state == 'HOLD'
+        assert host_owner.request_stop()['state'] == 'HOLD'
+        assert adapter._owner is fake_owner
+    if scenario == 'cli':
+        assert adapter._state == 'READY'
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='reservation uses Windows byte locks')
 def test_owned_host_retains_guard_until_voluntary_stop(tmp_path, monkeypatch):
     marker = tmp_path / child._OWNER_RESERVATION_NAME

@@ -95,6 +95,7 @@ class _OwnedHost:
         self._enabled, self._bundle, self._manifest = enabled, bundle, manifest
         self._policy_path, self._policy_sha, self._approval_sha = policy_path, policy_sha, approval_sha
         self._lock, self._stop = threading.Lock(), threading.Event()
+        self._launch_gate = threading.Lock()
         self._thread = None
         self._state, self._reported = ('NEW' if enabled else 'OFF'), None
         self._control, self._output = _StopControl(self._stop), _StatusOutput(self)
@@ -123,6 +124,15 @@ class _OwnedHost:
             # be imported. The future pinned launcher must verify both files.
             if not _BOOTSTRAP_PROVEN:
                 raise HostRefused('guardian_host_refused')
+            # This is the commitment to enter the guarded child. A stop that
+            # wins this gate prevents entry; after commitment, stop remains
+            # cooperative and child startup/cleanup may still be in progress.
+            with self._launch_gate:
+                stopped_before_entry = self._stop.is_set()
+            if stopped_before_entry:
+                with self._lock:
+                    self._state = 'STOPPED'
+                return
             from tools import wd_mind_runtime_child as child
             result = child._guarded_local_entry(child._local_candidate_owner_entry,
                 control_stream=self._control, output_stream=self._output, bundle_root=self._bundle,
@@ -135,7 +145,12 @@ class _OwnedHost:
                            and self._reported == 'STOPPED' and self._stop.is_set() else 'HOLD')
 
     def request_stop(self):
-        self._stop.set()
+        if not self._launch_gate.acquire(blocking=False):
+            return {'state':'BUSY', 'authority':'none', 'crash_ownership':'UNKNOWN'}
+        try:
+            self._stop.set()
+        finally:
+            self._launch_gate.release()
         return self.status()
 
     def _status_locked(self):

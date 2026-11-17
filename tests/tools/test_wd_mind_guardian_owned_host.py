@@ -90,6 +90,56 @@ def test_stop_does_not_wait_on_host_lock(tmp_path, monkeypatch):
         owner._lock.release()
 
 
+def test_stop_before_delayed_host_run_never_enters_guarded_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, '_BOOTSTRAP_PROVEN', True)
+    calls = []
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda *args, **kwargs: calls.append('entered'))
+
+    class DelayedThread:
+        def __init__(self, *, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            pass  # Deterministically defer the worker without creating a thread.
+
+    monkeypatch.setattr(host.threading, 'Thread', DelayedThread)
+    owner = _new(tmp_path, enabled=True)
+    assert owner.start()['state'] == 'STARTING'
+    assert owner.request_stop()['state'] == 'HOLD'
+    owner._thread.target()
+    assert calls == []
+    assert owner.status()['state'] == 'STOPPED'
+
+
+def test_stop_during_entry_gate_is_not_accepted_and_can_be_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, '_BOOTSTRAP_PROVEN', True)
+    owner = _new(tmp_path, enabled=True)
+    assert owner._launch_gate.acquire(blocking=False)
+    try:
+        assert owner.request_stop()['state'] == 'BUSY'
+        assert not owner._stop.is_set()
+    finally:
+        owner._launch_gate.release()
+    assert owner.request_stop()['state'] == 'HOLD'
+    assert owner._stop.is_set()
+
+
+def test_stop_after_entry_commit_keeps_uncertain_owner_in_hold(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, '_BOOTSTRAP_PROVEN', True)
+    owner = _new(tmp_path, enabled=True)
+    calls = []
+
+    def entry(*args, **kwargs):
+        calls.append('entered')
+        assert owner.request_stop()['state'] == 'HOLD'
+        return 2  # Entry did not prove cooperative cleanup.
+
+    monkeypatch.setattr(child, '_guarded_local_entry', entry)
+    owner._run()
+    assert calls == ['entered']
+    assert owner.status()['state'] == 'HOLD'
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='reservation uses Windows byte locks')
 def test_owned_host_retains_guard_until_voluntary_stop(tmp_path, monkeypatch):
     marker = tmp_path / child._OWNER_RESERVATION_NAME

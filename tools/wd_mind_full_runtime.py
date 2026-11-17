@@ -1378,7 +1378,7 @@ def _load_pinned_vector_cache(binding):
             prefix._read_pinned(path, digest, 8 * 1024 * 1024)
 
         verify()
-        return _PrivateVectorCache(module, r'C:\Python\wd-mind-vector-cache\vectors.bin', verify)
+        return _PrivateVectorCache(module, r'C:\wd-mind-private\vector-cache\vectors.bin', verify)
     finally:
         _CACHE_MODULE_LOCK.release()
 

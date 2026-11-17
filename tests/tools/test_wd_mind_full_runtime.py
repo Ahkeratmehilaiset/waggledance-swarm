@@ -203,6 +203,7 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
     monkeypatch.setattr(runtime.importlib.util, 'find_spec', lambda _: types.SimpleNamespace(origin=str(path)))
     try:
         provider = runtime._load_pinned_vector_cache(binding)
+        assert provider._path == r'C:\wd-mind-private\vector-cache\vectors.bin'
         assert provider.load({}, lambda *_: True) == 'synthetic'
         path.write_bytes(code + b'# modified\n')
         with pytest.raises(Exception):

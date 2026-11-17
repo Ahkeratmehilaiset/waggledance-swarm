@@ -31,17 +31,20 @@ def private_dir(tmp_path, monkeypatch):
         pytest.skip("native Windows ACL and directory leases")
     assert ".codex-audit" in str(tmp_path).lower()
     user = subprocess.check_output(["whoami"], text=True).strip()
-    result = subprocess.run(["icacls", str(tmp_path), "/setowner", user], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    result = subprocess.run(["icacls", str(tmp_path), "/inheritance:r", "/grant:r",
-                             user + ":(OI)(CI)F", "SYSTEM:(OI)(CI)F"],
-                            capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    result = subprocess.run(["icacls", str(tmp_path), "/remove:g", "*S-1-5-32-544", "*S-1-3-4"],
-                            capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-    return tmp_path
+    target = tmp_path / "synthetic-vector-cache"
+    target.mkdir()
+    for directory in (tmp_path, target):
+        result = subprocess.run(["icacls", str(directory), "/setowner", user], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        result = subprocess.run(["icacls", str(directory), "/inheritance:r", "/grant:r",
+                                 user + ":(OI)(CI)F", "SYSTEM:(OI)(CI)F"],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        result = subprocess.run(["icacls", str(directory), "/remove:g", "*S-1-5-32-544", "*S-1-3-4"],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    monkeypatch.setattr(cache, "_CACHE_ROOT", target)
+    return target
 
 
 def test_round_trip_and_raw_text_absent(private_dir):
@@ -316,25 +319,59 @@ assert c.load_cache(p,b,lambda *_:True).rows == ()
     assert process.returncode == 0, process.stderr
 
 
-def test_broad_acl_refused(tmp_path, monkeypatch):
-    if os.name != "nt":
-        pytest.skip("native Windows ACL")
-    assert ".codex-audit" in str(tmp_path).lower()
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-    user = subprocess.check_output(["whoami"], text=True).strip()
-    result = subprocess.run(["icacls", str(tmp_path), "/setowner", user], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    result = subprocess.run(["icacls", str(tmp_path), "/grant", "*S-1-1-0:(OI)(CI)R"],
+def test_broad_acl_refused(private_dir):
+    result = subprocess.run(["icacls", str(private_dir), "/grant", "*S-1-1-0:(OI)(CI)R"],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     with pytest.raises(cache.CacheRefused, match="acl_not_user_only"):
-        cache.write_cache(tmp_path / "vectors.bin", binding(), rows())
+        cache.write_cache(private_dir / "vectors.bin", binding(), rows())
     with pytest.raises(cache.CacheRefused, match="acl_not_user_only"):
-        cache.preflight(tmp_path / "vectors.bin")
+        cache.preflight(private_dir / "vectors.bin")
+
+
+def test_parent_broad_acl_refused_before_any_cache_access(private_dir, monkeypatch):
+    """A private target does not make a broadly writable parent private."""
+    parent = private_dir
+    target = parent / "synthetic-vector-cache"
+    target.mkdir()
+    user = subprocess.check_output(["whoami"], text=True).strip()
+    for args in (["/setowner", user],
+                 ["/inheritance:r", "/grant:r", user + ":(OI)(CI)F", "SYSTEM:(OI)(CI)F"]):
+        result = subprocess.run(["icacls", str(target), *args], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    result = subprocess.run(["icacls", str(parent), "/grant", "*S-1-1-0:(OI)(CI)R"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    monkeypatch.setattr(cache, "_CACHE_ROOT", target)
+    with pytest.raises(cache.CacheRefused, match="acl_not_user_only"):
+        cache.preflight(target / "vectors.bin")
+    assert not (target / "vectors.bin.lock").exists()
+
+
+@pytest.mark.parametrize("which", ["parent", "target"])
+@pytest.mark.parametrize("damage,reason", [
+    ("broad", "acl_not_user_only"),
+    ("unprotected", "acl_not_protected"),
+    ("missing_system", "acl_unknown"),
+])
+def test_provisioned_directory_acl_is_checked_before_every_use(private_dir, which, damage, reason):
+    directory = private_dir.parent if which == "parent" else private_dir
+    args = {"broad": ["/grant", "*S-1-1-0:(OI)(CI)R"],
+            "unprotected": ["/inheritance:e"],
+            "missing_system": ["/remove:g", "*S-1-5-18"]}[damage]
+    result = subprocess.run(["icacls", str(directory), *args], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    path = private_dir / "vectors.bin"
+    for operation in (lambda: cache.preflight(path),
+                      lambda: cache.load_cache(path, binding(), lambda *_: True),
+                      lambda: cache.write_cache(path, binding(), rows())):
+        with pytest.raises(cache.CacheRefused, match=reason):
+            operation()
+        assert not path.exists() and not (private_dir / "vectors.bin.lock").exists()
 
 
 def test_nonprivate_or_unknown_acl_refuses_access(private_dir, monkeypatch):
-    def unknown(*_):
+    def unknown(*_, **__):
         raise cache.CacheRefused("acl_unknown")
     monkeypatch.setattr(cache._Native, "user_acl", unknown)
     with pytest.raises(cache.CacheRefused, match="acl_unknown"):
@@ -433,7 +470,7 @@ def test_linked_cache_destination_refused(private_dir):
 
 
 def test_production_root_excludes_repo_and_bundles(tmp_path):
-    assert str(cache._CACHE_ROOT).lower() == r"c:\python\wd-mind-vector-cache"
+    assert str(cache._CACHE_ROOT).lower() == r"c:\wd-mind-private\vector-cache"
     with pytest.raises(cache.CacheRefused, match="cache_root"):
         with cache._Directory(tmp_path):
             pass

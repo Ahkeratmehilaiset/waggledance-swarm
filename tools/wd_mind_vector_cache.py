@@ -36,7 +36,7 @@ _ROW_SIZE = 64 + 384 * 4
 _MAX_ROWS = 250000
 _MAX_HEADER = 8192
 _MAGIC = b"WDMVC1\n"
-_CACHE_ROOT = Path(r"C:\Python\wd-mind-vector-cache")
+_CACHE_ROOT = Path(r"C:\wd-mind-private\vector-cache")
 _CACHE_NAME = "vectors.bin"
 
 
@@ -147,6 +147,9 @@ class _Native:
             ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_void_p)]
         self.advapi.GetSecurityInfo.restype = wintypes.DWORD
+        self.advapi.GetSecurityDescriptorControl.argtypes = [ctypes.c_void_p,
+            ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+        self.advapi.GetSecurityDescriptorControl.restype = wintypes.BOOL
         self.advapi.SetSecurityInfo.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
                                                  ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
         self.advapi.SetSecurityInfo.restype = wintypes.DWORD
@@ -184,13 +187,20 @@ class _Native:
             self.kernel.CloseHandle(handle)
             raise
 
-    def user_acl(self, handle):
+    def user_acl(self, handle, *, provisioned_dir=False):
         owner, acl, security, token, system = (ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p(),
                                                 wintypes.HANDLE(), ctypes.c_void_p())
         try:
             if self.advapi.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None, ctypes.byref(acl), None,
                                             ctypes.byref(security)) or not acl or not owner:
                 raise CacheRefused("acl_unknown")
+            if provisioned_dir:
+                control, revision = wintypes.WORD(), wintypes.DWORD()
+                if not self.advapi.GetSecurityDescriptorControl(security, ctypes.byref(control),
+                                                                  ctypes.byref(revision)):
+                    raise CacheRefused("acl_unknown")
+                if not control.value & 0x1000:  # SE_DACL_PROTECTED
+                    raise CacheRefused("acl_not_protected")
             if not self.advapi.OpenProcessToken(self.kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
                 raise CacheRefused("acl_unknown")
             size = wintypes.DWORD()
@@ -203,12 +213,13 @@ class _Native:
             user = ctypes.cast(data, ctypes.POINTER(ctypes.c_void_p))[0]
             if not user or not self.advapi.ConvertStringSidToSidW("S-1-5-18", ctypes.byref(system)):
                 raise CacheRefused("acl_unknown")
-            if not (self.advapi.EqualSid(owner, user) or self.advapi.EqualSid(owner, system)):
+            if not (self.advapi.EqualSid(owner, user) or
+                    (not provisioned_dir and self.advapi.EqualSid(owner, system))):
                 raise CacheRefused("owner_not_trusted")
             entries = ctypes.cast(acl, ctypes.POINTER(_Acl)).contents
             if not entries.count or entries.count > 4096:
                 raise CacheRefused("acl_unknown")
-            user_allowed = False
+            user_allowed = system_allowed = False
             for index in range(entries.count):
                 ace = ctypes.c_void_p()
                 if not self.advapi.GetAce(acl, index, ctypes.byref(ace)) or not ace:
@@ -218,15 +229,19 @@ class _Native:
                 ace_size = ctypes.c_ushort.from_address(ace.value + 2).value
                 if ace_size < 16 or ace_type not in (0, 1):
                     raise CacheRefused("acl_unknown")
+                if provisioned_dir and ace_flags & 0x10:  # INHERITED_ACE
+                    raise CacheRefused("acl_inherited")
                 if ace_type == 0:  # allow only the current user and LocalSystem
                     sid = ctypes.c_void_p(ace.value + 8)
                     is_user = bool(self.advapi.EqualSid(sid, user))
-                    if not is_user and not self.advapi.EqualSid(sid, system):
+                    is_system = bool(self.advapi.EqualSid(sid, system))
+                    if not is_user and not is_system:
                         raise CacheRefused("acl_not_user_only")
                     # INHERIT_ONLY grants rights only to child objects, not
                     # the directory/file currently being authorized.
                     user_allowed |= is_user and not (ace_flags & 0x08)
-            if not user_allowed:
+                    system_allowed |= is_system and not (ace_flags & 0x08)
+            if not user_allowed or (provisioned_dir and not system_allowed):
                 raise CacheRefused("acl_unknown")
         finally:
             if token:
@@ -273,7 +288,12 @@ class _Directory:
                 if part is not None:
                     current /= part
                 self.handles.append(self.native.open(current, 3, 0x80, 3, directory=True))
-            self.native.user_acl(self.handles[-1])
+            # The operator provisions both directories: a private target alone
+            # is insufficient when another identity can alter its parent.
+            if len(self.handles) < 3:
+                raise CacheRefused("cache_root")
+            self.native.user_acl(self.handles[-2], provisioned_dir=True)
+            self.native.user_acl(self.handles[-1], provisioned_dir=True)
             return self
         except BaseException:
             self.__exit__(None, None, None)

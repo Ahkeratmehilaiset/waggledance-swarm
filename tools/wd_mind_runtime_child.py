@@ -132,15 +132,17 @@ class _LocalAdmission:
     This does not exclude legacy interpreters or authenticate callers. A
     missing or uncertain worker remains HOLD; no recovery is attempted here.
     """
-    def __init__(self, guard):
+    def __init__(self, guard, cleanup_evidence=None):
         if type(guard) is not _LocalOwnerReservation:
             raise LaunchRefused('owner_admission_refused')
         self._guard, self._pid, self._lock = guard, os.getpid(), threading.Lock()
+        self._guard_anchor, self._cleanup_evidence = guard, cleanup_evidence
         self._owner = self._factory = self._worker = None
         self._spawning = self._unknown = self._closed = False
 
     def _check_locked(self):
-        if self._closed or self._unknown or self._pid != os.getpid() or self._guard.fd < 0:
+        if (self._closed or self._unknown or self._guard is not self._guard_anchor
+                or self._pid != os.getpid() or self._guard.fd < 0):
             raise LaunchRefused('owner_admission_refused')
         self._guard._check()
         if self._guard._read() != _OWNER_RESERVATION_MAGIC + b'R':
@@ -160,6 +162,12 @@ class _LocalAdmission:
                     or (self._factory is not None and self._factory is not factory)):
                 raise LaunchRefused('owner_admission_refused')
             self._factory = factory
+
+    def assert_owner(self, owner):
+        with self._lock:
+            self._check_locked()
+            if owner is None or owner is not self._owner:
+                raise LaunchRefused('owner_admission_refused')
 
     def _worker_finished_locked(self):
         if self._worker is None:
@@ -197,6 +205,13 @@ class _LocalAdmission:
                 raise LaunchRefused('owner_admission_refused')
             self._worker = worker
 
+    def assert_worker_start(self, owner, factory):
+        with self._lock:
+            self._check_locked()
+            if (owner is not self._owner or factory is not self._factory
+                    or factory is None or not self._spawning or self._worker is not None):
+                raise LaunchRefused('owner_admission_refused')
+
     def finish_worker_start(self, owner, factory):
         with self._lock:
             if (owner is not self._owner or factory is not self._factory
@@ -211,6 +226,22 @@ class _LocalAdmission:
                 return not self._spawning and self._worker_finished_locked()
             except BaseException:
                 return False
+
+    def release_clean(self):
+        """Additional to the caller's separately established cleanup evidence."""
+        with self._lock:
+            self._check_locked()
+            if (type(self._cleanup_evidence) is not dict or self._cleanup_evidence.get('clean') is not True
+                    or self._spawning or not self._worker_finished_locked()):
+                raise LaunchRefused('owner_admission_refused')
+            self._guard.release_clean(service_stopped=True, owner_stopped=True,
+                                      owner_owned=False, control_stopped=True)
+            self._closed = True
+
+    def abandon(self):
+        with self._lock:
+            self._closed = True
+            self._guard.abandon()
 
 
 def _reserve_local_owner(root):
@@ -979,16 +1010,18 @@ class _LocalManifestQuery:
     automatic refresh is provided by this adapter.
     """
     __slots__ = ('_owner', '_metadata', '_bundle', '_manifest', '_policy', '_policy_sha', '_approval_sha', '_policy_path',
+                 '_admission', '_admission_anchor',
                  '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_lock', '_cancel',
                  '_state', '_policy_invalid', '_pending_result')
 
     def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
-                 worker_timeout, lock_timeout, shutdown_timeout, policy_path=None):
+                 worker_timeout, lock_timeout, shutdown_timeout, policy_path=None, admission=None):
         self._owner = None
         self._metadata = {'lane': lane}
         self._bundle, self._manifest = bundle, manifest
         self._policy, self._policy_sha, self._approval_sha = policy, policy_sha, approval_sha
         self._policy_path = policy_path
+        self._admission = self._admission_anchor = admission
         self._worker_timeout, self._lock_timeout, self._shutdown_timeout = worker_timeout, lock_timeout, shutdown_timeout
         self._thread, self._lock, self._cancel = None, threading.Lock(), threading.Event()
         self._state, self._policy_invalid = 'NEW', False
@@ -1031,6 +1064,9 @@ class _LocalManifestQuery:
         from tools import wd_mind_e5_client as client
         binding = factory = owner = None
         try:
+            if self._admission is not self._admission_anchor:
+                raise ValueError('admission_changed')
+            self._admission.assert_owner(self)
             self._check_policy()
             self._check_external_policy()
             if self._cancel.is_set():
@@ -1042,7 +1078,8 @@ class _LocalManifestQuery:
                 return
             factory = runtime.create_manifest_worker_factory(enabled=True, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, worker_timeout_seconds=self._worker_timeout,
-                lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+                lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256,
+                _admission=self._admission, _admission_owner=self)
             anchor = self._check_policy()
             owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=self._metadata['lane'],
                 worker_factory=factory, shutdown_timeout=self._shutdown_timeout, policy_anchor=anchor,
@@ -1066,6 +1103,9 @@ class _LocalManifestQuery:
                     self._state = 'STOPPED'
 
     def start(self):
+        if self._admission is not self._admission_anchor:
+            raise LaunchRefused('owner_admission_refused')
+        self._admission.assert_owner(self)
         with self._lock:
             if self._state != 'NEW':
                 raise LaunchRefused('mind_e5_start_refused') from None
@@ -1262,7 +1302,7 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
                                 identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
                                 operator_approval_reference_sha256=None, lane=None,
                                 worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5,
-                                policy_path=None):
+                                policy_path=None, _admission=None):
     """Prepare, but do not start, a pinned in-process Mind owner.
 
     The manifest and operator-policy inputs must come independently from the
@@ -1271,7 +1311,7 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
     """
     result = None
     try:
-        if (enabled is not True or type(bundle_root) is not str
+        if (enabled is not True or type(_admission) is not _LocalAdmission or type(bundle_root) is not str
                 or type(expected_manifest_sha256) is not str or not _HEX.fullmatch(expected_manifest_sha256)
                 or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
                 or type(expected_identifier_policy_sha256) is not str or not _HEX.fullmatch(expected_identifier_policy_sha256)
@@ -1290,9 +1330,10 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
         # Return before the expensive source preparation or any worker launch.
         result = _LocalManifestQuery(lane, bundle_root, expected_manifest_sha256, identifier_policy_bytes,
             expected_identifier_policy_sha256, operator_approval_reference_sha256,
-            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path)
+            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path, _admission)
+        _admission.bind_owner(result)
     except Exception:
-        pass
+        result = None
     finally:
         identifier_policy_bytes = None
     if result is None:
@@ -2021,9 +2062,11 @@ def start_e5_worker_graceful(*, enabled=False, **options):
 
 def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, interpreter_sha256,
                      interpreter_root, tuple_args, timeout, scratch_root=None, cooperative,
-                     bulk_contract_sha256=None, worker_only=False, owner_sink=None):
-    if cooperative is not True:
+                     bulk_contract_sha256=None, worker_only=False, owner_sink=None,
+                     _admission=None, _admission_owner=None, _admission_factory=None):
+    if cooperative is not True or type(_admission) is not _LocalAdmission:
         raise LaunchRefused("mind_e5_start_refused") from None
+    _admission.assert_worker_start(_admission_owner, _admission_factory)
     job = process = owner = None
     try:
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800
@@ -2154,6 +2197,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                                           require_spawn_attempt=True)
             else:
                 owner = lifecycle.reserve(enabled=True, require_spawn_attempt=True)
+            _admission.capture_worker(_admission_owner, _admission_factory, owner)
             owner.mark_job_attempt()
             if owner_sink is not None:
                 owner_sink(owner)
@@ -2230,7 +2274,7 @@ def _read_local_policy_frame(stream, *, require_eof=True):
 
 
 def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
-                       lane, policy_sha256, approval_reference_sha256, _cleanup_evidence=None):
+                       lane, policy_sha256, approval_reference_sha256, _cleanup_evidence=None, _admission=None):
     """Run one local query; retain uncertain work and write only after STOPPED."""
     adapter = policy = result = None
     try:
@@ -2238,7 +2282,7 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
         adapter = create_local_manifest_query(enabled=True, bundle_root=bundle_root,
             expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
             expected_identifier_policy_sha256=policy_sha256,
-            operator_approval_reference_sha256=approval_reference_sha256, lane=lane)
+            operator_approval_reference_sha256=approval_reference_sha256, lane=lane, _admission=_admission)
         policy = None
         if adapter.start().get('state') != 'STARTING':
             raise ValueError('local_start')
@@ -2288,7 +2332,8 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
 
 
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
-                                 policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None):
+                                 policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
+                                 _admission=None):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2346,7 +2391,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
             expected_identifier_policy_sha256=policy_sha256,
             operator_approval_reference_sha256=approval_reference_sha256, lane='codex-lead-1',
-            policy_path=policy_path)
+            policy_path=policy_path, _admission=_admission)
         policy = None
         if adapter.start().get('state') != 'STARTING':
             raise ValueError('owner_start')
@@ -2494,16 +2539,18 @@ def _guarded_local_entry(entry, **kwargs):
     """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
     guard = _reserve_local_owner(_AUDIT_ROOT)
     cleanup_evidence = {'clean': False}
+    admission = _LocalAdmission(guard, cleanup_evidence)
     try:
-        result = entry(_cleanup_evidence=cleanup_evidence, **kwargs)
-        if cleanup_evidence['clean'] is True:
-            guard.release_clean(service_stopped=True, owner_stopped=True,
-                                owner_owned=False, control_stopped=True)
-        if type(result) is not int or result != 0 or cleanup_evidence['clean'] is not True:
+        result = entry(_cleanup_evidence=cleanup_evidence, _admission=admission, **kwargs)
+        if cleanup_evidence['clean'] is True and admission.quiescent():
+            admission.release_clean()
+        else:
+            return 2
+        if type(result) is not int or result != 0:
             return 2
         return result
     finally:
-        guard.abandon()
+        admission.abandon()
 
 
 def _load_pinned_canonical_child(bundle, expected_manifest_sha256):

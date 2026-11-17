@@ -577,6 +577,21 @@ def test_candidate_integrity_error_holds_without_rebuilding(monkeypatch, fault):
     assert type(owner._source_budget) is prefix._SourceReadBudget
 
 
+def test_lost_prewarm_generation_is_internal_fault_and_holds(monkeypatch):
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    owner = object.__new__(runtime._SingleManifestOwner)
+    handler = SimpleNamespace(_retained=object())
+    owner._generation = (None, {'messages': {'end_cursor': SimpleNamespace(offset=5)}}, handler)
+    owner._prewarm_generation, owner._retained = object(), handler._retained
+    owner._lanes, owner._state, owner._lock = frozenset({'codex-lead-1'}), 'READY', threading.Lock()
+    owner._source_budget = None
+    request = {'schema': 'wd.mind-pipe-request.v2', 'query_id': 'startup_work_overview',
+               'nonce': '0' * 64, 'lane': 'codex-lead-1', 'scope': 'own'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.located_candidates(request)
+    assert owner._state == 'HOLD' and owner._retained is None and handler._retained is None
+
+
 @pytest.mark.parametrize('fault', [False, True], ids=['prewarm_ok', 'prewarm_fails'])
 def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
@@ -601,6 +616,71 @@ def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monk
     else:
         assert status['state'] == 'READY' and owner._source_budget is None
         assert owner._prewarm_generation is owner._generation
+
+
+@pytest.mark.parametrize('fault', ['none', 'budget_refusal', 'source_error'])
+@pytest.mark.parametrize('rotating', [False, True], ids=['single', 'rotating'])
+def test_refresh_prewarm_precedes_ready_and_preserves_worker(tmp_path, monkeypatch, fault, rotating):
+    _runtime, owner, old, new = _full_fixtures._refresh_generation_test_owner(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    old_generation, old_handler, worker = owner._generation, owner._handler, owner._owner
+    if rotating:
+        class Rotator:
+            def __init__(self):
+                self._lock, self._snapshot, self.owner = threading.Lock(), old[1]['projection_sha256'], worker
+            def _check_worker_identity(self): pass
+            def _check_source(self): pass
+        class Adapter:
+            def __init__(self, rotator):
+                self._rotator, self._snapshot = rotator, old[1]['projection_sha256']
+            def _static_check(self): pass
+        rotator = Rotator()
+        adapter = Adapter(rotator)
+        owner._rotation_enabled = True
+        owner._rotation_type, owner._rotation_anchor = Rotator, rotator
+        owner._client, owner._adapter = rotator, adapter
+        old_handler._rotator, old_handler._adapter = rotator, adapter
+    owner._prewarm_generation = old_generation
+    owner._retained = old_handler._retained = object()
+    monkeypatch.setattr(runtime, '_stage_refresh_generation',
+                        lambda current: _full_fixtures._test_staged_refresh(runtime, current, new))
+    seen = []
+    def prewarm(current, *, source_budget=None):
+        seen.append((current._state, current._generation, source_budget, current._source_budget,
+                     current._retained, current._owner))
+        assert not current._lock.acquire(blocking=False)
+        assert not old_handler._lock.acquire(blocking=False)
+        if rotating:
+            assert not rotator._lock.acquire(blocking=False)
+            # This real handler method accesses the retained worker while the
+            # rotator lock is held; it must not re-acquire that lock.
+            current._handler._running_owner()
+        if fault == 'budget_refusal':
+            raise runtime._StartupSourceBudgetRefused('source_budget')
+        if fault == 'source_error':
+            raise ValueError('synthetic source failure')
+        current._retained = current._handler._retained = object()
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', prewarm)
+    if fault == 'none':
+        assert owner._refresh_generation(enabled=True)['status'] == 'REFRESHED'
+        assert owner._state == 'READY' and owner._generation is not old_generation
+        assert owner._prewarm_generation is owner._generation and owner._source_budget is None
+        assert owner._retained is owner._handler._retained and owner._retained is not None
+    else:
+        with pytest.raises(runtime.FullRuntimeRefused):
+            owner._refresh_generation(enabled=True)
+        assert owner._state == 'HOLD' and owner._generation is old_generation
+        assert owner._retained is None and old_handler._retained is None
+        assert owner._source_budget is seen[0][2]
+    assert len(seen) == 1 and seen[0][0] == 'STARTING'
+    assert seen[0][1] is not old_generation and seen[0][2] is seen[0][3]
+    assert type(seen[0][2]) is prefix._SourceReadBudget and seen[0][2]._remaining == 2 * 1024 ** 3
+    assert seen[0][4] is None and seen[0][5] is worker and owner._owner is worker
+    if rotating:
+        expected = new[1]['projection_sha256'] if fault == 'none' else old[1]['projection_sha256']
+        assert rotator._snapshot == adapter._snapshot == expected
+        assert rotator._lock.acquire(blocking=False)
+        rotator._lock.release()
 
 
 @pytest.mark.parametrize('direct', [False, True])

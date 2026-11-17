@@ -610,14 +610,18 @@ def _selected_manifest(bundle_root, expected_manifest_sha256):
     return root, manifest['files']
 
 
-def _selected_pin_module(root, files, module_name, relative):
-    expected = root.joinpath(*relative.split('/'))
+def _selected_manifest_file_pin(files, relative):
     pin = files.get(relative)
     # Deployment manifests encode file hashes in uppercase. Normalize only
     # these manifest-owned pins; separately supplied anchors remain strict.
     if type(pin) is not str or re.fullmatch(r'[0-9A-Fa-f]{64}', pin) is None:
         raise ValueError('pin')
-    _selected_pin_read(expected, pin.lower(), 8 * 1024 * 1024)
+    return pin.lower()
+
+
+def _selected_pin_module(root, files, module_name, relative):
+    expected = root.joinpath(*relative.split('/'))
+    _selected_pin_read(expected, _selected_manifest_file_pin(files, relative), 8 * 1024 * 1024)
     loaded = sys.modules.get(module_name)
     if loaded is not None:
         origin = getattr(loaded, '__file__', None)
@@ -668,7 +672,7 @@ def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
             continue
         relative = 'tools-bootstrap/tools/' + name + '.py'
         path = root.joinpath(*relative.split('/'))
-        source = _selected_pin_read(path, files.get(relative), 8 * 1024 * 1024)
+        source = _selected_pin_read(path, _selected_manifest_file_pin(files, relative), 8 * 1024 * 1024)
         spec = importlib.util.spec_from_file_location(qualified, path)
         if spec is None or spec.loader is None:
             raise ValueError('module_spec')

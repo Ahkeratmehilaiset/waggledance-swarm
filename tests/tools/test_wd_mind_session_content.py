@@ -142,6 +142,58 @@ def test_selected_preflight_accepts_deploy_style_uppercase_module_pins(tmp_path,
         session._selected_pin_module(tmp_path, files, 'synthetic_unloaded_module', relative)
 
 
+@pytest.mark.parametrize('tampered', [False, True])
+def test_selected_preflight_loads_missing_module_with_uppercase_manifest(tmp_path, monkeypatch, tampered):
+    from types import ModuleType
+    root = tmp_path / 'bundle'
+    modules = ('wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
+               'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process',
+               'wd_mind_absent_generation_prefix_readonly', 'wd_mind_startup_content',
+               'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind')
+    files = {}
+    package_names = ('tools', 'waggledance', 'waggledance.core')
+    for name in package_names:
+        relative = 'tools-bootstrap/' + name.replace('.', '/') + '/__init__.py'
+        path = root.joinpath(*relative.split('/'))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'')
+        files[relative] = hashlib.sha256(b'').hexdigest().upper()
+        package = ModuleType(name)
+        package.__file__, package.__path__ = str(path), [str(path.parent)]
+        monkeypatch.setitem(sys.modules, name, package)
+    parent = sys.modules['tools']
+    for name in modules:
+        relative = f'tools-bootstrap/tools/{name}.py'
+        path = root.joinpath(*relative.split('/'))
+        source = b'synthetic_value = 1\n'
+        path.write_bytes(source)
+        files[relative] = hashlib.sha256(source).hexdigest().upper()
+        if name != 'wd_mind_runtime_process':
+            loaded = ModuleType('tools.' + name)
+            loaded.__file__ = str(path)
+            monkeypatch.setitem(sys.modules, loaded.__name__, loaded)
+            setattr(parent, name, loaded)
+    relative = 'tools-bootstrap/waggledance/core/bridge_log_reader.py'
+    path = root.joinpath(*relative.split('/'))
+    path.write_bytes(b'')
+    files[relative] = hashlib.sha256(b'').hexdigest().upper()
+    loaded = ModuleType('waggledance.core.bridge_log_reader')
+    loaded.__file__ = str(path)
+    monkeypatch.setitem(sys.modules, loaded.__name__, loaded)
+    monkeypatch.delitem(sys.modules, 'tools.wd_mind_runtime_process', raising=False)
+    raw = json.dumps({'schema_version': 1, 'files': files}).encode()
+    (root / 'deployment-manifest.json').write_bytes(raw)
+    if tampered:
+        root.joinpath('tools-bootstrap', 'tools', 'wd_mind_runtime_process.py').write_bytes(b'changed')
+    if tampered:
+        with pytest.raises(ValueError):
+            session._preflight_selected_resolver_code(str(root), hashlib.sha256(raw).hexdigest())
+    else:
+        session._preflight_selected_resolver_code(str(root), hashlib.sha256(raw).hexdigest())
+        assert sys.modules['tools.wd_mind_runtime_process'].synthetic_value == 1
+        monkeypatch.delitem(sys.modules, 'tools.wd_mind_runtime_process', raising=False)
+
+
 @pytest.mark.parametrize('target', ['wd_mind_content_query_readonly',
                                     'wd_mind_content_snapshot_package',
                                     'wd_mind_full_runtime', 'wd_mind_retained_query', 'unchanged', 'pycache'])

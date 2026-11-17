@@ -1004,7 +1004,7 @@ $wdMindRequested = $wdMindDisabled -or $wdMindPath -cne '' -or $wdMindHash -cne 
 if ($wdMindRequested) {
     $wdMindValid = -not $wdMindDisabled -and $wdMindCount -eq 3 -and $wdMindPath -cmatch '\A[Cc]:[\\/]' -and
         $wdMindPath -notmatch '[\\/]$' -and
-        $wdMindPath.Substring(3) -notmatch '[:*?"<>|\x00-\x1f]' -and
+        $wdMindPath.Substring(3) -notmatch '[:*?"<>|&;\x00-\x1f]' -and
         @($wdMindPath.Substring(3).Split([char[]]'\\/') | Where-Object { $_ -in @('.', '..') -or $_ -match '[. ]$' }).Count -eq 0 -and
         $wdMindHash -cmatch '\A[0-9a-fA-F]{64}\z' -and $wdMindApproval -cmatch '\A[0-9a-fA-F]{64}\z'
     if ($wdMindValid) {

@@ -15,6 +15,7 @@ HELPER = REBOOT / 'WdBridgeLimitedBootstrap.ps1'
 SUPERVISOR = REBOOT / 'wd_supervisor.ps1'
 H1, H2 = 'b' * 64, 'c' * 64
 POLICY = r"C:\synthetic path\owner's policy.json"
+OPERATOR_PATH_SHAPE = r'C:\Python\wd-mind-identifier-policy.json'
 
 
 def quoted(value):
@@ -23,10 +24,15 @@ def quoted(value):
 
 @pytest.mark.parametrize('shell', LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
 @pytest.mark.parametrize('mode', ['apply', 'dryrun'])
-@pytest.mark.parametrize('case', ['complete', 'forward_slash', 'omitted', 'partial', 'bad_hash', 'bad_path', 'trailing', 'root', 'whitespace'])
+@pytest.mark.parametrize('case', ['complete', 'forward_slash', 'user_path', 'omitted', 'partial', 'bad_hash',
+                                 'bad_path', 'trailing', 'root', 'whitespace', 'ampersand', 'semicolon',
+                                 'component_dot', 'component_space', 'other_drive'])
 def test_limited_supervisor_forwards_only_a_complete_valid_triplet(shell, mode, case):
     path = {'bad_path': r'C:\synthetic\..\policy.json', 'trailing': 'C:\\synthetic\\',
-            'root': 'C:\\', 'whitespace': '   ', 'forward_slash': POLICY.replace('\\', '/')}.get(case, POLICY)
+            'root': 'C:\\', 'whitespace': '   ', 'forward_slash': POLICY.replace('\\', '/'),
+            'user_path':OPERATOR_PATH_SHAPE, 'ampersand':r'C:\synthetic\a&b.json',
+            'semicolon':r'C:\synthetic\a;b.json', 'component_dot':r'C:\dir.\policy.json',
+            'component_space':r'C:\dir \policy.json', 'other_drive':r'D:\synthetic\policy.json'}.get(case, POLICY)
     policy = H1 if case != 'bad_hash' else 'not-a-sha'
     approval = '' if case == 'partial' else H2
     if case == 'whitespace': policy, approval = ' ', '  '
@@ -43,8 +49,9 @@ def test_limited_supervisor_forwards_only_a_complete_valid_triplet(shell, mode, 
     forwarded = result['arguments']
     assert '-BridgeWorkersOnly' in forwarded
     assert ('-Apply' in forwarded) == (mode == 'apply')
-    if case in ('complete', 'forward_slash'):
-        assert forwarded[-6:] == ['-MindOperatorPolicyPath', POLICY, '-MindOperatorPolicySha256', H1,
+    if case in ('complete', 'forward_slash', 'user_path'):
+        expected_path = OPERATOR_PATH_SHAPE if case == 'user_path' else POLICY
+        assert forwarded[-6:] == ['-MindOperatorPolicyPath', expected_path, '-MindOperatorPolicySha256', H1,
                                   '-MindOperatorApprovalReferenceSha256', H2]
     else:
         assert '-MindOperatorPolicyPath' not in forwarded
@@ -75,6 +82,26 @@ def test_supervisor_normalizes_forward_slash_policy_path(shell):
     assert result['enabled'] is True
     assert result['arguments'] == ['-MindOperatorPolicyPath', POLICY, '-MindOperatorPolicySha256', H1,
                                    '-MindOperatorApprovalReferenceSha256', H2]
+
+
+@pytest.mark.parametrize('shell', LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize('path,enabled', [
+    (OPERATOR_PATH_SHAPE, True), (r'C:/Python/wd-mind-identifier-policy.json', True),
+    (r'D:\synthetic\policy.json', False), (r'C:\synthetic\a&b.json', False),
+    (r'C:\synthetic\a;b.json', False), (r'C:\dir.\policy.json', False),
+    (r'C:\dir \policy.json', False), ('C:\\', False), ('C:\\dir\\', False),
+])
+def test_supervisor_applies_the_same_c_drive_path_policy(shell, path, enabled):
+    script = ("$ErrorActionPreference='Stop'\n" + load(SUPERVISOR, 'Get-WdToolsMindArguments') + '\n' +
+              f"$r=Get-WdToolsMindArguments -PolicyPath {quoted(path)} "
+              f"-PolicySha256 '{H1}' -ApprovalReferenceSha256 '{H2}'; "
+              '@{enabled=$r.enabled;arguments=@($r.arguments)} | ConvertTo-Json -Compress')
+    result = json.loads(_run_powershell(script, executable=shell).stdout)
+    assert result['enabled'] is enabled
+    if enabled:
+        assert result['arguments'][1] == OPERATOR_PATH_SHAPE
+    else:
+        assert result['arguments'] == []
 
 
 @pytest.mark.parametrize('shell', LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
@@ -198,7 +225,9 @@ def test_supervisor_checks_actual_policy_and_manifest_approved_descriptor(tmp_pa
 
 
 @pytest.mark.parametrize('shell', LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
-@pytest.mark.parametrize('case', ['complete', 'forward_slash', 'partial', 'bad_hash', 'whitespace', 'trailing', 'root', 'omitted'])
+@pytest.mark.parametrize('case', ['complete', 'forward_slash', 'user_path', 'partial', 'bad_hash',
+                                 'whitespace', 'trailing', 'root', 'omitted', 'ampersand', 'semicolon',
+                                 'component_dot', 'component_space', 'other_drive'])
 def test_generated_fleet_wrapper_forwards_or_disables_optional_pins_in_dry_run(tmp_path, shell, case):
     commit = 'a' * 40
     bundle = tmp_path / 'bundles' / commit
@@ -229,7 +258,10 @@ def test_generated_fleet_wrapper_forwards_or_disables_optional_pins_in_dry_run(t
     if case != 'omitted':
         policy = 'invalid' if case == 'bad_hash' else H1
         path = {'trailing':'C:\\synthetic\\', 'root':'C:\\', 'whitespace':'   ',
-                'forward_slash':POLICY.replace('\\', '/')}.get(case, POLICY)
+                'forward_slash':POLICY.replace('\\', '/'), 'user_path':OPERATOR_PATH_SHAPE,
+                'ampersand':r'C:\synthetic\a&b.json', 'semicolon':r'C:\synthetic\a;b.json',
+                'component_dot':r'C:\dir.\policy.json', 'component_space':r'C:\dir \policy.json',
+                'other_drive':r'D:\synthetic\policy.json'}.get(case, POLICY)
         if case == 'whitespace': policy = ' '
         args = f" -MindOperatorPolicyPath {quoted(path)} -MindOperatorPolicySha256 '{policy}'"
         if case != 'partial': args += f" -MindOperatorApprovalReferenceSha256 '{' ' if case == 'whitespace' else H2}'"
@@ -237,8 +269,9 @@ def test_generated_fleet_wrapper_forwards_or_disables_optional_pins_in_dry_run(t
     result = _run_powershell(script, executable=shell)
     data = json.loads(result.stdout.strip().splitlines()[-1])
     assert data['dry'] is True
-    if case in ('complete', 'forward_slash'):
-        assert (data['path'], data['policy'], data['approval']) == (POLICY, H1, H2)
+    if case in ('complete', 'forward_slash', 'user_path'):
+        expected_path = OPERATOR_PATH_SHAPE if case == 'user_path' else POLICY
+        assert (data['path'], data['policy'], data['approval']) == (expected_path, H1, H2)
     else:
         assert data['path'] == data['policy'] == data['approval'] == ''
         if case != 'omitted': assert 'Mind content is OFF' in result.stdout

@@ -34,7 +34,7 @@ def setup(query):
     return host,SyntheticClient(host),log
 
 def stop(host):
-    host.request_stop()
+    assert eventually(lambda:host.request_stop() in ('HOLD','STOPPED'))
     assert eventually(lambda:host.status()['state']=='STOPPED')
 
 
@@ -232,3 +232,34 @@ def test_host_lock_contention_fails_closed_without_waiting():
         try:assert exchange.read()['state']=='WITHOUT_MIND'
         finally:host._lock.release()
     finally:stop(host)
+
+
+@pytest.mark.parametrize('action',['stop','detach','replace'])
+def test_consumption_and_session_invalidation_share_atomic_gate(monkeypatch,action):
+    host,client,_=setup(lambda resources,ticket:result(ticket))
+    checked,release=threading.Event(),threading.Event();out=[]
+    original=host._permitted
+    def gated(exchange):
+        lease=original(exchange)
+        if threading.current_thread().name=='synthetic-result-reader' and lease:
+            checked.set();assert release.wait(5)
+        return lease
+    monkeypatch.setattr(host,'_permitted',gated)
+    try:
+        exchange=_unconsumed_ready(host,client)
+        reader=threading.Thread(target=lambda:out.append(exchange.read()),name='synthetic-result-reader')
+        reader.start();assert checked.wait(3)
+        try:
+            if action=='stop':during=host.request_stop()
+            elif action=='detach':during=host.detach(lane=LANE,session=SESSION)
+            else:during=host.attach(lane=LANE,session='f'*64)
+        finally:
+            release.set();reader.join(3)
+        assert not reader.is_alive()
+        assert during==('BUSY' if action=='stop' else False)
+        assert out[0]['state']=='CANDIDATES_UNTRUSTED'
+        if action=='stop':assert host.request_stop()=='HOLD'
+        elif action=='detach':assert host.detach(lane=LANE,session=SESSION)
+        else:assert host.attach(lane=LANE,session='f'*64)
+    finally:
+        release.set();stop(host)

@@ -34,7 +34,7 @@ class _Exchange:
     """One single-use bounded response; EXPIRED cannot become READY."""
     def __init__(self,request,deadline,clock,permitted=None):
         self.request,self.deadline,self._clock=request,deadline,clock
-        self._permitted=permitted if permitted is not None else (lambda exchange:True)
+        self._permitted=permitted if permitted is not None else (lambda exchange:(lambda:None))
         self._lock=threading.Lock();self._state='PENDING';self._result=None
         self.event=threading.Event()
 
@@ -49,32 +49,39 @@ class _Exchange:
 
     def complete(self,result):
         if not self._lock.acquire(False): return False
+        release=None
         try:
-            accepted=(self._state=='PENDING' and self._clock()<self.deadline
-                      and self._permitted(self))
+            if self._state=='PENDING' and self._clock()<self.deadline:
+                release=self._permitted(self)
+            accepted=release is not None
             if accepted:
                 self._result=result;self._state='READY'
             else:
                 if self._state=='PENDING': self._state='EXPIRED'
                 self._result=None
-        finally:self._lock.release()
+        finally:
+            if release is not None:release()
+            self._lock.release()
         self.event.set()
         return accepted
 
     def read(self):
         if not self._lock.acquire(False): return {'state':'WITHOUT_MIND','reason':'CONTENDED'}
+        release=None
         try:
-            if self._state in ('PENDING','READY') and not self._permitted(self):
-                self._state='EXPIRED';self._result=None
-            if self._state=='PENDING' and self._clock()>=self.deadline:
-                self._state='EXPIRED';self._result=None
-            if self._state=='READY' and self._clock()>=self.deadline:
+            if self._state in ('PENDING','READY'):
+                release=self._permitted(self)
+                if release is None:self._state='EXPIRED';self._result=None
+            if self._state in ('PENDING','READY') and self._clock()>=self.deadline:
                 self._state='EXPIRED';self._result=None
             if self._state=='READY':
+                # The host gate is retained across this actual consume point.
                 result=self._result;self._result=None;self._state='CONSUMED'
                 return {'state':'CANDIDATES_UNTRUSTED','result':result}
             return {'state':'WITHOUT_MIND','reason':self._state}
-        finally:self._lock.release()
+        finally:
+            if release is not None:release()
+            self._lock.release()
 
 
 class SyntheticHost:
@@ -121,12 +128,14 @@ class SyntheticHost:
         finally:self._lock.release()
 
     def _permitted(self,exchange):
-        if self._stop.is_set() or not self._lock.acquire(False):return False
-        try:
-            request=exchange.request
-            return (not self._stop.is_set() and self._sessions.get(request.lane)==request.session
-                    and self._latest.get(request.lane) is exchange)
-        finally:self._lock.release()
+        # On success the caller owns this host gate until consume/publish finishes.
+        if self._stop.is_set() or not self._lock.acquire(False):return None
+        request=exchange.request
+        if (not self._stop.is_set() and self._sessions.get(request.lane)==request.session
+                and self._latest.get(request.lane) is exchange):
+            return self._lock.release
+        self._lock.release()
+        return None
 
     def attach(self,*,lane,session):
         if (type(lane) is not str or lane not in _LANES or type(session) is not str
@@ -154,8 +163,11 @@ class SyntheticHost:
         finally:self._lock.release()
 
     def request_stop(self):
-        self._stop.set();self._wake.set()
-        return 'STOPPED' if self._state=='STOPPED' else 'HOLD'
+        if not self._lock.acquire(False):return 'BUSY'
+        try:
+            self._stop.set();self._wake.set()
+            return 'STOPPED' if self._state=='STOPPED' else 'HOLD'
+        finally:self._lock.release()
 
     def status(self):
         return {'state':self._state,'ownership':'UNKNOWN',

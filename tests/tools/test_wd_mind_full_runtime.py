@@ -136,6 +136,44 @@ def test_private_cache_provider_checks_module_before_and_after_io():
         runtime._PrivateVectorCache(module, 'synthetic-path', None)
 
 
+def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_path):
+    import types
+    import tools
+    from tools import wd_mind_full_runtime as runtime
+    name, attr = 'tools.wd_mind_vector_cache', 'wd_mind_vector_cache'
+    previous_module = sys.modules.pop(name, None)
+    previous_attr = tools.__dict__.pop(attr, None)
+    previous_attestation = runtime._CACHE_MODULE_ATTESTATION
+    bundle = tmp_path / 'bundle'
+    relative = 'tools-bootstrap/tools/wd_mind_vector_cache.py'
+    path = bundle.joinpath(*relative.split('/'))
+    path.parent.mkdir(parents=True)
+    code = b'def load_cache(path, binding, verify): return "synthetic"\ndef write_cache(path, binding, rows): pass\n'
+    path.write_bytes(code)
+    manifest = json.dumps({'files': {relative: hashlib.sha256(code).hexdigest()}}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest(), (), {})
+    monkeypatch.setattr(runtime.importlib.util, 'find_spec', lambda _: types.SimpleNamespace(origin=str(path)))
+    try:
+        provider = runtime._load_pinned_vector_cache(binding)
+        assert provider.load({}, lambda *_: True) == 'synthetic'
+        path.write_bytes(code + b'# modified\n')
+        with pytest.raises(Exception):
+            provider.load({}, lambda *_: True)
+        path.write_bytes(code)
+        sys.modules[name] = types.ModuleType(name)
+        with pytest.raises(ValueError, match='cache_unverified_preload'):
+            runtime._load_pinned_vector_cache(binding)
+    finally:
+        sys.modules.pop(name, None)
+        tools.__dict__.pop(attr, None)
+        if previous_module is not None:
+            sys.modules[name] = previous_module
+        if previous_attr is not None:
+            setattr(tools, attr, previous_attr)
+        runtime._CACHE_MODULE_ATTESTATION = previous_attestation
+
+
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     """Constructing a disabled/default owner must not start a worker."""
     from tools import wd_mind_full_runtime as runtime

@@ -167,6 +167,7 @@ def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, t
     assert adapter.wait(timeout=5)['state'] == 'READY', [row if type(row) is str else row[0] for row in calls]
     assert next(row[1] for row in calls if type(row) is tuple and row[0] == 'factory')['bulk_contract_sha256'] == client.BULK_CONTRACT_SHA256
     assert next(row[1] for row in calls if type(row) is tuple and row[0] == 'owner')['worker_rotation'] is True
+    assert next(row[1] for row in calls if type(row) is tuple and row[0] == 'owner')['vector_cache_enabled'] is True
     answer = json.loads(adapter.query())
     assert answer['lane'] == lane and answer['fleet_sha256'] == fleet_sha
     assert answer['authority'] == 'none' and answer['sender_authentication'] == 'UNKNOWN'

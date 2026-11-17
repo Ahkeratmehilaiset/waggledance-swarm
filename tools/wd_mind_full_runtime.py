@@ -21,6 +21,7 @@ import struct
 import sys
 import threading
 import time
+import types
 from types import MappingProxyType
 
 from tools import wd_mind_absent_generation_prefix_readonly as prefix
@@ -1284,6 +1285,66 @@ class _PrivateVectorCache:
         self._verify()
 
 
+_CACHE_MODULE_LOCK = threading.Lock()
+_CACHE_MODULE_ATTESTATION = None
+
+
+def _load_pinned_vector_cache(binding):
+    """Load verified bundle bytes; never accept an unverified preloaded module."""
+    global _CACHE_MODULE_ATTESTATION
+    if type(binding) is not _PrivateBinding or not _CACHE_MODULE_LOCK.acquire(blocking=False):
+        raise ValueError('cache_loader')
+    try:
+        bundle, manifest_pin = binding._PrivateBinding__bundle, binding._PrivateBinding__manifest
+        relative = 'tools-bootstrap/tools/wd_mind_vector_cache.py'
+        path, name = bundle.joinpath(*relative.split('/')), 'tools.wd_mind_vector_cache'
+        raw = prefix._read_pinned(bundle / 'deployment-manifest.json', manifest_pin, prefix.MAX_CONTROL_BYTES)
+        manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
+                              parse_constant=reader._bad_constant)
+        if type(manifest) is not dict or type(manifest.get('files')) is not dict:
+            raise ValueError('cache_manifest')
+        digest = manifest['files'].get(relative)
+        if not reader._hex(digest):
+            raise ValueError('cache_code_pin')
+        verified = prefix._read_pinned(path, digest, 8 * 1024 * 1024)
+        package = sys.modules.get('tools')
+        if type(package) is not types.ModuleType:
+            raise ValueError('cache_package')
+        module = sys.modules.get(name)
+        if module is None:
+            if getattr(package, 'wd_mind_vector_cache', None) is not None:
+                raise ValueError('cache_module_conflict')
+            spec = importlib.util.find_spec(name)
+            if spec is None or type(spec.origin) is not str or not startup._same_path(Path(spec.origin), path):
+                raise ValueError('cache_origin')
+            module = types.ModuleType(name)
+            module.__file__, module.__package__, module.__spec__ = str(path), 'tools', spec
+            sys.modules[name] = module
+            try:
+                exec(compile(verified, str(path), 'exec', dont_inherit=True), module.__dict__)
+                setattr(package, 'wd_mind_vector_cache', module)
+                _CACHE_MODULE_ATTESTATION = (module, str(path), manifest_pin, digest)
+            except BaseException:
+                if sys.modules.get(name) is module:
+                    del sys.modules[name]
+                raise
+        elif _CACHE_MODULE_ATTESTATION != (module, str(path), manifest_pin, digest):
+            raise ValueError('cache_unverified_preload')
+
+        def verify():
+            if (sys.modules.get(name) is not module or getattr(package, 'wd_mind_vector_cache', None) is not module
+                    or type(getattr(module, '__file__', None)) is not str
+                    or not startup._same_path(Path(module.__file__), path)):
+                raise ValueError('cache_origin')
+            prefix._read_pinned(bundle / 'deployment-manifest.json', manifest_pin, prefix.MAX_CONTROL_BYTES)
+            prefix._read_pinned(path, digest, 8 * 1024 * 1024)
+
+        verify()
+        return _PrivateVectorCache(module, r'C:\Python\wd-mind-vector-cache\vectors.bin', verify)
+    finally:
+        _CACHE_MODULE_LOCK.release()
+
+
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
                                  prior_memory=None, vector_cache=None):
@@ -1859,9 +1920,10 @@ class _FlatRequestHandler:
     """In-process owner; caller retains this object through any HOLD."""
     __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_rotator', '_adapter', '_memory',
                  '_frozen_flat', '_closed', '_failed', '_lock', '_factory', '_timeout', '_bulk', '_pending_rotator',
-                 '_refresh_controller', '_watcher_lease', '_retained')
+                 '_refresh_controller', '_watcher_lease', '_retained', '_vector_cache')
 
-    def __init__(self, binding, snapshot, lane, lanes, rotator, adapter, factory, timeout, bulk, watcher_lease=None):
+    def __init__(self, binding, snapshot, lane, lanes, rotator, adapter, factory, timeout, bulk, watcher_lease=None,
+                 vector_cache=None):
         self._binding, self._snapshot, self._lane = binding, snapshot, lane
         self._lanes = frozenset(lanes)
         self._rotator, self._adapter = rotator, adapter
@@ -1869,6 +1931,7 @@ class _FlatRequestHandler:
         self._factory, self._timeout, self._bulk, self._pending_rotator = factory, timeout, bulk, None
         self._refresh_controller = None
         self._watcher_lease = watcher_lease
+        self._vector_cache = vector_cache
         self._retained = None
         self._closed = self._failed = False
         self._lock = threading.Lock()
@@ -1899,7 +1962,7 @@ class _FlatRequestHandler:
                 encoder_binding_bytes=self._adapter.encoder_binding_bytes,
                 encoder_binding_sha256=self._adapter.encoder_binding_sha256,
                 source_verification='verified_immutable_snapshot_v1', _watcher_lease=self._watcher_lease,
-                _prior_memory=prior_memory)
+                _prior_memory=prior_memory, _vector_cache=self._vector_cache)
             self._memory = memory
             self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
             self._source_check()
@@ -2512,9 +2575,10 @@ class _SingleManifestOwner:
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
-                 '_rotation_type')
+                 '_rotation_type', '_vector_cache_enabled')
 
-    def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False):
+    def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
+                 vector_cache_enabled=False):
         self._generation = (binding, snapshot, None)
         self._lane = lane
         self._lanes, self._factory, self._timeout = frozenset(lanes), factory, timeout
@@ -2532,6 +2596,7 @@ class _SingleManifestOwner:
         self._rotation_enabled = rotation_enabled
         self._rotation_anchor = None
         self._rotation_type = None
+        self._vector_cache_enabled = vector_cache_enabled
 
     @property
     def _binding(self):
@@ -2999,7 +3064,11 @@ class _SingleManifestOwner:
         elif watcher_owned is None:
             self._state = 'HOLD'
             owned = True if owned is True else None
-        return {'state': self._state, 'owned': owned, 'authority': 'none'}
+        result = {'state': self._state, 'owned': owned, 'authority': 'none'}
+        if (self._vector_cache_enabled and self._state == 'READY' and self._handler is not None
+                and type(self._handler._memory) is _PrivateFlatMemory):
+            result['cache_status'] = self._handler._memory.cache_status
+        return result
 
     def invalidate_external_policy(self):
         """Fence this owner after its caller detects an external policy-pin failure.
@@ -3077,7 +3146,8 @@ class _SingleManifestOwner:
                         expected_manifest_sha256=manifest, client=self._client)
                 self._handler = _FlatRequestHandler(self._binding, self._snapshot, self._lane, self._lanes,
                     self._client, self._adapter, self._factory, self._timeout, self._factory._bulk,
-                    self._watcher_lease)
+                    self._watcher_lease,
+                    _load_pinned_vector_cache(self._binding) if self._vector_cache_enabled else None)
                 result = self._handler.build()
                 if result != {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}:
                     raise ValueError('build')
@@ -3366,7 +3436,8 @@ class _SingleManifestOwner:
 
 
 def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, worker_factory=None,
-                                 shutdown_timeout=None, policy_anchor=None, worker_rotation=False):
+                                 shutdown_timeout=None, policy_anchor=None, worker_rotation=False,
+                                 vector_cache_enabled=False):
     """Create an inert owner, retaining its worker or explicit rotator on HOLD.
 
     The manifest and lane must already be independently bound. No worker is
@@ -3377,7 +3448,7 @@ def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, work
         from tools import wd_mind_e5_client as worker_client
         if (enabled is not True or type(binding) is not _PrivateBinding
                 or type(worker_factory) is not _ManifestWorkerFactory or type(lane) is not str
-                or lane not in reader._LANES or type(worker_rotation) is not bool
+                or lane not in reader._LANES or type(worker_rotation) is not bool or type(vector_cache_enabled) is not bool
                 or type(shutdown_timeout) not in (int, float)
                 or not math.isfinite(shutdown_timeout) or not 0 <= shutdown_timeout <= 15):
             raise ValueError('input')
@@ -3393,7 +3464,7 @@ def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, work
         if lane not in names:
             raise ValueError('lane')
         result = _SingleManifestOwner(binding, snapshot, lane, names, worker_factory, float(shutdown_timeout),
-                                      rotation_enabled=worker_rotation)
+                                      rotation_enabled=worker_rotation, vector_cache_enabled=vector_cache_enabled)
         if policy_anchor is not None:
             result._bind_policy_anchor(policy_anchor)
     except Exception:

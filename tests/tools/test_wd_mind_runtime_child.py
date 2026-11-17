@@ -60,11 +60,22 @@ def test_parent_result_refuses_invalid_time_age_or_status(timestamp, age, freshn
         _validate_parent_result(_verified_parent_result(timestamp=timestamp, age=age, freshness=freshness))
 
 
-def test_local_manifest_query_is_default_off_and_refuses_an_unpinned_bundle(tmp_path):
+@pytest.fixture
+def synthetic_local_admission(monkeypatch):
+    """In-process double; real Windows reservation is covered separately."""
+    guard = object.__new__(child._LocalOwnerReservation)
+    guard.fd = 1  # Inert sentinel; this fixture never reads or closes it.
+    monkeypatch.setattr(guard, '_check', lambda: None)
+    monkeypatch.setattr(guard, '_read', lambda: child._OWNER_RESERVATION_MAGIC + b'R')
+    return child._LocalAdmission(guard)
+
+
+def test_local_manifest_query_is_default_off_and_refuses_an_unpinned_bundle(tmp_path, synthetic_local_admission):
     policy = b'synthetic'
     args = {'bundle_root': str(tmp_path), 'expected_manifest_sha256': 'a' * 64,
             'identifier_policy_bytes': policy, 'expected_identifier_policy_sha256': hashlib.sha256(policy).hexdigest(),
-            'operator_approval_reference_sha256': 'c' * 64, 'lane': 'codex-lead-1'}
+            'operator_approval_reference_sha256': 'c' * 64, 'lane': 'codex-lead-1',
+            '_admission': synthetic_local_admission}
     with pytest.raises(child.LaunchRefused, match='^mind_e5_start_refused$'):
         child.create_local_manifest_query(**args)
     adapter = child.create_local_manifest_query(enabled=True, **args)
@@ -73,7 +84,7 @@ def test_local_manifest_query_is_default_off_and_refuses_an_unpinned_bundle(tmp_
     assert adapter.close()['state'] == 'STOPPED'
 
 
-def test_local_manifest_query_timeout_retains_preparation_and_never_launches_late(monkeypatch, tmp_path):
+def test_local_manifest_query_timeout_retains_preparation_and_never_launches_late(monkeypatch, tmp_path, synthetic_local_admission):
     from tools import wd_mind_full_runtime as runtime
     entered, release = threading.Event(), threading.Event()
     launches = []
@@ -88,7 +99,7 @@ def test_local_manifest_query_timeout_retains_preparation_and_never_launches_lat
     adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
         expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
         expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
-        operator_approval_reference_sha256='c'*64, lane='codex-lead-1')
+        operator_approval_reference_sha256='c'*64, lane='codex-lead-1', _admission=synthetic_local_admission)
     assert not entered.is_set()  # The caller has the owner before preparation.
     try:
         assert adapter.start()['state'] == 'STARTING'
@@ -103,7 +114,7 @@ def test_local_manifest_query_timeout_retains_preparation_and_never_launches_lat
     assert adapter.close()['state'] == 'STOPPED'
 
 
-def test_local_manifest_query_timeout_during_anchor_never_prepares_or_launches(monkeypatch, tmp_path):
+def test_local_manifest_query_timeout_during_anchor_never_prepares_or_launches(monkeypatch, tmp_path, synthetic_local_admission):
     from tools import wd_mind_full_runtime as runtime
     entered, release = threading.Event(), threading.Event()
     launches = []
@@ -117,7 +128,7 @@ def test_local_manifest_query_timeout_during_anchor_never_prepares_or_launches(m
     adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
         expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
         expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
-        operator_approval_reference_sha256='c'*64, lane='codex-lead-1')
+        operator_approval_reference_sha256='c'*64, lane='codex-lead-1', _admission=synthetic_local_admission)
     assert not entered.is_set()
     try:
         assert adapter.start()['state'] == 'STARTING'
@@ -134,7 +145,7 @@ def test_local_manifest_query_timeout_during_anchor_never_prepares_or_launches(m
     ('codex-lead-1', 'own'), ('codex-tools-1', 'own'), ('fable-5', 'own'),
     ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
-def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, tmp_path, lane, scope):
+def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, tmp_path, lane, scope, synthetic_local_admission):
     from tools import wd_mind_full_runtime as runtime
     from tools import wd_mind_e5_client as client
     controls = (b'synthetic-fleet', b'synthetic-roster', b'synthetic-policy')
@@ -160,7 +171,7 @@ def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, t
     adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
         expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
         expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
-        operator_approval_reference_sha256='c'*64, lane=lane)
+        operator_approval_reference_sha256='c'*64, lane=lane, _admission=synthetic_local_admission)
     assert calls == []
     assert 'start' not in calls
     assert adapter.start()['state'] == 'STARTING'
@@ -179,7 +190,7 @@ def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, t
 
 
 @pytest.mark.parametrize('when', ['before_query', 'during_query'])
-def test_local_query_rejects_real_approval_descriptor_mutation(monkeypatch, tmp_path, when):
+def test_local_query_rejects_real_approval_descriptor_mutation(monkeypatch, tmp_path, when, synthetic_local_admission):
     from tools import wd_mind_full_runtime as runtime
     policy = b'synthetic-policy'
     policy_sha = hashlib.sha256(policy).hexdigest()
@@ -214,7 +225,7 @@ def test_local_query_rejects_real_approval_descriptor_mutation(monkeypatch, tmp_
     adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
         expected_manifest_sha256=manifest_sha, identifier_policy_bytes=policy,
         expected_identifier_policy_sha256=policy_sha, operator_approval_reference_sha256=approval_sha,
-        lane='codex-lead-1')
+        lane='codex-lead-1', _admission=synthetic_local_admission)
     assert adapter.start()['state'] == 'STARTING'
     assert adapter.wait(timeout=5)['state'] == 'READY'
     if when == 'before_query': mutate()
@@ -477,7 +488,7 @@ def test_local_candidate_owner_rejects_wrong_path_policy_hash(tmp_path):
 
 @pytest.mark.parametrize('when', ['before', 'during'])
 @pytest.mark.parametrize('method', ['candidates', 'located_candidates'])
-def test_candidate_proxy_rechecks_real_external_policy_file(monkeypatch, tmp_path, when, method):
+def test_candidate_proxy_rechecks_real_external_policy_file(monkeypatch, tmp_path, when, method, synthetic_local_admission):
     from tools import wd_mind_full_runtime as runtime
     policy = b'synthetic-approved-policy'
     policy_path = tmp_path / 'policy.json'
@@ -504,7 +515,8 @@ def test_candidate_proxy_rechecks_real_external_policy_file(monkeypatch, tmp_pat
     adapter=child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
         expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
         expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
-        operator_approval_reference_sha256='c'*64, lane='codex-lead-1', policy_path=str(policy_path))
+        operator_approval_reference_sha256='c'*64, lane='codex-lead-1', policy_path=str(policy_path),
+        _admission=synthetic_local_admission)
     assert adapter.start()['state'] == 'STARTING'
     assert adapter.wait(timeout=5)['state'] == 'READY'
     if when == 'before': policy_path.write_bytes(b'x' * len(policy))

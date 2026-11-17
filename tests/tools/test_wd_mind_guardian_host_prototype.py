@@ -280,3 +280,12 @@ def test_exchange_complete_rechecks_deadline_after_permission_gate():
         release.set();publisher.join(3)
     assert not publisher.is_alive() and leases==['released']
     assert out==[False] and exchange._state=='EXPIRED' and exchange._result is None
+
+
+def test_duplicate_completion_never_leaves_ready_with_missing_value():
+    exchange=_Exchange(request(),2.0,lambda:1.0)
+    first={'schema':'synthetic-first'}
+    assert exchange.complete(first)
+    assert not exchange.complete({'schema':'synthetic-duplicate'})
+    assert exchange._state=='EXPIRED' and exchange._result is None
+    assert exchange.read()['state']=='WITHOUT_MIND'

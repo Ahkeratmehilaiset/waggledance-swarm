@@ -57,7 +57,7 @@ class _Exchange:
             if accepted:
                 self._result=result;self._state='READY'
             else:
-                if self._state=='PENDING': self._state='EXPIRED'
+                if self._state in ('PENDING','READY'): self._state='EXPIRED'
                 self._result=None
         finally:
             if release is not None:release()

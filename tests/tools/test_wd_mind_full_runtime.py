@@ -13,6 +13,34 @@ from tools import wd_mind_content_query_readonly as reader
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_cached_vectors_match_screened_records_and_ignore_new_records(monkeypatch):
+    import struct
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(reader, 'decode_text', lambda value: value)
+    first = {'record_id': 'old', 'stored_text': 'screened old content'}
+    added = {'record_id': 'new', 'stored_text': 'screened new content'}
+    key, passage = runtime._cache_record_keys(first)
+    vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+    assert runtime._cache_vectors_from_rows({'old': first, 'new': added},
+                                             ((key, passage, vector),)) == {'old': vector}
+    assert 'screened' not in repr((key, passage, vector))
+
+
+def test_cached_vectors_reject_changed_or_missing_screened_record(monkeypatch):
+    import struct
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(reader, 'decode_text', lambda value: value)
+    first = {'record_id': 'old', 'stored_text': 'screened old content'}
+    key, passage = runtime._cache_record_keys(first)
+    vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+    with pytest.raises(ValueError, match='cache_projection_changed'):
+        runtime._cache_vectors_from_rows({}, ((key, passage, vector),))
+    with pytest.raises(ValueError, match='cache_projection_changed'):
+        runtime._cache_vectors_from_rows({'old': first}, ((key, '0' * 64, vector),))
+    with pytest.raises(ValueError, match='cache_row'):
+        runtime._cache_vectors_from_rows({'old': first}, ((key, passage, vector), (key, passage, vector)))
+
+
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     """Constructing a disabled/default owner must not start a worker."""
     from tools import wd_mind_full_runtime as runtime

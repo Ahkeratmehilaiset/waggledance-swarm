@@ -1070,6 +1070,43 @@ def _flat_hashes(ids, vectors):
             'vectors_sha256': reader._sha(vectors), 'pairs_sha256': pairs.hexdigest()}
 
 
+def _cache_record_keys(record):
+    """Derive cache keys from screened content without persisting that content."""
+    if type(record) is not dict or type(record.get('record_id')) is not str:
+        raise ValueError('cache_record')
+    passage = 'passage: ' + reader.decode_text(record['stored_text'])[:2000]
+    return reader._sha(reader._canonical(record)), reader._sha(passage.encode('utf-8'))
+
+
+def _cache_vectors_from_rows(by_id, rows):
+    """Accept the entire old screened set or reject the entire cache."""
+    if type(by_id) is not dict or type(rows) is not tuple:
+        raise ValueError('cache_rows')
+    current = {}
+    for record_id, record in by_id.items():
+        if type(record_id) is not str or record.get('record_id') != record_id:
+            raise ValueError('cache_record')
+        keys = _cache_record_keys(record)
+        if keys[0] in current:
+            raise ValueError('cache_duplicate')
+        current[keys[0]] = (record_id, keys[1])
+    reusable = {}
+    previous = ''
+    for row in rows:
+        if (type(row) is not tuple or len(row) != 3 or type(row[0]) is not str
+                or type(row[1]) is not str or type(row[2]) is not bytes
+                or not reader._hex(row[0]) or not reader._hex(row[1])
+                or row[0] <= previous or len(row[2]) != 1536):
+            raise ValueError('cache_row')
+        previous = row[0]
+        item = current.get(row[0])
+        if item is None or not hmac.compare_digest(item[1], row[1]):
+            raise ValueError('cache_projection_changed')
+        reader._q4_vector(struct.unpack('<384f', row[2]))
+        reusable[item[0]] = row[2]
+    return reusable
+
+
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
                                  prior_memory=None):

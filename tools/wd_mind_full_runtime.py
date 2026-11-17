@@ -1109,8 +1109,9 @@ def _cache_content_pins(binding):
     pins = {}
     for relative in _CACHE_CONTENT_PATHS:
         pin = document['files'].get(relative)
-        if not reader._hex(pin):
+        if type(pin) is not str or not reader._hex(pin.lower()):
             raise ValueError('cache_content_pin')
+        pin = pin.lower()
         path = bundle.joinpath(*relative.split('/'))
         raw = prefix._read_pinned(path, pin, 8 * 1024 * 1024)
         if relative in ('wd-mind-runtime-manifest.json', 'wd-mind-interpreter-identity.json'):
@@ -1135,11 +1136,14 @@ def _cache_descriptor_content_sha(raw, relative):
     for row in document['files']:
         if (type(row) is not dict or set(row) != expected_row_keys or type(row['path']) is not str
                 or not row['path'] or type(row['size']) is not int or row['size'] < 0
-                or not reader._hex(row['sha256']) or row['path'].casefold() in seen
+                or type(row['sha256']) is not str or not reader._hex(row['sha256'].lower())
+                or row['path'].casefold() in seen
                 or (not runtime and row['role'] not in ('interpreter', 'stdlib', 'dll'))):
             raise ValueError('cache_descriptor')
         seen.add(row['path'].casefold())
-        rows.append(row)
+        normalized = dict(row)
+        normalized['sha256'] = row['sha256'].lower()
+        rows.append(normalized)
     rows.sort(key=lambda row: row['path'])
     return reader._sha(reader._canonical({'schema': schema, 'files': rows}))
 
@@ -1331,8 +1335,9 @@ def _load_pinned_vector_cache(binding):
         if type(manifest) is not dict or type(manifest.get('files')) is not dict:
             raise ValueError('cache_manifest')
         digest = manifest['files'].get(relative)
-        if not reader._hex(digest):
+        if type(digest) is not str or not reader._hex(digest.lower()):
             raise ValueError('cache_code_pin')
+        digest = digest.lower()
         verified = prefix._read_pinned(path, digest, 8 * 1024 * 1024)
         package = sys.modules.get('tools')
         if type(package) is not types.ModuleType:

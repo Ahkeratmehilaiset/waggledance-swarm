@@ -82,6 +82,32 @@ def test_cache_runtime_content_ignores_generation_but_not_tokenizer():
     assert fingerprint(manifest) != original
 
 
+def test_cache_content_pins_accept_installer_uppercase_sha256(tmp_path):
+    from tools import wd_mind_full_runtime as runtime
+    bundle = tmp_path / 'bundle'
+    files = {}
+    for relative in runtime._CACHE_CONTENT_PATHS:
+        path = bundle.joinpath(*relative.split('/'))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if relative == 'wd-mind-runtime-manifest.json':
+            data = json.dumps({'schema': 'wd.q4-runtime-manifest.v1', 'generation': 'a' * 40,
+                               'revision': 'b' * 40, 'files': [{'path': 'model/tokenizer.json',
+                                   'size': 1, 'sha256': 'A' * 64}]}).encode()
+        elif relative == 'wd-mind-interpreter-identity.json':
+            data = json.dumps({'schema': 'wd.q4-interpreter-identity.v1', 'files': [
+                {'path': 'python.exe', 'size': 1, 'sha256': 'b' * 64, 'role': 'interpreter'}]}).encode()
+        else:
+            data = ('synthetic ' + relative).encode()
+        path.write_bytes(data)
+        files[relative] = hashlib.sha256(data).hexdigest().upper()
+    raw = json.dumps({'files': files}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(raw)
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(raw).hexdigest().upper(), (), {})
+    pins = runtime._cache_content_pins(binding)
+    assert set(pins) == set(runtime._CACHE_CONTENT_PATHS)
+    assert all(value == value.lower() and len(value) == 64 for value in pins.values())
+
+
 def test_cache_requires_complete_screened_old_prefix_set(monkeypatch):
     import struct
     from types import SimpleNamespace
@@ -171,9 +197,9 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
     path.parent.mkdir(parents=True)
     code = b'def load_cache(path, binding, verify): return "synthetic"\ndef write_cache(path, binding, rows): pass\n'
     path.write_bytes(code)
-    manifest = json.dumps({'files': {relative: hashlib.sha256(code).hexdigest()}}).encode()
+    manifest = json.dumps({'files': {relative: hashlib.sha256(code).hexdigest().upper()}}).encode()
     (bundle / 'deployment-manifest.json').write_bytes(manifest)
-    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest(), (), {})
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest().upper(), (), {})
     monkeypatch.setattr(runtime.importlib.util, 'find_spec', lambda _: types.SimpleNamespace(origin=str(path)))
     try:
         provider = runtime._load_pinned_vector_cache(binding)

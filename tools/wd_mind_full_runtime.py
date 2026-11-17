@@ -3341,6 +3341,11 @@ class _SingleManifestOwner:
                 or not reader._hex(request['nonce']) or request['lane'] not in self._lanes
                 or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        # Located startup delivery is unavailable until the owner and its
+        # rotation callback account for every source read under one budget.
+        # Refuse before touching retained state; this is not an integrity fault.
+        if located:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
         frozen = dict(request, schema='wd.mind-pipe-request.v1')
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None

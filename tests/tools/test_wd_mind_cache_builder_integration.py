@@ -5,10 +5,13 @@ operations and deployment binding are replaced only at explicit test seams;
 this does not establish production ACL, bundle pin, or process isolation.
 """
 from contextlib import nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
 import struct
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -23,13 +26,18 @@ reader = runtime.reader
 VECTOR = struct.pack('<384f', 1.0, *([0.0] * 383))
 
 
-@pytest.fixture
-def synthetic(tmp_path, monkeypatch):
+def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
     assert '.codex-audit' in str(tmp_path).lower()
     source_dir = tmp_path / 'synthetic-source'
-    source_dir.mkdir()
     cache_root = tmp_path / 'synthetic-cache'
-    cache_root.mkdir()
+    if existing:
+        assert source_dir.is_dir() and cache_root.is_dir()
+        template_dir = tmp_path / 'synthetic-control-template'
+        template_dir.mkdir()
+    else:
+        source_dir.mkdir()
+        cache_root.mkdir()
+        template_dir = source_dir
     cache_path = cache_root / 'vectors.bin'
     removed = fixtures._row('synthetic removed build record')
     rows = [fixtures._row('synthetic allowed alpha work'),
@@ -37,7 +45,15 @@ def synthetic(tmp_path, monkeypatch):
             fixtures._row('password=syntheticfixturevalue'),
             fixtures._row('synthetic private review', agent='claude-rco-1',
                           agent_uuid=fixtures.ROSTER['claude-rco-1']), removed]
-    case = fixtures._all_tasks_case(reader, source_dir, rows)
+    case = fixtures._all_tasks_case(reader, template_dir, rows)
+    if existing:
+        from waggledance.core import bridge_log_reader as bridge
+        source = source_dir / 'synthetic-events.jsonl'
+        generation = source_dir / 'synthetic-generation.json'
+        with bridge._open_log(source) as stream:
+            identity = bridge._file_identity(stream)
+        cursor = bridge.BridgeCursor(source.stat().st_size, identity, 'synthetic-g1')
+        case['messages'].update(source_path=str(source), generation_path=str(generation), end_cursor=cursor)
     policy = json.loads(case['messages']['policy_bytes'])
     policy['removed_source_refs'] = [fixtures._sha(fixtures._raw(removed))]
     case['messages']['policy_bytes'] = fixtures._raw(policy)
@@ -107,6 +123,11 @@ def synthetic(tmp_path, monkeypatch):
                            passages=passages, checks=checks, build=build)
 
 
+@pytest.fixture
+def synthetic(tmp_path, monkeypatch):
+    return _synthetic_case(tmp_path, monkeypatch)
+
+
 def test_cold_warm_and_append_use_only_screened_vectors(synthetic):
     cold_binding, cold_projection = synthetic.snapshot()
     cold = synthetic.build(cold_binding)
@@ -153,3 +174,89 @@ def test_invalid_cache_or_changed_prefix_reencodes_entire_screened_set(synthetic
     assert len(projection['messages']['records']) == 2 and len(synthetic.passages) == 2
     assert all('password' not in text and 'private review' not in text and 'removed' not in text
                for text in synthetic.passages)
+
+
+_PROCESS_ACTOR = r'''
+import hashlib, json, os, pathlib, sys
+root, location, phase = sys.argv[1:]
+root, location = pathlib.Path(root), pathlib.Path(location)
+if not root.is_absolute() or not location.is_absolute() or '.codex-audit' not in str(location).lower():
+    raise RuntimeError('synthetic path required')
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / 'tests' / 'tools'))
+import pytest
+import test_wd_mind_cache_builder_integration as harness
+patcher = pytest.MonkeyPatch()
+try:
+    case = harness._synthetic_case(location, patcher, existing=(phase == 'warm'))
+    before = hashlib.sha256(case.cache_path.read_bytes()).hexdigest() if case.cache_path.exists() else None
+    binding, projection = case.snapshot()
+    memory = case.build(binding)
+    initial = {'cache_status': memory.cache_status, 'passage_count':len(case.passages),
+               'ids_sha256':hashlib.sha256(harness.reader._canonical(list(memory.ids))).hexdigest(),
+               'vectors_sha256':hashlib.sha256(memory.vectors).hexdigest(),
+               'cache_before_sha256':before,
+               'cache_after_sha256':hashlib.sha256(case.cache_path.read_bytes()).hexdigest(),
+               'source_sha256':hashlib.sha256(case.source.read_bytes()).hexdigest(),
+               'screened_records':len(projection['messages']['records'])}
+    result = {'pid':os.getpid(), 'phase':phase, 'initial':initial}
+    if phase == 'warm':
+        case.passages.clear()
+        row = harness.fixtures._row('synthetic allowed process append')
+        with case.source.open('ab') as stream:
+            stream.write(harness.fixtures._raw(row) + b'\n')
+        later_binding, projection = case.snapshot()
+        later = case.build(later_binding)
+        result['append'] = {'cache_status':later.cache_status, 'passage_count':len(case.passages),
+                            'only_new':case.passages == ['passage: synthetic allowed process append'],
+                            'screened_records':len(projection['messages']['records']),
+                            'source_sha256':hashlib.sha256(case.source.read_bytes()).hexdigest(),
+                            'cache_sha256':hashlib.sha256(case.cache_path.read_bytes()).hexdigest()}
+    print(json.dumps(result, sort_keys=True), flush=True)
+finally:
+    patcher.undo()
+'''
+
+
+def _run_synthetic_process(location, phase):
+    root = Path(__file__).resolve().parents[2]
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name.startswith(('AGENT_BRIDGE_', 'WD_BRIDGE_', 'WD_REBOOT_', 'WD_MIND_')):
+            del environment[name]
+    environment['PYTHONDONTWRITEBYTECODE'] = '1'
+    process = subprocess.Popen([sys.executable, '-I', '-B', '-c', _PROCESS_ACTOR,
+        str(root), str(location), phase], cwd=root, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    try:
+        output, error = process.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f'synthetic builder {process.pid} remains running; no kill attempted')
+    assert process.returncode == 0, error
+    data = json.loads(output)
+    # Windows venv launchers may themselves spawn the interpreter; its PID can
+    # differ from Popen's wrapper PID. Both still exit before communicate returns.
+    assert type(data['pid']) is int and data['pid'] > 0 and data['phase'] == phase
+    return data
+
+
+def test_sequential_processes_reuse_then_append_without_old_reencoding(tmp_path):
+    location = tmp_path / 'synthetic-process-case'
+    location.mkdir()
+    cold = _run_synthetic_process(location, 'cold')
+    warm = _run_synthetic_process(location, 'warm')
+    assert cold['pid'] != warm['pid']
+    first, second = cold['initial'], warm['initial']
+    assert first['cache_status'] == 'MISS_STORED' and first['passage_count'] == 2
+    assert first['cache_before_sha256'] is None and first['screened_records'] == 2
+    assert second['cache_status'] == 'HIT_STORED' and second['passage_count'] == 0
+    assert second['cache_before_sha256'] == first['cache_after_sha256'] == second['cache_after_sha256']
+    assert second['source_sha256'] == first['source_sha256']
+    assert second['ids_sha256'] == first['ids_sha256']
+    assert second['vectors_sha256'] == first['vectors_sha256']
+    appended = warm['append']
+    assert appended['cache_status'] == 'HIT_STORED' and appended['passage_count'] == 1
+    assert appended['only_new'] is True and appended['screened_records'] == 3
+    assert appended['source_sha256'] != first['source_sha256']
+    assert appended['cache_sha256'] != first['cache_after_sha256']

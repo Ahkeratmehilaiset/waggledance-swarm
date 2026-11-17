@@ -5,6 +5,9 @@ bootstrap, peer authentication, cross-process ownership and source verification
 remain unproved. Results are untrusted reference proposals, never Mind content.
 No caller request or result is written to disk. A blocked query stays owned in
 HOLD; this module never kills a thread, process or remote owner.
+The per-instance nonce registry refuses further requests after 1024 accepted
+nonces, an availability limit. Replay protection across caller or host restart
+is UNKNOWN; this prototype must not be connected to production on that basis.
 """
 
 import hashlib

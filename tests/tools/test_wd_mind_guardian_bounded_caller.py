@@ -44,6 +44,46 @@ def test_stop_is_not_accepted_when_result_gate_is_busy():
         caller._lock.release()
 
 
+def test_nonce_registry_accepts_1024_then_refuses_new_nonce():
+    # Exercise submit directly; clear each ticket as if a quiescent pump had
+    # consumed it. No thread, pipe, source data or model is started here.
+    caller = module._BoundedCaller(True, MANIFEST)
+    caller._state = 'READY'
+    assert caller.attach(lane=LANE, session=SESSION)
+    for n in range(1024):
+        nonce = f'{n:064x}'
+        assert caller.submit(lane=LANE, session=SESSION, nonce=nonce, budget_seconds=1)['state'] == 'PENDING'
+        assert nonce in caller._used_nonces
+        with caller._lock:
+            caller._ticket = None
+            caller._state = 'READY'
+    assert len(caller._used_nonces) == 1024
+    nonce_1025 = f'{1024:064x}'
+    assert caller.submit(lane=LANE, session=SESSION, nonce=nonce_1025, budget_seconds=1)['state'] == 'REFUSED'
+    assert nonce_1025 not in caller._used_nonces
+    assert len(caller._used_nonces) == 1024
+
+
+def test_invalid_and_blocked_submits_do_not_consume_nonce():
+    caller = module._BoundedCaller(True, MANIFEST)
+    caller._state = 'READY'
+    assert caller.attach(lane=LANE, session=SESSION)
+    assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=0)['state'] == 'REFUSED'
+    assert NONCE not in caller._used_nonces
+    assert caller._lock.acquire(blocking=False)
+    try:
+        assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=1)['state'] == 'WITHOUT_MIND'
+        assert NONCE not in caller._used_nonces
+    finally:
+        caller._lock.release()
+    caller._state = 'BUSY'
+    assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=1)['state'] == 'WITHOUT_MIND'
+    assert NONCE not in caller._used_nonces
+    caller._state = 'READY'
+    assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=1)['state'] == 'PENDING'
+    assert NONCE in caller._used_nonces
+
+
 @pytest.fixture
 def transport(monkeypatch):
     import multiprocessing.connection as connection

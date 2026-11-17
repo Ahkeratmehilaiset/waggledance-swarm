@@ -111,7 +111,7 @@ class _LocalOwnerReservation:
                 raise LaunchRefused('owner_reservation_changed')
             import msvcrt
             os.lseek(self.fd, 0, os.SEEK_SET)
-            msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+            msvcrt.locking(self.fd, msvcrt.LK_UNLCK, len(_OWNER_RESERVATION_MAGIC) + 1)
             os.close(self.fd)
             self.fd = -1
         except BaseException:
@@ -138,7 +138,7 @@ def _reserve_local_owner(root):
             raise LaunchRefused('owner_reservation_invalid')
         fd = os.open(path, os.O_RDWR | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0))
         os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, len(_OWNER_RESERVATION_MAGIC) + 1)
         guard = _LocalOwnerReservation(root, path, fd,
             (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
         guard._check()

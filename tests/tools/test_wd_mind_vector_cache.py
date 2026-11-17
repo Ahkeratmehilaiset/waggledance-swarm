@@ -1,0 +1,243 @@
+"""Synthetic-only cache checks; pytest basetemp must be inside .codex-audit."""
+import math
+import json
+import hashlib
+import os
+from pathlib import Path
+import struct
+import subprocess
+import sys
+
+import pytest
+
+from tools import wd_mind_vector_cache as cache
+
+
+def binding():
+    return {"source_identity_sha256": "1" * 64, "source_generation_sha256": "2" * 64,
+            "prefix_offset": 100, "prefix_sha256": "3" * 64, "model_sha256": "4" * 64,
+            "policy_sha256": "5" * 64, "projection_code_sha256": "6" * 64,
+            "projection_sha256": "7" * 64}
+
+
+def rows():
+    return (("a" * 64, "b" * 64, struct.pack("<384f", 1.0, *([0.0] * 383))),
+            ("c" * 64, "d" * 64, struct.pack("<384f", 0.0, 1.0, *([0.0] * 382))))
+
+
+@pytest.fixture
+def private_dir(tmp_path, monkeypatch):
+    if os.name != "nt":
+        pytest.skip("native Windows ACL and directory leases")
+    assert ".codex-audit" in str(tmp_path).lower()
+    user = subprocess.check_output(["whoami"], text=True).strip()
+    result = subprocess.run(["icacls", str(tmp_path), "/inheritance:r", "/grant:r",
+                             user + ":(OI)(CI)F", "SYSTEM:(OI)(CI)F"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run(["icacls", str(tmp_path), "/remove:g", "*S-1-5-32-544", "*S-1-3-4"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    return tmp_path
+
+
+def test_round_trip_and_raw_text_absent(private_dir):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    result = cache.load_cache(path, binding(), lambda offset, digest: offset == 100 and digest == "3" * 64)
+    assert result.rows == rows() and dict(result.binding) == binding()
+    assert result.record_set_sha256 == hashlib.sha256(bytes.fromhex("a" * 64 + "c" * 64)).hexdigest()
+    with pytest.raises(TypeError):
+        result.binding["prefix_offset"] = 999
+    raw = path.read_bytes()
+    assert b"not included raw sample text" not in raw
+    assert b"stored_text" not in raw and b"passage: " not in raw
+    header_len = struct.unpack("<I", raw[len(cache._MAGIC):len(cache._MAGIC) + 4])[0]
+    header_end = len(cache._MAGIC) + 4 + header_len
+    assert raw[header_end:] == b"".join(cache._encoded(rows()))
+    assert json.loads(raw[len(cache._MAGIC) + 4:header_end]) == cache._header(binding(), rows())
+
+
+@pytest.mark.parametrize("key", ["source_identity_sha256", "source_generation_sha256", "model_sha256",
+                                  "policy_sha256", "projection_code_sha256"])
+def test_pin_change_refuses_whole_cache(private_dir, key):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    current = binding()
+    current[key] = "f" * 64
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, current, lambda *_: True)
+
+
+def test_append_requires_valid_old_prefix(private_dir):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    current = dict(binding(), prefix_offset=120, prefix_sha256="f" * 64)
+    seen = []
+    assert cache.load_cache(path, current, lambda offset, digest: seen.append((offset, digest)) or True).rows == rows()
+    assert seen and all(pair == (100, "3" * 64) for pair in seen)
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, current, lambda *_: False)
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, dict(current, prefix_offset=99), lambda *_: True)
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, dict(binding(), prefix_sha256="f" * 64), lambda *_: True)
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, dict(binding(), projection_sha256="f" * 64), lambda *_: True)
+    calls = []
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, current, lambda *_: calls.append(1) or len(calls) == 1)
+    assert len(calls) == 2
+
+
+def test_prefix_verifier_exception_is_refusal(private_dir):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    def fail(*_):
+        raise RuntimeError("synthetic")
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, binding(), fail)
+
+
+@pytest.mark.parametrize("mutation", ["truncate", "flip", "extra", "header"])
+def test_corruption_never_returns_partial_rows(private_dir, mutation):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    raw = bytearray(path.read_bytes())
+    if mutation == "truncate":
+        raw = raw[:-1]
+    elif mutation == "flip":
+        raw[-1] ^= 1
+    elif mutation == "extra":
+        raw.extend(b"x")
+    else:
+        raw[0] ^= 1
+    path.write_bytes(raw)
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, binding(), lambda *_: True)
+
+
+def test_unknown_header_field_refused(private_dir):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    raw = path.read_bytes()
+    start = len(cache._MAGIC) + 4
+    old_len = struct.unpack("<I", raw[len(cache._MAGIC):start])[0]
+    header = json.loads(raw[start:start + old_len])
+    header["unknown"] = "not allowed"
+    changed = cache._canonical(header)
+    path.write_bytes(cache._MAGIC + struct.pack("<I", len(changed)) + changed + raw[start + old_len:])
+    with pytest.raises(cache.CacheRefused, match="header"):
+        cache.load_cache(path, binding(), lambda *_: True)
+
+
+def test_nonunit_vector_refused_even_if_checksums_are_recomputed(private_dir):
+    path = private_dir / "vectors.bin"
+    invalid = (("a" * 64, "b" * 64, bytes(1536)),)
+    header = cache._canonical(cache._header(binding(), invalid))
+    path.write_bytes(cache._MAGIC + struct.pack("<I", len(header)) + header + b"".join(cache._encoded(invalid)))
+    with pytest.raises(cache.CacheRefused, match="vector_norm"):
+        cache.load_cache(path, binding(), lambda *_: True)
+
+
+def test_invalid_vectors_and_ambiguous_rows_rejected_before_write(private_dir):
+    path = private_dir / "vectors.bin"
+    for invalid in ((("a" * 64, "b" * 64, b"short"),),
+                    (("a" * 64, "b" * 64, struct.pack("<384f", math.nan, *([0.0] * 383))),),
+                    (("a" * 64, "b" * 64, bytes(1536)),),
+                    (rows()[0], rows()[0])):
+        with pytest.raises(cache.CacheRefused):
+            cache.write_cache(path, binding(), invalid)
+        assert not path.exists()
+
+
+def test_interrupted_replace_preserves_old_complete_cache(private_dir, monkeypatch):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    def fail(*_):
+        raise OSError("synthetic interruption")
+    monkeypatch.setattr(cache.os, "replace", fail)
+    with pytest.raises(cache.CacheRefused):
+        cache.write_cache(path, binding(), rows()[:1])
+    assert cache.load_cache(path, binding(), lambda *_: True).rows == rows()
+    assert not list(private_dir.glob("*.tmp"))
+
+
+def test_second_process_cannot_write_while_first_holds_lock(private_dir):
+    path = private_dir / "vectors.bin"
+    program = ("from tools import wd_mind_vector_cache as c; from pathlib import Path; import sys; "
+               "p=Path(sys.argv[1]); c._CACHE_ROOT=p.parent; "
+               "b={'source_identity_sha256':'1'*64,'source_generation_sha256':'2'*64,"
+               "'prefix_offset':100,'prefix_sha256':'3'*64,'model_sha256':'4'*64,"
+               "'policy_sha256':'5'*64,'projection_code_sha256':'6'*64,'projection_sha256':'7'*64}; "
+               "c.write_cache(p,b,())")
+    with cache._Directory(private_dir) as directory, cache._WriterLock(directory, path):
+        result = subprocess.run([sys.executable, "-c", program, str(path)], capture_output=True, text=True)
+    assert result.returncode != 0 and "CacheRefused" in result.stderr
+    assert not path.exists()
+
+
+def test_broad_acl_refused(tmp_path, monkeypatch):
+    if os.name != "nt":
+        pytest.skip("native Windows ACL")
+    assert ".codex-audit" in str(tmp_path).lower()
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    result = subprocess.run(["icacls", str(tmp_path), "/grant", "*S-1-1-0:(OI)(CI)R"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    with pytest.raises(cache.CacheRefused, match="acl_not_user_only"):
+        cache.write_cache(tmp_path / "vectors.bin", binding(), rows())
+
+
+def test_nonprivate_or_unknown_acl_refuses_access(private_dir, monkeypatch):
+    def unknown(*_):
+        raise cache.CacheRefused("acl_unknown")
+    monkeypatch.setattr(cache._Native, "user_acl", unknown)
+    with pytest.raises(cache.CacheRefused, match="acl_unknown"):
+        cache.write_cache(private_dir / "vectors.bin", binding(), rows())
+
+
+def test_linked_directory_or_file_refused(private_dir, monkeypatch):
+    target = private_dir / "real"
+    target.mkdir()
+    link = private_dir / "linked"
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        pytest.skip("Windows symlink privilege unavailable")
+    monkeypatch.setattr(cache, "_CACHE_ROOT", link)
+    with pytest.raises(cache.CacheRefused):
+        cache.write_cache(link / "vectors.bin", binding(), rows())
+
+
+def test_hardlinked_cache_refused(private_dir):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    os.link(path, private_dir / "second-link.bin")
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, binding(), lambda *_: True)
+    with pytest.raises(cache.CacheRefused):
+        cache.write_cache(path, binding(), rows())
+
+
+def test_linked_cache_destination_refused(private_dir):
+    target = private_dir / "other.bin"
+    target.write_bytes(b"unchanged")
+    path = private_dir / "vectors.bin"
+    try:
+        os.symlink(target, path)
+    except OSError:
+        pytest.skip("Windows symlink privilege unavailable")
+    with pytest.raises(cache.CacheRefused):
+        cache.write_cache(path, binding(), rows())
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, binding(), lambda *_: True)
+    assert target.read_bytes() == b"unchanged"
+
+
+def test_production_root_excludes_repo_and_bundles(tmp_path):
+    assert str(cache._CACHE_ROOT).lower() == r"c:\python\wd-mind-vector-cache"
+    with pytest.raises(cache.CacheRefused, match="cache_root"):
+        with cache._Directory(tmp_path):
+            pass

@@ -438,7 +438,7 @@ function Get-WdBridgeSupervisorArguments {
     if ($requested) {
         $valid = -not $MindRequestedButDisabled -and $mindCount -eq 3 -and $MindOperatorPolicyPath -cmatch '\A[Cc]:[\\/]' -and
             $MindOperatorPolicyPath -notmatch '[\\/]$' -and
-            $MindOperatorPolicyPath.Substring(3) -notmatch '[:*?"<>|\x00-\x1f]' -and
+            $MindOperatorPolicyPath.Substring(3) -notmatch '[:*?"<>|&;\x00-\x1f]' -and
             @($MindOperatorPolicyPath.Substring(3).Split([char[]]'\\/') | Where-Object { $_ -in @('.', '..') -or $_ -match '[. ]$' }).Count -eq 0 -and
             $MindOperatorPolicySha256 -cmatch '\A[0-9a-fA-F]{64}\z' -and
             $MindOperatorApprovalReferenceSha256 -cmatch '\A[0-9a-fA-F]{64}\z'

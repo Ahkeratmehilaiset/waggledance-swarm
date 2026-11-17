@@ -42,7 +42,7 @@ function Get-WdToolsMindArguments {
     }
     $valid = $count -eq 3 -and $PolicyPath -cmatch '\A[Cc]:[\\/]' -and
         $PolicyPath -notmatch '[\\/]$' -and
-        $PolicyPath.Substring(3) -notmatch '[:*?"<>|\x00-\x1f]' -and
+        $PolicyPath.Substring(3) -notmatch '[:*?"<>|&;\x00-\x1f]' -and
         @($PolicyPath.Substring(3).Split([char[]]'\\/') | Where-Object { $_ -in @('.', '..') -or $_ -match '[. ]$' }).Count -eq 0 -and
         $PolicySha256 -cmatch '\A[0-9a-fA-F]{64}\z' -and $ApprovalReferenceSha256 -cmatch '\A[0-9a-fA-F]{64}\z'
     $fullPath = ''

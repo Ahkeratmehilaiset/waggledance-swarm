@@ -1080,6 +1080,10 @@ def _cache_record_keys(record):
     return reader._sha(reader._canonical(record)), reader._sha(passage.encode('utf-8'))
 
 
+class _CacheProjectionMismatch(ValueError):
+    """A complete cache does not match the screened source projection."""
+
+
 _CACHE_CONTENT_PATHS = (
     'wd-mind-runtime-manifest.json',
     'wd-mind-interpreter-identity.json',
@@ -1202,12 +1206,15 @@ def _cache_vectors_from_rows(by_id, rows):
                 or type(row[1]) is not str or type(row[2]) is not bytes
                 or not reader._hex(row[0]) or not reader._hex(row[1])
                 or row[0] <= previous or len(row[2]) != 1536):
-            raise ValueError('cache_row')
+            raise _CacheProjectionMismatch('cache_row')
         previous = row[0]
         item = current.get(row[0])
         if item is None or not hmac.compare_digest(item[1], row[1]):
-            raise ValueError('cache_projection_changed')
-        reader._q4_vector(struct.unpack('<384f', row[2]))
+            raise _CacheProjectionMismatch('cache_projection_changed')
+        try:
+            reader._q4_vector(struct.unpack('<384f', row[2]))
+        except ValueError:
+            raise _CacheProjectionMismatch('cache_vector') from None
         reusable[item[0]] = row[2]
     return reusable
 
@@ -1239,11 +1246,11 @@ def _cache_verified_reusable(snapshot, projection, by_id, cache_result):
     cursor = snapshot['messages']['end_cursor']
     old_projection = projection if offset == cursor.offset else _cache_old_projection(snapshot, offset, old_sha)
     if not hmac.compare_digest(_cache_projection_sha256(old_projection), stored['projection_sha256']):
-        raise ValueError('cache_projection_changed')
+        raise _CacheProjectionMismatch('cache_projection_changed')
     old_records = old_projection['messages']['records']
     old_keys = sorted(_cache_record_keys(record)[0] for record in old_records)
     if (len(set(old_keys)) != len(old_keys) or tuple(old_keys) != tuple(row[0] for row in rows)):
-        raise ValueError('cache_record_set_changed')
+        raise _CacheProjectionMismatch('cache_record_set_changed')
     return _cache_vectors_from_rows(by_id, rows)
 
 
@@ -1386,9 +1393,9 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             if vector_cache is not None and prior_memory is None:
                 if type(vector_cache) is not _PrivateVectorCache:
                     raise ValueError('cache_provider')
+                cache_binding = _cache_snapshot_binding(binding, frozen, projection,
+                                                        encoder_binding_bytes, encoder_binding_sha256)
                 try:
-                    cache_binding = _cache_snapshot_binding(binding, frozen, projection,
-                                                            encoder_binding_bytes, encoder_binding_sha256)
                     def verify_old_prefix(offset, expected):
                         return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
                                 and reader._hex(expected)
@@ -1396,7 +1403,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     cached = vector_cache.load(cache_binding, verify_old_prefix)
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
                     cache_status = 'HIT'
-                except Exception:
+                except (vector_cache._module.CacheRefused, _CacheProjectionMismatch):
                     reusable, cache_status = {}, 'MISS'
             if prior_memory is not None:
                 # The old content is reused only after both complete source
@@ -1462,7 +1469,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     cache_rows = _cache_rows_from_screened_projection(projection, ids, vectors)
                     vector_cache.write(cache_binding, cache_rows)
                     output.cache_status = cache_status + '_STORED'
-                except Exception:
+                except vector_cache._module.CacheRefused:
                     output.cache_status = cache_status + '_NOT_STORED'
                 package._unchanged(snapshot, frozen, report, complete=True)
                 _flat_snapshot(binding, frozen)
@@ -3151,6 +3158,10 @@ class _SingleManifestOwner:
                 result = self._handler.build()
                 if result != {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}:
                     raise ValueError('build')
+                if (self._vector_cache_enabled and
+                        (type(self._handler._memory) is not _PrivateFlatMemory
+                         or self._handler._memory.cache_status not in ('HIT_STORED', 'MISS_STORED'))):
+                    raise ValueError('cache_not_stored')
                 self._check_factory()
                 self._state = 'READY'
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):

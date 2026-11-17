@@ -2809,12 +2809,23 @@ class _SingleManifestOwner:
                 self._client._check_source()
             else:
                 self._generation = generation
+            if _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+                # The replacement generation is still private under the owner
+                # lock. Prewarm it before publishing READY; a source failure
+                # follows the existing rollback-to-HOLD path below.
+                self._retained = None
+                self._state = 'STARTING'
+                self._source_budget = prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
+                self._ensure_retained_locked(source_budget=self._source_budget)
+                self._prewarm_generation = self._generation
+                self._source_budget = None
             # Retire direct lane views without closing the shared worker.
             old_handler._closed = True
             old_handler._retained = None
             old_handler._rotator = None
             old_handler._adapter = None
-            self._retained = None
+            if not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+                self._retained = None
             self._state = 'READY'
             accepted = True
         except BaseException as exc:
@@ -3400,9 +3411,9 @@ class _SingleManifestOwner:
         try:
             if self._state != 'READY' or self._handler is None:
                 raise ValueError('owner_not_ready')
+            checking = True
             if self._prewarm_generation is not self._generation:
                 raise ValueError('prewarm_unavailable')
-            checking = True
             try:
                 self._source_budget = _startup_owner_source_budget(self._snapshot)
             except _StartupSourceBudgetRefused:

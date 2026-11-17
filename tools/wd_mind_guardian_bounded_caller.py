@@ -37,6 +37,8 @@ class _BoundedCaller:
         self._thread = self._query = self._ticket = None
         self._lane = self._session = None
         self._generation = 0
+        self._used_nonces = set()
+        self._launch_committed = False
 
     def start(self):
         with self._lock:
@@ -98,11 +100,14 @@ class _BoundedCaller:
             if (not self._enabled or self._stop.is_set() or self._state != 'READY'
                     or self._ticket is not None or (lane, session) != (self._lane, self._session)):
                 return {'state':'WITHOUT_MIND'}
+            if nonce in self._used_nonces or len(self._used_nonces) >= 1024:
+                return {'state':'REFUSED'}
             scope = 'shared' if lane in ('claude-rco-1', 'claude-rco-2') else 'own'
             request = {'schema':'wd.mind-pipe-request.v2', 'query_id':'startup_work_overview',
                        'nonce':nonce, 'lane':lane, 'scope':scope}
             self._ticket = {'request':request, 'session':session, 'generation':self._generation,
                             'deadline':started + float(budget_seconds), 'expired':False, 'result':None}
+            self._used_nonces.add(nonce)
             self._state = 'BUSY'
             self._finished.clear()
             self._wake.set()
@@ -176,8 +181,12 @@ class _BoundedCaller:
                 self._wake.clear()
                 with self._lock:
                     ticket = self._ticket if self._state == 'BUSY' else None
-                    if ticket is None and self._stop.is_set():
+                    if self._stop.is_set():
+                        if ticket is not None:
+                            ticket['expired'], ticket['result'] = True, None
+                            self._ticket = None
                         self._state = 'STOPPED'
+                        self._finished.set()
                         return
                 if ticket is None:
                     continue
@@ -187,6 +196,25 @@ class _BoundedCaller:
                         request=ticket['request'])
                     with self._lock:
                         self._query = query  # Retain before any thread can start.
+                        skip = (self._stop.is_set() or ticket['expired']
+                                or ticket['generation'] != self._generation
+                                or (ticket['request']['lane'], ticket['session']) != (self._lane, self._session)
+                                or time.monotonic() >= ticket['deadline'])
+                        if skip:
+                            ticket['expired'], ticket['result'] = True, None
+                            self._ticket = self._query = None
+                            self._state = 'STOPPED' if self._stop.is_set() else 'READY'
+                            self._finished.set()
+                        else:
+                            # STOP and the decision to enter query.start share
+                            # this gate; no blocking I/O runs while it is held.
+                            self._launch_committed = True
+                    if skip:
+                        with self._lock:
+                            if self._stop.is_set():
+                                self._state = 'STOPPED'
+                                return
+                        continue
                     query.start()
                     # Continue retaining the actual query even after deadline,
                     # detach or STOP; no new operation starts while it is alive.
@@ -219,7 +247,9 @@ class _BoundedCaller:
                             if self._ticket is ticket:
                                 self._ticket = None
                         self._query = None
+                        self._launch_committed = False
                         self._state = 'STOPPED' if self._stop.is_set() else 'READY'
+                        self._finished.set()
                 except BaseException:
                     with self._lock:
                         ticket['expired'], ticket['result'], self._state = True, None, 'HOLD'
@@ -229,7 +259,6 @@ class _BoundedCaller:
                     while True:
                         self._wake.wait(0.05)
                         self._wake.clear()
-                self._finished.set()
                 if self._stop.is_set():
                     with self._lock:
                         self._state = 'STOPPED'

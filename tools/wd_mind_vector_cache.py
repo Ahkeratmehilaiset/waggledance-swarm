@@ -4,6 +4,14 @@ Cache bytes are derived data, not an authenticated statement.  A writer running
 as the same Windows user can replace both vectors and checksums: UNKNOWN.
 The fixed cache root is outside both the task repo and the reboot bundles. The
 caller must bind all vector-affecting model and projection dependencies.
+
+On a failed new-lock owner/ACL check, the empty lock object can remain; the
+next writer independently rechecks its owner and ACL and refuses if unknown.
+Never remove or take ownership of an unexpected existing lock automatically.
+An authorized operator may clear an orphan only after independently excluding
+active writers and verifying the intended directory/object; otherwise HOLD.
+Failed publication can similarly leave a restricted temporary file; it is not
+reused and requires the same careful offline inspection for later cleanup.
 """
 from __future__ import annotations
 
@@ -343,20 +351,16 @@ def write_cache(path, binding, rows):
                 existing = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
                 os.close(existing)
             tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-            try:
-                fd = _fd(directory.native, tmp, 1, 0x40000000, 0, os.O_WRONLY)
-                with os.fdopen(fd, "wb") as output:
-                    output.write(_MAGIC + struct.pack("<I", len(header)) + header)
-                    for block in _encoded(rows):
-                        output.write(block)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(tmp, path)
-            finally:
-                try:
-                    tmp.unlink()
-                except FileNotFoundError:
-                    pass
+            fd = _fd(directory.native, tmp, 1, 0x40000000, 0, os.O_WRONLY)
+            with os.fdopen(fd, "wb") as output:
+                output.write(_MAGIC + struct.pack("<I", len(header)) + header)
+                for block in _encoded(rows):
+                    output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+            # Never unlink by pathname on failure: CREATE_NEW may have failed
+            # against another object's name or the entry may have changed.
+            os.replace(tmp, path)
     except CacheRefused:
         raise
     except Exception:

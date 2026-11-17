@@ -166,7 +166,50 @@ def test_interrupted_replace_preserves_old_complete_cache(private_dir, monkeypat
     with pytest.raises(cache.CacheRefused):
         cache.write_cache(path, binding(), rows()[:1])
     assert cache.load_cache(path, binding(), lambda *_: True).rows == rows()
-    assert not list(private_dir.glob("*.tmp"))
+    # No path-based cleanup of an object another process could replace.
+    assert len(list(private_dir.glob("*.tmp"))) == 1
+
+
+def test_colliding_temp_object_is_never_deleted(private_dir, monkeypatch):
+    class FixedUuid:
+        hex = "a" * 32
+    foreign = private_dir / ("vectors.bin." + FixedUuid.hex + ".tmp")
+    foreign.write_bytes(b"foreign synthetic file")
+    monkeypatch.setattr(cache.uuid, "uuid4", lambda: FixedUuid())
+    with pytest.raises(cache.CacheRefused):
+        cache.write_cache(private_dir / "vectors.bin", binding(), rows())
+    assert foreign.read_bytes() == b"foreign synthetic file"
+
+
+def test_failed_new_lock_owner_check_leaves_lock_for_safe_followup(private_dir, monkeypatch):
+    path = private_dir / "vectors.bin"
+    def fail(*_):
+        raise cache.CacheRefused("synthetic_owner_failure")
+    monkeypatch.setattr(cache._Native, "set_created_user_owner", fail)
+    with pytest.raises(cache.CacheRefused, match="synthetic_owner_failure"):
+        cache.write_cache(path, binding(), rows())
+    lock = private_dir / "vectors.bin.lock"
+    assert lock.exists() and not path.exists()
+    monkeypatch.undo()
+    # The name/ACL/owner are checked afresh. In an elevated process the
+    # abandoned lock often has the Administrators default owner and must HOLD.
+    monkeypatch.setattr(cache, "_CACHE_ROOT", private_dir)
+    native = cache._Native()
+    handle = native.open(lock, 3, 0, 3)
+    try:
+        try:
+            native.user_acl(handle)
+            trusted = True
+        except cache.CacheRefused:
+            trusted = False
+    finally:
+        native.kernel.CloseHandle(handle)
+    if trusted:
+        cache.write_cache(path, binding(), rows())
+    else:
+        with pytest.raises(cache.CacheRefused):
+            cache.write_cache(path, binding(), rows())
+        assert lock.exists() and not path.exists()
 
 
 def test_second_process_cannot_write_while_first_holds_lock(private_dir):
@@ -192,6 +235,48 @@ def test_second_cache_name_refused_even_while_first_writer_holds_lock(private_di
         result = subprocess.run([sys.executable, "-c", program, str(other)], capture_output=True, text=True)
     assert result.returncode != 0 and "CacheRefused: path" in result.stderr
     assert not other.exists()
+
+
+def test_current_user_owner_modify_acl_can_create_cache(private_dir):
+    """The child sets only its own token's default owner; no live files are touched."""
+    user = subprocess.check_output(["whoami"], text=True).strip()
+    result = subprocess.run(["icacls", str(private_dir), "/grant:r", user + ":(OI)(CI)M"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run(["icacls", str(private_dir), "/deny", user + ":(OI)(CI)(WO)"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    program = r'''
+import ctypes
+from ctypes import wintypes
+from pathlib import Path
+import sys
+from tools import wd_mind_vector_cache as c
+
+k=ctypes.WinDLL("kernel32", use_last_error=True)
+a=ctypes.WinDLL("advapi32", use_last_error=True)
+k.GetCurrentProcess.restype=wintypes.HANDLE
+a.OpenProcessToken.argtypes=[wintypes.HANDLE,wintypes.DWORD,ctypes.POINTER(wintypes.HANDLE)]
+a.GetTokenInformation.argtypes=[wintypes.HANDLE,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD)]
+a.SetTokenInformation.argtypes=[wintypes.HANDLE,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD]
+token=wintypes.HANDLE()
+assert a.OpenProcessToken(k.GetCurrentProcess(),0x88,ctypes.byref(token))
+size=wintypes.DWORD()
+a.GetTokenInformation(token,1,None,0,ctypes.byref(size))
+buf=ctypes.create_string_buffer(size.value)
+assert a.GetTokenInformation(token,1,buf,size.value,ctypes.byref(size))
+sid=ctypes.c_void_p(ctypes.cast(buf,ctypes.POINTER(ctypes.c_void_p))[0])
+assert a.SetTokenInformation(token,4,ctypes.byref(sid),ctypes.sizeof(sid))
+p=Path(sys.argv[1]); c._CACHE_ROOT=p.parent
+b={"source_identity_sha256":"1"*64,"source_generation_sha256":"2"*64,
+   "prefix_offset":100,"prefix_sha256":"3"*64,"model_sha256":"4"*64,
+   "policy_sha256":"5"*64,"projection_code_sha256":"6"*64,"projection_sha256":"7"*64}
+c.write_cache(p,b,())
+assert c.load_cache(p,b,lambda *_:True).rows == ()
+'''
+    process = subprocess.run([sys.executable, "-c", program, str(private_dir / "vectors.bin")],
+                             capture_output=True, text=True)
+    assert process.returncode == 0, process.stderr
 
 
 def test_broad_acl_refused(tmp_path, monkeypatch):

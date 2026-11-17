@@ -231,9 +231,23 @@ def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     assert calls == []
 
 
+def _synthetic_admitted_factory(monkeypatch, bundle, manifest, location, lock, timeout, lock_timeout, bulk):
+    """In-process admission double; does not prove the OS reservation."""
+    from tools import wd_mind_full_runtime as runtime, wd_mind_runtime_child as child
+    guard = object.__new__(child._LocalOwnerReservation)
+    guard.fd = 1  # Inert sentinel; no native handle is opened or closed.
+    monkeypatch.setattr(guard, '_check', lambda: None)
+    monkeypatch.setattr(guard, '_read', lambda: child._OWNER_RESERVATION_MAGIC + b'R')
+    lease, token = child._LocalAdmission(guard), object()
+    lease.bind_owner(token)
+    factory = runtime._ManifestWorkerFactory(bundle, manifest, location, lock, timeout, lock_timeout, bulk, lease, token)
+    lease.bind_factory(token, factory)
+    return factory
+
+
 def test_worker_factory_passes_only_remaining_call_deadline(monkeypatch, tmp_path):
-    from types import SimpleNamespace
     from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_child as child
     now, calls = [100.0], []
     location = {'runtime_root': 'root', 'runtime_manifest': 'manifest', 'runtime_manifest_sha256': 'a' * 64,
                 'runtime_generation': 'b' * 40, 'runtime_revision': 'c' * 40, 'interpreter': 'python',
@@ -243,11 +257,12 @@ def test_worker_factory_passes_only_remaining_call_deadline(monkeypatch, tmp_pat
         now[0] = 102.0
         return location
     monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', resolve)
-    child = SimpleNamespace(start_e5_worker_graceful=lambda **kwargs: calls.append(kwargs) or {'status': 'synthetic'})
+    monkeypatch.setattr(child, 'start_e5_worker_graceful', lambda **kwargs: calls.append(kwargs) or {'status': 'synthetic'})
     monkeypatch.setattr(runtime, '_worker_factory_preflight', lambda *_args: child)
-    factory = runtime._ManifestWorkerFactory(str(tmp_path), 'e' * 64, location, tmp_path / 'lock', 300, 1, 'f' * 64)
+    factory = _synthetic_admitted_factory(monkeypatch, str(tmp_path), 'e' * 64, location, tmp_path / 'lock', 300, 1, 'f' * 64)
     assert factory(owner_sink=lambda _owner: None, call_deadline=110.0) == {'status': 'synthetic'}
     assert calls[0]['timeout'] == 8.0
+    assert factory._admission._unknown is True  # The fake returns no captured worker.
     calls.clear()
     with pytest.raises(runtime.FullRuntimeRefused):
         factory(owner_sink=lambda _owner: None, call_deadline=101.0)
@@ -1018,8 +1033,8 @@ def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch
                        'tools_supervisor': {'agent': 'codex-tools-1'}})
     snapshot = {'projection_sha256': 'b' * 64}
     binding = runtime._PrivateBinding(snapshot, tmp_path, 'a' * 64, (fleet,), {})
-    factory = runtime._ManifestWorkerFactory(str(tmp_path), 'a' * 64, {}, tmp_path / 'lock', 5, 0,
-                                             wd_mind_e5_client.BULK_CONTRACT_SHA256)
+    factory = _synthetic_admitted_factory(monkeypatch, str(tmp_path), 'a' * 64, {}, tmp_path / 'lock', 5, 0,
+                                          wd_mind_e5_client.BULK_CONTRACT_SHA256)
     monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda self: snapshot)
     monkeypatch.setattr(runtime, '_flat_snapshot', lambda candidate, frozen: frozen)
 
@@ -1055,8 +1070,8 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
                        'tools_supervisor': {'agent': 'codex-tools-1'}})
     snapshot = {'projection_sha256': 'b' * 64}
     binding = runtime._PrivateBinding(snapshot, tmp_path, 'a' * 64, (fleet,), {})
-    factory = runtime._ManifestWorkerFactory(str(tmp_path), 'a' * 64, {}, tmp_path / 'lock', 5, 0,
-                                             wd_mind_e5_client.BULK_CONTRACT_SHA256)
+    factory = _synthetic_admitted_factory(monkeypatch, str(tmp_path), 'a' * 64, {}, tmp_path / 'lock', 5, 0,
+                                          wd_mind_e5_client.BULK_CONTRACT_SHA256)
     monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda self: snapshot)
     monkeypatch.setattr(runtime, '_flat_snapshot', lambda candidate, frozen: frozen)
 

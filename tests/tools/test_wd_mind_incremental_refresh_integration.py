@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 SCRIPT = r'''
-import datetime, hashlib, json, pathlib, sys
+import datetime, hashlib, json, os, pathlib, sys
 root, manifest, policy_sha, testdir, source, case = sys.argv[1:]
 root, source = pathlib.Path(root), pathlib.Path(source)
 sys.path.insert(0, str(root / 'tools-bootstrap'))
@@ -123,8 +123,15 @@ try:
         source.write_bytes(changed)
     elif case == 'short':
         original = source.read_bytes(); source.write_bytes(original[:-1])
+    elif case == 'identity':
+        # Both paths are under the pytest-owned synthetic source directory.
+        replacement = source.with_name('replacement.jsonl')
+        replacement.write_bytes(source.read_bytes())
+        os.replace(replacement, source)
     elif case == 'policy':
         (root / 'wd-mind-message-policy.json').write_bytes(b'{}')
+    elif case == 'encoder':
+        (root / 'wd-mind-e5-encoder-binding.json').write_bytes(b'{}')
 
     if case == 'busy':
         assert old_handler._lock.acquire(blocking=False)
@@ -135,7 +142,12 @@ try:
         finally:
             old_handler._lock.release()
         assert owner._generation is generation and operations['passage'] == old_passages
-    elif case in ('rewrite', 'short', 'policy'):
+        assert owner.status()['state'] == 'READY'
+        query = owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
+                                  query='current mission overview')
+        assert query['authority'] == 'none' and query['results']
+        assert operations['passage'] == old_passages
+    elif case in ('rewrite', 'short', 'identity', 'policy', 'encoder'):
         try: owner._refresh_generation(enabled=True)
         except runtime.FullRuntimeRefused: pass
         else: raise AssertionError('changed source or policy was accepted')
@@ -159,7 +171,7 @@ try:
             assert operations['passage'] - old_passages == len(additions), (operations, old_passages, additions)
         if case == 'stale':
             request = {'schema':'wd.mind-flat-owner-request.v1', 'lane':'codex-lead-1',
-                       'scope':'own', 'query':'ordinary synthetic work'}
+                       'scope':'own', 'query':'current mission overview'}
             try: old_view.handle(request)
             except runtime.FullRuntimeRefused: pass
             else: raise AssertionError('stale lane view returned content')
@@ -169,7 +181,7 @@ try:
             old_handler.close()
             assert owner.status()['state'] == 'READY', 'stale handler closed the shared owner'
         query = owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
-                                  query='synthetic new work' if case == 'append' else 'ordinary synthetic work')
+                                  query='current mission overview')
         assert query['authority'] == 'none' and query['results']
         assert all(hit['source_agent'] == 'codex-lead-1' and 'password=' not in hit['text']
                    for hit in query['results'])
@@ -178,6 +190,7 @@ try:
     after = disk_snapshot()
     expected_mutations = {str(source.relative_to(root.parent))} if case in ('append','excluded','rewrite','short') else set()
     if case == 'policy': expected_mutations.add(str((root / 'wd-mind-message-policy.json').relative_to(root.parent)))
+    if case == 'encoder': expected_mutations.add(str((root / 'wd-mind-e5-encoder-binding.json').relative_to(root.parent)))
     assert set(after) == set(on_disk_before), 'refresh created a file'
     assert {name for name in after if after[name] != on_disk_before[name]} == expected_mutations
     print(json.dumps({'status':'ok','case':case}))
@@ -190,7 +203,7 @@ finally:
 '''
 
 
-@pytest.mark.parametrize('case', ['noop', 'append', 'excluded', 'rewrite', 'short', 'policy', 'stale', 'busy'])
+@pytest.mark.parametrize('case', ['noop', 'append', 'excluded', 'rewrite', 'short', 'identity', 'policy', 'encoder', 'stale', 'busy'])
 def test_incremental_refresh_uses_only_verified_memory(synthetic_bundle, case):
     digest, policy_sha = _prepared_bundle(synthetic_bundle)
     source = synthetic_bundle['source']

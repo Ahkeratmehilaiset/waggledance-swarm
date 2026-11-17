@@ -1836,12 +1836,13 @@ class _RetainedFlatQueryState:
         owner._check_factory()
         owner._check_policy_anchor()
         policy_pin = _local_generation_policy_pin(owner)
-        source_owner = package.create_consumer_flat_source_owner(enabled=True,
-            bundle_root=str(binding._PrivateBinding__bundle),
+        source_args = dict(enabled=True, bundle_root=str(binding._PrivateBinding__bundle),
             expected_manifest_sha256=binding._PrivateBinding__manifest, snapshot=snapshot,
             flat_manifest_bytes=memory.manifest, flat_manifest_sha256=reader._sha(memory.manifest),
-            ids=memory.ids, vectors=memory.vectors, encoder_binding_bytes=memory.encoder_binding,
-            source_budget=source_budget)
+            ids=memory.ids, vectors=memory.vectors, encoder_binding_bytes=memory.encoder_binding)
+        if source_budget is not None:
+            source_args['source_budget'] = source_budget
+        source_owner = package.create_consumer_flat_source_owner(**source_args)
         projection, _, _ = source_owner._gate.verify_snapshot(source_owner._snapshot)
         records = {row['record_id']:row for row in projection['messages']['records']}
         if tuple(sorted(records)) != memory.ids or len(records) != len(projection['messages']['records']):
@@ -1914,7 +1915,8 @@ class _RetainedFlatQueryState:
             raise ValueError('retained_owner_changed')
         context = self._controls()
         source_budget = getattr(self._owner, '_source_budget', None)
-        before = self._prefix(context, source_budget=source_budget)
+        before = (self._prefix(context) if source_budget is None else
+                  self._prefix(context, source_budget=source_budget))
         when = reader.dt.datetime.now(reader.dt.timezone.utc)
         memory, records = self._memory, self._records
         eligible = []
@@ -1948,9 +1950,13 @@ class _RetainedFlatQueryState:
                       'doc_id_sha256':reader._sha(key.encode()),
                       'source_event_sha256':records[key]['provenance']['source_event_ref']}
                      for key, _, _, _ in selected]
-        resolved = (self._source_owner.resolve(proposals=proposals, lane=lane, scope=scope,
-                                               source_budget=source_budget)['results']
-                    if proposals else [])
+        if proposals:
+            resolve_args = dict(proposals=proposals, lane=lane, scope=scope)
+            if source_budget is not None:
+                resolve_args['source_budget'] = source_budget
+            resolved = self._source_owner.resolve(**resolve_args)['results']
+        else:
+            resolved = []
         if len(resolved) != len(selected):
             raise ValueError('retained_resolution')
         hits = []
@@ -1969,7 +1975,8 @@ class _RetainedFlatQueryState:
                 'source_offset':entry['offset'], 'source_length':entry['length'],
                 'chunk_index':record['provenance']['chunk_index']})
         context = self._controls()
-        after = self._prefix(context, source_budget=source_budget)
+        after = (self._prefix(context) if source_budget is None else
+                 self._prefix(context, source_budget=source_budget))
         if (before[0] != after[0] or after[1] < before[1]
                 or (after[1] == before[1] and after[2] != before[2])):
             raise ValueError('source_changed_during_query')
@@ -2734,7 +2741,10 @@ class _SingleManifestOwner:
         self._check_factory()
         self._check_policy_anchor()
         snapshot = self._snapshot
-        self._binding._immutable_checkpoint(snapshot, source_budget=self._source_budget)
+        if self._source_budget is None:
+            self._binding._immutable_checkpoint(snapshot)
+        else:
+            self._binding._immutable_checkpoint(snapshot, source_budget=self._source_budget)
         self._check_factory()
         return snapshot['projection_sha256']
 
@@ -2839,7 +2849,8 @@ class _SingleManifestOwner:
 
     def _ensure_retained_locked(self, *, source_budget=None):
         if self._retained is None:
-            retained = _RetainedFlatQueryState(self, source_budget=source_budget)
+            retained = (_RetainedFlatQueryState(self) if source_budget is None else
+                        _RetainedFlatQueryState(self, source_budget=source_budget))
             self._handler._retained = retained
             self._retained = retained
         if (type(self._retained) is not _RetainedFlatQueryState
@@ -3364,7 +3375,11 @@ class _SingleManifestOwner:
         if (type(retained) is not _RetainedFlatQueryState or self._handler is None
                 or self._handler._retained is not retained):
             raise ValueError('retained_binding')
-        retained._prefix(retained._controls(), source_budget=source_budget)
+        context = retained._controls()
+        if source_budget is None:
+            retained._prefix(context)
+        else:
+            retained._prefix(context, source_budget=source_budget)
 
     def _candidate_request(self, request, *, located):
         expected = 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1'

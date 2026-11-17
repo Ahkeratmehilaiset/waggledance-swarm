@@ -760,8 +760,10 @@ class _ConsumerSourceOwner:
                 candidates.append({'ref_sha256': item['ref_sha256'], 'doc_id_sha256': item['doc_id_sha256'],
                                    'ref_kind': 'sha256_of_projected_metadata', 'canonical_event': False})
             now = datetime.now(timezone.utc)
-            resolved = self._gate._resolve(candidates, reader._utc_text(now), self._snapshot,
-                                          source_budget=source_budget)
+            resolved = (self._gate._resolve(candidates, reader._utc_text(now), self._snapshot)
+                        if source_budget is None else
+                        self._gate._resolve(candidates, reader._utc_text(now), self._snapshot,
+                                            source_budget=source_budget))
             if len(resolved) != len(proposals):
                 raise ValueError('candidate_count')
             projection = json.loads(self._snapshot['projection_bytes'].decode('utf-8'),
@@ -995,14 +997,17 @@ def create_consumer_flat_source_owner(*, enabled=False, bundle_root=None, expect
                 or os.path.normcase(os.path.abspath(frozen['messages']['generation_path'])) != os.path.normcase(os.path.abspath(sidecar))
                 or frozen['roster_bytes'] != roster or frozen['messages']['policy_bytes'] != policy):
             raise ValueError('source_controls')
-        projection, context, before = reader._verified_complete(frozen, source_budget=source_budget)
+        projection, context, before = (reader._verified_complete(frozen) if source_budget is None else
+                                       reader._verified_complete(frozen, source_budget=source_budget))
         _verified_flat_manifest(flat_manifest_bytes, flat_manifest_sha256, frozen, projection,
                                 ids, vectors, encoder, check_vectors=True)
         references = {row['provenance']['source_event_ref'] for row in projection['messages']['records']}
         if not references or any(not reader._hex(ref) for ref in references):
             raise ValueError('references')
-        entries = reader._narrow_row_index(context, references, source_budget=source_budget)
-        _, _, after = reader._verified_complete(frozen, source_budget=source_budget)
+        entries = (reader._narrow_row_index(context, references) if source_budget is None else
+                   reader._narrow_row_index(context, references, source_budget=source_budget))
+        _, _, after = (reader._verified_complete(frozen) if source_budget is None else
+                       reader._verified_complete(frozen, source_budget=source_budget))
         if before != after:
             raise ValueError('source_changed')
         cursor = context['messages']['end_cursor']

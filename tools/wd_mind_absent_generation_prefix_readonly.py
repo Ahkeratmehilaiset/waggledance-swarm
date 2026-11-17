@@ -353,11 +353,16 @@ def read_complete_generationless_prefix_rows(source_path, generation_path, end_c
             if identity != end_cursor.file_identity:
                 raise ValueError("identity_mismatch")
             size = _fence(stream, source, sidecar, identity, end_cursor.offset)
-            first_hash, rows = _scan(stream, end_cursor.offset, None, source_budget=source_budget)
+            if source_budget is None:
+                first_hash, rows = _scan(stream, end_cursor.offset, None)
+            else:
+                first_hash, rows = _scan(stream, end_cursor.offset, None, source_budget=source_budget)
             if not hmac.compare_digest(first_hash, expected_prefix_sha256.lower()):
                 raise ValueError("prefix_mismatch")
             size = _fence(stream, source, sidecar, identity, size)
-            if not hmac.compare_digest(_hash_prefix(stream, end_cursor.offset, source_budget=source_budget), first_hash):
+            final_hash = (_hash_prefix(stream, end_cursor.offset) if source_budget is None else
+                          _hash_prefix(stream, end_cursor.offset, source_budget=source_budget))
+            if not hmac.compare_digest(final_hash, first_hash):
                 raise ValueError("prefix_changed")
             _fence(stream, source, sidecar, identity, size)
         result = rows

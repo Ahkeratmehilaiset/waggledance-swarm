@@ -1998,6 +1998,10 @@ class _FlatRequestHandler:
             self._memory = memory
             self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
             self._source_check()
+            if self._vector_cache is not None and self._rotator.owner is None:
+                # An all-cache hit sends no passage request, so start and
+                # validate the query worker without re-embedding old rows.
+                reader._q4_vector(self._adapter.query('Mind startup readiness'))
             self._running_owner()
             return {'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'}
         except Exception:

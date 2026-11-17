@@ -1088,6 +1088,31 @@ def test_cache_write_failure_prevents_owner_ready(monkeypatch, tmp_path):
     assert launches == [True]
 
 
+def test_warm_cache_starts_query_worker_without_passage_reembedding(monkeypatch):
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    rotator = SimpleNamespace(owner=None)
+    calls = []
+    class Adapter:
+        encoder_binding_bytes = b'encoder'
+        encoder_binding_sha256 = 'a' * 64
+        def query(self, text):
+            calls.append(('query', text))
+            rotator.owner = object()
+            return (1.0,) + (0.0,) * 383
+        def passage(self, _texts):
+            pytest.fail('warm cache must not re-embed a passage')
+    memory = SimpleNamespace(manifest=b'm', ids=(), vectors=b'', encoder_binding=b'e', cache_status='HIT_STORED')
+    monkeypatch.setattr(runtime, 'build_flat_memory', lambda **kwargs: memory)
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_source_check', lambda self: None)
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_running_owner',
+                        lambda self: None if self._rotator.owner is not None else (_ for _ in ()).throw(ValueError()))
+    handler = runtime._FlatRequestHandler(None, {}, 'codex-lead-1', (), rotator, Adapter(), None, 1, None,
+                                          vector_cache=object())
+    assert handler.build()['status'] == 'BUILT_IN_MEMORY'
+    assert len(calls) == 1 and calls[0][0] == 'query'
+
+
 @pytest.mark.parametrize('scenario', ['ready', 'held', 'interrupt', 'nonzero', 'client_swapped',
                                       'close_error', 'close_interrupt'])
 def test_rotating_owner_retains_current_worker_and_closes_cooperatively(tmp_path, monkeypatch, scenario):

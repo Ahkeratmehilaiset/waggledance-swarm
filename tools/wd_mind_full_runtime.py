@@ -501,7 +501,7 @@ class _PrivateBinding:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result
 
-    def _immutable_checkpoint(self, frozen):
+    def _immutable_checkpoint(self, frozen, *, source_budget=None):
         """Check controls and source identity without rehashing the prefix."""
         if self.__snapshot != frozen or _bundle_inputs(self.__bundle, self.__manifest) != self.__controls:
             raise ValueError('binding_changed')
@@ -530,7 +530,7 @@ class _PrivateBinding:
         with bridge._open_log(source) as stream:
             length = prefix._fence(stream, source, sidecar, cursor.file_identity, cursor.offset)
             stream.seek(cursor.offset - 1)
-            if stream.read(1) != b'\n':
+            if prefix._budgeted_read(stream, 1, source_budget) != b'\n':
                 raise ValueError('incomplete_cursor')
             prefix._fence(stream, source, sidecar, cursor.file_identity, length)
         if _bundle_inputs(self.__bundle, self.__manifest) != self.__controls:
@@ -1801,7 +1801,7 @@ class _RetainedFlatQueryState:
     __slots__ = ('_owner', '_generation', '_handler', '_memory', '_flat', '_snapshot',
                  '_source_owner', '_records', '_policy_pin', '_binding_pin', '_pid')
 
-    def __init__(self, owner):
+    def __init__(self, owner, *, source_budget=None):
         from tools import wd_mind_content_snapshot_package as package
         generation = owner._generation
         binding, snapshot, handler = generation
@@ -1818,7 +1818,8 @@ class _RetainedFlatQueryState:
             bundle_root=str(binding._PrivateBinding__bundle),
             expected_manifest_sha256=binding._PrivateBinding__manifest, snapshot=snapshot,
             flat_manifest_bytes=memory.manifest, flat_manifest_sha256=reader._sha(memory.manifest),
-            ids=memory.ids, vectors=memory.vectors, encoder_binding_bytes=memory.encoder_binding)
+            ids=memory.ids, vectors=memory.vectors, encoder_binding_bytes=memory.encoder_binding,
+            source_budget=source_budget)
         projection, _, _ = source_owner._gate.verify_snapshot(source_owner._snapshot)
         records = {row['record_id']:row for row in projection['messages']['records']}
         if tuple(sorted(records)) != memory.ids or len(records) != len(projection['messages']['records']):
@@ -1861,7 +1862,7 @@ class _RetainedFlatQueryState:
         _, context, _ = consumer._gate.verify_snapshot(self._snapshot)
         return context
 
-    def _prefix(self, context):
+    def _prefix(self, context, *, source_budget=None):
         source = Path(context['messages']['source_path'])
         sidecar = Path(context['messages']['generation_path'])
         cursor = context['messages']['end_cursor']
@@ -1873,7 +1874,7 @@ class _RetainedFlatQueryState:
             digest = hashlib.sha256()
             remaining = cursor.offset
             while remaining:
-                block = stream.read(min(1024 * 1024, remaining))
+                block = absent._budgeted_read(stream, min(1024 * 1024, remaining), source_budget)
                 if not block:
                     raise ValueError('short_prefix')
                 digest.update(block)
@@ -1890,7 +1891,8 @@ class _RetainedFlatQueryState:
         if self._handler._retained is not self:
             raise ValueError('retained_owner_changed')
         context = self._controls()
-        before = self._prefix(context)
+        source_budget = getattr(self._owner, '_source_budget', None)
+        before = self._prefix(context, source_budget=source_budget)
         when = reader.dt.datetime.now(reader.dt.timezone.utc)
         memory, records = self._memory, self._records
         eligible = []
@@ -1924,7 +1926,8 @@ class _RetainedFlatQueryState:
                       'doc_id_sha256':reader._sha(key.encode()),
                       'source_event_sha256':records[key]['provenance']['source_event_ref']}
                      for key, _, _, _ in selected]
-        resolved = (self._source_owner.resolve(proposals=proposals, lane=lane, scope=scope)['results']
+        resolved = (self._source_owner.resolve(proposals=proposals, lane=lane, scope=scope,
+                                               source_budget=source_budget)['results']
                     if proposals else [])
         if len(resolved) != len(selected):
             raise ValueError('retained_resolution')
@@ -1944,7 +1947,7 @@ class _RetainedFlatQueryState:
                 'source_offset':entry['offset'], 'source_length':entry['length'],
                 'chunk_index':record['provenance']['chunk_index']})
         context = self._controls()
-        after = self._prefix(context)
+        after = self._prefix(context, source_budget=source_budget)
         if (before[0] != after[0] or after[1] < before[1]
                 or (after[1] == before[1] and after[2] != before[2])):
             raise ValueError('source_changed_during_query')
@@ -2617,7 +2620,7 @@ class _SingleManifestOwner:
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
-                 '_rotation_type', '_vector_cache_enabled', '_cache_status')
+                 '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
                  vector_cache_enabled=False):
@@ -2640,6 +2643,7 @@ class _SingleManifestOwner:
         self._rotation_type = None
         self._vector_cache_enabled = vector_cache_enabled
         self._cache_status = 'NOT_STARTED' if vector_cache_enabled else 'DISABLED'
+        self._source_budget = None
 
     @property
     def _binding(self):
@@ -2706,7 +2710,7 @@ class _SingleManifestOwner:
         self._check_factory()
         self._check_policy_anchor()
         snapshot = self._snapshot
-        self._binding._immutable_checkpoint(snapshot)
+        self._binding._immutable_checkpoint(snapshot, source_budget=self._source_budget)
         self._check_factory()
         return snapshot['projection_sha256']
 
@@ -2809,9 +2813,9 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return {'schema':'wd.mind-flat-owner-refresh.v1', 'status':'REFRESHED', 'authority':'none'}
 
-    def _ensure_retained_locked(self):
+    def _ensure_retained_locked(self, *, source_budget=None):
         if self._retained is None:
-            retained = _RetainedFlatQueryState(self)
+            retained = _RetainedFlatQueryState(self, source_budget=source_budget)
             self._handler._retained = retained
             self._retained = retained
         if (type(self._retained) is not _RetainedFlatQueryState
@@ -3326,12 +3330,12 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result
 
-    def _check_candidate_delivery(self):
+    def _check_candidate_delivery(self, *, source_budget=None):
         retained = self._retained
         if (type(retained) is not _RetainedFlatQueryState or self._handler is None
                 or self._handler._retained is not retained):
             raise ValueError('retained_binding')
-        retained._prefix(retained._controls())
+        retained._prefix(retained._controls(), source_budget=source_budget)
 
     def _candidate_request(self, request, *, located):
         expected = 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1'

@@ -78,6 +78,36 @@ def test_short_read_refunds_unused_reservation():
         budget.reserve(1)
 
 
+def test_retained_prefix_reserves_before_open_source_read(monkeypatch):
+    class Source(BytesIO):
+        def __init__(self):
+            super().__init__(b'abc')
+            self.reads = []
+
+        def close(self):
+            pass
+
+        def fileno(self):
+            return 7
+
+        def read(self, count):
+            self.reads.append(count)
+            return super().read(count)
+
+    source = Source()
+    opened = SimpleNamespace(_open_log=lambda _path: source, _file_identity=lambda _stream: 'id')
+    monkeypatch.setattr(reader, '_narrow_dependencies', lambda: (opened, prefix))
+    monkeypatch.setattr(reader, '_narrow_fence', lambda *_args: None)
+    monkeypatch.setattr(runtime.os, 'fstat', lambda _fd: SimpleNamespace(st_size=3, st_mtime_ns=1))
+    context = {'messages': {'source_path': 'synthetic', 'generation_path': 'synthetic-generation',
+                            'end_cursor': SimpleNamespace(offset=3)},
+               'decision': {'source_prefix': {'sha256': reader._sha(b'abc')}}}
+    retained = object.__new__(runtime._RetainedFlatQueryState)
+    with pytest.raises(ValueError, match='source_budget'):
+        retained._prefix(context, source_budget=prefix._SourceReadBudget(2))
+    assert source.reads == []
+
+
 @pytest.mark.parametrize('direct', [False, True])
 def test_located_startup_request_refuses_before_owner_io_and_preserves_ready(monkeypatch, direct):
     owner = object.__new__(runtime._SingleManifestOwner)

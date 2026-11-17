@@ -287,6 +287,7 @@ def test_local_cli_discards_whole_result_if_post_close_validation_fails(monkeypa
 
 def test_fixed_local_cli_uses_named_arguments_and_manifest_environment(monkeypatch):
     monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a'*64)
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda entry, **kwargs: entry(**kwargs))
     seen = []
     monkeypatch.setattr(child, '_local_query_entry', lambda **kwargs: seen.append(kwargs) or 0)
     args = ['--mind-local-query', '--policy-sha256', 'b'*64,
@@ -350,11 +351,13 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
         return Service(kwargs['owner'])
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: owner)
     monkeypatch.setattr(process, 'create_local_candidate_service', service_factory)
+    evidence = {'clean': False}
     result = child._local_candidate_owner_entry(control_stream=Input(), output_stream=Output(),
         bundle_root='synthetic', expected_manifest_sha256='a'*64,
         policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64,
-        policy_path=str(policy_path) if policy_mode == 'path' else None)
+        policy_path=str(policy_path) if policy_mode == 'path' else None, _cleanup_evidence=evidence)
     assert result == expected_exit and starts == ['owner'] and len(requests) == 5
+    assert evidence['clean'] is True
     assert [row['state'] for row in statuses] == ['STARTING','READY','HOLD','STOPPED']
     assert all(row['authority'] == 'none' and row['caller_authentication'] == 'UNKNOWN'
                and row['source_authentication'] == 'UNKNOWN' and row['index_refresh'] == 'NOT_SCHEDULED'
@@ -435,6 +438,7 @@ def test_candidate_owner_monitor_keeps_service_alive_during_locked_query(monkeyp
 
 def test_fixed_local_candidate_owner_cli_uses_named_pins(monkeypatch):
     monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a'*64)
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda entry, **kwargs: entry(**kwargs))
     seen = []
     monkeypatch.setattr(child, '_local_candidate_owner_entry', lambda **kwargs: seen.append(kwargs) or 0)
     args = ['--mind-local-candidate-owner', '--policy-sha256', 'b'*64,

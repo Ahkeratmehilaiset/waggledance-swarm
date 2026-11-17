@@ -15,9 +15,6 @@ from pathlib import Path
 import re
 import threading
 
-from tools import wd_mind_runtime_child as child
-
-
 _BOOTSTRAP_PROVEN = False
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _MAX_STATUS = 4096
@@ -106,6 +103,9 @@ class _OwnedHost:
         with self._lock:
             if not self._enabled:
                 return self._status_locked()
+            if not _BOOTSTRAP_PROVEN:
+                self._state = 'HOLD'
+                return self._status_locked()
             if self._state != 'NEW' or self._stop.is_set():
                 return {'state':'HOLD', 'authority':'none', 'crash_ownership':'UNKNOWN'}
             self._state = 'STARTING'
@@ -119,6 +119,11 @@ class _OwnedHost:
     def _run(self):
         result = None
         try:
+            # The closed bootstrap gate is checked before this dependency can
+            # be imported. The future pinned launcher must verify both files.
+            if not _BOOTSTRAP_PROVEN:
+                raise HostRefused('guardian_host_refused')
+            from tools import wd_mind_runtime_child as child
             result = child._guarded_local_entry(child._local_candidate_owner_entry,
                 control_stream=self._control, output_stream=self._output, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, policy_path=self._policy_path,

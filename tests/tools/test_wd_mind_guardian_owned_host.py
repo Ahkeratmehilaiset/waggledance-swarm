@@ -2,6 +2,8 @@
 
 import json
 import os
+from pathlib import Path
+import runpy
 import threading
 
 import pytest
@@ -39,6 +41,27 @@ def test_default_off_never_starts_owner(tmp_path):
 def test_unverified_bootstrap_refuses_before_owner_start(tmp_path):
     with pytest.raises(host.HostRefused):
         _new(tmp_path, enabled=True)
+
+
+def test_direct_host_construction_cannot_bypass_closed_bootstrap(tmp_path):
+    owner = host._OwnedHost(True, str(tmp_path), MANIFEST, str(tmp_path / 'policy'), POLICY, APPROVAL)
+    assert owner.start()['state'] == 'HOLD'
+    assert owner._thread is None
+
+
+def test_off_module_import_does_not_execute_child(monkeypatch):
+    import builtins
+    original = builtins.__import__
+
+    def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == 'tools' and 'wd_mind_runtime_child' in fromlist:
+            raise AssertionError('child imported before verified host start')
+        return original(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, '__import__', guarded)
+    module_path = Path(__file__).resolve().parents[2] / 'tools/wd_mind_guardian_owned_host.py'
+    loaded = runpy.run_path(str(module_path), run_name='synthetic_off_host')
+    assert loaded['_BOOTSTRAP_PROVEN'] is False
 
 
 def test_stop_does_not_wait_on_host_lock(tmp_path, monkeypatch):

@@ -102,7 +102,7 @@ function Get-WdMindFleetPolicyArguments {
   if ($PolicyPath -ceq '' -and $PolicySha256 -ceq '' -and $ApprovalSha256 -ceq '') { return }
   if ([string]::IsNullOrWhiteSpace($PolicyPath) -or
       $PolicyPath -cne $PolicyPath.Trim() -or
-      $PolicyPath -cnotmatch '\A[A-Za-z]:\\' -or
+      $PolicyPath -cnotmatch '\A[A-Za-z]:[\\/]' -or
       $PolicyPath -match '[\x00-\x1f"<>|?*;&]' -or
       $PolicyPath.Substring(2).Contains(':') -or
       $PolicyPath -match '(^|[\\/])\.\.([\\/]|$)' -or

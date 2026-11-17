@@ -29,6 +29,45 @@ sys.modules[_full_spec.name] = _full_fixtures
 _full_spec.loader.exec_module(_full_fixtures)
 
 
+def _instrument_source_streams(monkeypatch, source):
+    """Count every source read, including reads bypassing a budget helper."""
+    dependencies = reader._narrow_dependencies()
+    original = prefix.bridge._open_log
+    target = Path(source).resolve()
+    reads = []
+    lock = threading.Lock()
+
+    class Stream:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            self._wrapped.close()
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+        def read(self, *args):
+            data = self._wrapped.read(*args)
+            with lock:
+                reads.append(('read', len(data)))
+            return data
+        def readline(self, *args):
+            data = self._wrapped.readline(*args)
+            with lock:
+                reads.append(('readline', len(data)))
+            return data
+
+    def opened(path):
+        wrapped = original(path)
+        return Stream(wrapped) if Path(path).resolve() == target else wrapped
+
+    monkeypatch.setattr(prefix.bridge, '_open_log', opened)
+    # These tests deliberately wrap the reader entry point; preserve its
+    # previously checked dependencies for the synthetic instrumentation.
+    monkeypatch.setattr(reader, '_narrow_dependencies', lambda: dependencies)
+    return reads
+
+
 @pytest.fixture
 def synthetic_checkout_pins(monkeypatch):
     root = Path(reader.__file__).resolve().parents[1]
@@ -176,6 +215,54 @@ def test_generationless_prewarm_scan_and_hash_share_one_allowance(tmp_path):
             source_budget=prefix._SourceReadBudget(2 * len(raw) - 1))
 
 
+@pytest.mark.parametrize('exhaust', [False, True], ids=['complete', 'mid_prewarm_exhausted'])
+def test_real_generationless_prewarm_charges_every_source_stream_read(
+        synthetic_checkout_pins, flat_consumer_case, monkeypatch, tmp_path, exhaust):
+    import json
+
+    package, original_owner, _proposals, original_snapshot, _clock, _response = flat_consumer_case
+    snapshot = dict(original_snapshot, messages=dict(original_snapshot['messages']))
+    source = Path(snapshot['messages']['source_path'])
+    sidecar = Path(snapshot['messages']['generation_path'])
+    assert tmp_path.resolve() in source.resolve().parents and tmp_path.resolve() in sidecar.resolve().parents
+    old_cursor = snapshot['messages']['end_cursor']
+    snapshot['messages']['end_cursor'] = prefix.bridge.BridgeCursor(old_cursor.offset, old_cursor.file_identity, None)
+    sidecar.unlink()
+    snapshot['messages']['generation_path'] = str(source.with_name('events.generation.json'))
+    decision = json.loads(snapshot['decision_bytes'])
+    decision['source_prefix']['generation'] = None
+    snapshot['decision_bytes'] = reader._canonical(decision)
+    snapshot['decision_sha256'] = reader._sha(snapshot['decision_bytes'])
+    inputs = {key: value for key, value in snapshot.items()
+              if key not in ('projection_bytes', 'projection_sha256')}
+    projection = reader.rederive_complete_message_projection(**inputs)
+    snapshot['projection_bytes'] = reader._serialized(projection)
+    snapshot['projection_sha256'] = reader._sha(snapshot['projection_bytes'])
+    controls = (str(source), snapshot['messages']['generation_path'], original_owner._controls[2],
+                snapshot['roster_bytes'], snapshot['messages']['policy_bytes'])
+    monkeypatch.setattr(package, '_consumer_bundle_controls', lambda *_args: controls)
+    gate = original_owner._gate
+    flat = json.loads(gate._flat_raw)
+    flat['projection_sha256'] = snapshot['projection_sha256']
+    flat_bytes = reader._canonical(flat)
+    reads = _instrument_source_streams(monkeypatch, source)
+    limit = (3 * old_cursor.offset + 1) if exhaust else (5 * old_cursor.offset)
+    budget = prefix._SourceReadBudget(limit)
+    def rebuild():
+        return package.create_consumer_flat_source_owner(enabled=True, bundle_root=original_owner._root,
+            expected_manifest_sha256=original_owner._pin, snapshot=snapshot, flat_manifest_bytes=flat_bytes,
+            flat_manifest_sha256=reader._sha(flat_bytes), ids=gate._ids, vectors=gate._vectors,
+            encoder_binding_bytes=gate._encoder, source_budget=budget)
+    if exhaust:
+        with pytest.raises(package.SnapshotPackageRefused):
+            rebuild()
+    else:
+        assert rebuild() is not None
+    assert any(kind == 'readline' for kind, _ in reads)
+    assert sum(size for _, size in reads) == (3 if exhaust else 5) * old_cursor.offset
+    assert budget._remaining == limit - sum(size for _, size in reads)
+
+
 def test_real_retained_query_charges_three_prefixes_and_selected_rows(
         synthetic_checkout_pins, flat_consumer_case, monkeypatch):
     import json
@@ -241,23 +328,22 @@ def test_candidate_request_charges_real_synthetic_source_reads(
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory_or_hold', lambda _self: None)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
     monkeypatch.setattr(reader.dt, 'datetime', clock)
-    charged, budgets = [], []
-    original = prefix._budgeted_read
-    def tracked(stream, size, source_budget=None, *, line=False):
-        data = original(stream, size, source_budget, line=line)
-        if source_budget is not None:
-            budgets.append(source_budget)
-            charged.append(len(data))
-        return data
-    monkeypatch.setattr(prefix, '_budgeted_read', tracked)
+    actual_reads = _instrument_source_streams(monkeypatch, snapshot['messages']['source_path'])
+    budgets = []
+    original = runtime._startup_owner_source_budget
+    def capture(snapshot):
+        budget = original(snapshot)
+        budgets.append(budget)
+        return budget
+    monkeypatch.setattr(runtime, '_startup_owner_source_budget', capture)
     request = {'schema': 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
                'query_id': 'startup_work_overview', 'nonce': '0' * 64,
                'lane': 'codex-lead-1', 'scope': 'shared'}
     result = (owner.located_candidates if located else owner.candidates)(request)
     assert result['status'] == 'CANDIDATES' and result['candidates']
     assert len({id(item) for item in budgets}) == 1
-    assert sum(charged) > 3 * context['messages']['end_cursor'].offset
-    assert budgets[0]._remaining == 1024 ** 3 - sum(charged)
+    assert sum(size for _, size in actual_reads) > 3 * context['messages']['end_cursor'].offset
+    assert budgets[0]._remaining == 1024 ** 3 - sum(size for _, size in actual_reads)
     assert owner._state == 'READY' and owner._source_budget is None
 
 

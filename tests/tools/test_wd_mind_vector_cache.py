@@ -85,6 +85,150 @@ def test_missing_and_stale_cache_are_typed_misses(private_dir):
 
 
 @pytest.fixture
+def relative_dir(private_dir, monkeypatch):
+    # Relative helpers remain gated off in every non-synthetic invocation.
+    monkeypatch.setattr(cache, '_AUDIT_NAMESPACE_PROVEN', True)
+    return private_dir
+
+
+def test_audit_relative_default_off_refuses_before_native_io(monkeypatch):
+    monkeypatch.setattr(cache, '_AUDIT_NAMESPACE_PROVEN', False)
+    # An uninitialized object has no native handles or kernel library. A
+    # native access before the guard would fail instead of returning refusal.
+    native = object.__new__(cache._Native)
+    with pytest.raises(cache.CacheRefused, match='audit_namespace_unverified'):
+        native.open_relative(None, 'vectors.bin', 3, 0x80000000, 1)
+    with pytest.raises(cache.CacheRefused, match='audit_namespace_unverified'):
+        native.rename_relative(None, None, 'vectors.bin')
+
+
+def test_audit_relative_lock_excludes_second_handle_until_release(relative_dir):
+    import msvcrt
+    with cache._Directory(relative_dir) as directory:
+        native, parent = directory.native, directory.handles[-1]
+        first = native.open_relative(parent, 'vectors.bin.lock', 1, 0xC0000000, 3)
+        first_fd = msvcrt.open_osfhandle(first, os.O_RDWR | os.O_BINARY)
+        try:
+            os.write(first_fd, b'\0')
+            second = native.open_relative(parent, 'vectors.bin.lock', 3, 0xC0000000, 3)
+            second_fd = msvcrt.open_osfhandle(second, os.O_RDWR | os.O_BINARY)
+            try:
+                os.lseek(first_fd, 0, os.SEEK_SET)
+                msvcrt.locking(first_fd, msvcrt.LK_NBLCK, 1)
+                try:
+                    os.lseek(second_fd, 0, os.SEEK_SET)
+                    with pytest.raises(OSError):
+                        msvcrt.locking(second_fd, msvcrt.LK_NBLCK, 1)
+                finally:
+                    os.lseek(first_fd, 0, os.SEEK_SET)
+                    msvcrt.locking(first_fd, msvcrt.LK_UNLCK, 1)
+                os.lseek(second_fd, 0, os.SEEK_SET)
+                msvcrt.locking(second_fd, msvcrt.LK_NBLCK, 1)
+                os.lseek(second_fd, 0, os.SEEK_SET)
+                msvcrt.locking(second_fd, msvcrt.LK_UNLCK, 1)
+            finally:
+                os.close(second_fd)
+        finally:
+            os.close(first_fd)
+
+
+def test_audit_relative_open_create_and_existing_collision(relative_dir):
+    import msvcrt
+    with cache._Directory(relative_dir) as directory:
+        native, parent = directory.native, directory.handles[-1]
+        assert native.open_relative(parent, 'vectors.bin', 3, 0x80000000, 1, missing_ok=True) is None
+        handle = native.open_relative(parent, 'vectors.bin', 1, 0xC0000000, 3)
+        fd = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+        try:
+            os.write(fd, b'synthetic-vector')
+        finally:
+            os.close(fd)
+        with pytest.raises(cache.CacheRefused):
+            native.open_relative(parent, 'vectors.bin', 1, 0xC0000000, 3)
+        handle = native.open_relative(parent, 'vectors.bin', 3, 0x80000000, 1)
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+        try:
+            assert os.read(fd, 128) == b'synthetic-vector'
+        finally:
+            os.close(fd)
+
+
+@pytest.mark.parametrize('name', ['', '.', '..', r'..\vectors.bin', r'.\vectors.bin',
+                                 'vectors.bin:stream', 'vectors.bin.', 'vectors.bin ',
+                                 'other.bin', 'vectors.bin.' + 'a' * 31 + '.tmp'])
+def test_audit_relative_open_refuses_non_cache_leaf(relative_dir, name):
+    with cache._Directory(relative_dir) as directory:
+        with pytest.raises(cache.CacheRefused):
+            directory.native.open_relative(directory.handles[-1], name, 1, 0xC0000000, 3)
+    assert list(relative_dir.iterdir()) == []
+
+
+def test_audit_relative_rename_uses_only_held_parent(relative_dir):
+    import msvcrt
+    target = relative_dir / 'vectors.bin'
+    target.write_bytes(b'synthetic-old')
+    other = relative_dir.parent / 'synthetic-neighbour'
+    other.write_bytes(b'unchanged')
+    temp_name = 'vectors.bin.' + 'a' * 32 + '.tmp'
+    with cache._Directory(relative_dir) as directory:
+        native, parent = directory.native, directory.handles[-1]
+        handle = native.open_relative(parent, temp_name, 1, 0x40010000, 0)
+        fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+        try:
+            os.write(fd, b'synthetic-new')
+            native.rename_relative(msvcrt.get_osfhandle(fd), parent, 'vectors.bin')
+        finally:
+            os.close(fd)
+    assert target.read_bytes() == b'synthetic-new'
+    assert not (relative_dir / temp_name).exists()
+    assert other.read_bytes() == b'unchanged'
+
+
+@pytest.mark.parametrize('name', ['', '.', '..', r'..\synthetic-neighbour', 'vectors.bin:stream', 'other.bin'])
+def test_audit_relative_rename_refuses_non_target_leaf(relative_dir, name):
+    import msvcrt
+    temp_name = 'vectors.bin.' + 'b' * 32 + '.tmp'
+    with cache._Directory(relative_dir) as directory:
+        native, parent = directory.native, directory.handles[-1]
+        handle = native.open_relative(parent, temp_name, 1, 0x40010000, 0)
+        fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+        try:
+            with pytest.raises(cache.CacheRefused):
+                native.rename_relative(msvcrt.get_osfhandle(fd), parent, name)
+        finally:
+            os.close(fd)
+    assert (relative_dir / temp_name).exists()
+    assert not (relative_dir / 'vectors.bin').exists()
+
+
+def test_audit_relative_open_refuses_directory_and_hardlink(relative_dir):
+    target = relative_dir / 'vectors.bin'
+    target.mkdir()
+    with cache._Directory(relative_dir) as directory:
+        with pytest.raises(cache.CacheRefused):
+            directory.native.open_relative(directory.handles[-1], 'vectors.bin', 3, 0x80000000, 1)
+    target.rmdir()
+    target.write_bytes(b'synthetic')
+    os.link(target, relative_dir / 'synthetic-hardlink')
+    with cache._Directory(relative_dir) as directory:
+        with pytest.raises(cache.CacheRefused, match='hardlink'):
+            directory.native.open_relative(directory.handles[-1], 'vectors.bin', 3, 0x80000000, 1)
+
+
+def test_audit_relative_open_refuses_reparse_leaf(relative_dir):
+    real = relative_dir / 'synthetic-real'
+    real.write_bytes(b'untouched')
+    try:
+        os.symlink(real, relative_dir / 'vectors.bin')
+    except OSError:
+        pytest.skip('Windows symlink privilege unavailable')
+    with cache._Directory(relative_dir) as directory:
+        with pytest.raises(cache.CacheRefused):
+            directory.native.open_relative(directory.handles[-1], 'vectors.bin', 3, 0x80000000, 1)
+    assert real.read_bytes() == b'untouched'
+
+
+@pytest.fixture
 def audit_cache_case(tmp_path, monkeypatch):
     """Real Windows handles/ACLs in an isolated synthetic directory only."""
     if os.name != 'nt':

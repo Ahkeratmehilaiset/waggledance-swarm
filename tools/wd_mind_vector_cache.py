@@ -50,6 +50,10 @@ _AUDIT_IDENTITY = re.compile(r"windows-v1:[0-9a-f]{8}:[0-9a-f]{16}\Z")
 # Namespace ancestry is not yet proved safe against non-admin replacement.
 # This is an internal test seam, not an operator-controlled runtime option.
 _AUDIT_WIP_ENABLED = False
+# The isolated relative-leaf experiment is inert until ancestor namespace
+# ownership, rename semantics and integration are independently proven.
+_AUDIT_NAMESPACE_PROVEN = False
+_AUDIT_LEAF = re.compile(r"vectors\.bin(?:\.lock|\.[0-9a-f]{32}\.tmp)?\Z")
 
 
 class CacheRefused(ValueError):
@@ -134,6 +138,21 @@ class _HandleInfo(ctypes.Structure):
                 ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
 
 
+class _UnicodeString(ctypes.Structure):
+    _fields_ = [("length", wintypes.USHORT), ("maximum_length", wintypes.USHORT),
+                ("buffer", wintypes.LPWSTR)]
+
+
+class _ObjectAttributes(ctypes.Structure):
+    _fields_ = [("length", wintypes.ULONG), ("root", wintypes.HANDLE),
+                ("name", ctypes.POINTER(_UnicodeString)), ("attributes", wintypes.ULONG),
+                ("security_descriptor", ctypes.c_void_p), ("quality", ctypes.c_void_p)]
+
+
+class _IoStatusBlock(ctypes.Structure):
+    _fields_ = [("status_or_pointer", ctypes.c_void_p), ("information", ctypes.c_size_t)]
+
+
 class _Acl(ctypes.Structure):
     _fields_ = [("revision", ctypes.c_ubyte), ("pad", ctypes.c_ubyte), ("size", wintypes.WORD),
                 ("count", wintypes.WORD), ("pad2", wintypes.WORD)]
@@ -204,6 +223,83 @@ class _Native:
         except BaseException:
             self.kernel.CloseHandle(handle)
             raise
+
+    def open_relative(self, parent, name, disposition, access, share, *, directory=False, missing_ok=False):
+        """Inert audit-only leaf experiment; ancestor proof is still required."""
+        if _AUDIT_NAMESPACE_PROVEN is not True:
+            raise CacheRefused("audit_namespace_unverified")
+        if (type(name) is not str or not _AUDIT_LEAF.fullmatch(name) or directory is not False
+                or disposition not in (1, 3) or type(access) is not int or type(share) is not int):
+            raise CacheRefused("audit_leaf")
+        nt = ctypes.WinDLL("ntdll", use_last_error=True)
+        nt.NtCreateFile.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG,
+            ctypes.POINTER(_ObjectAttributes), ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
+            wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
+        nt.NtCreateFile.restype = ctypes.c_long
+        chars = ctypes.create_unicode_buffer(name)
+        text = _UnicodeString(len(name.encode("utf-16-le")), (len(name) + 1) * 2,
+                              ctypes.cast(chars, wintypes.LPWSTR))
+        attrs = _ObjectAttributes(ctypes.sizeof(_ObjectAttributes), parent, ctypes.pointer(text),
+                                  0x40, None, None)  # OBJ_CASE_INSENSITIVE; single leaf only.
+        result, handle = _IoStatusBlock(), wintypes.HANDLE()
+        desired = access | 0x80 | 0x20000 | 0x100000 | (0x80000 if disposition == 1 else 0)
+        status = nt.NtCreateFile(ctypes.byref(handle), desired, ctypes.byref(attrs), ctypes.byref(result),
+            None, 0x80, share, 2 if disposition == 1 else 1, 0x00200020, None, 0) & 0xffffffff
+        if status == 0xc0000034 and disposition == 3:
+            if missing_ok:
+                return None
+            raise CacheMiss("missing")
+        if status != 0:
+            raise CacheRefused("audit_relative_open")
+        try:
+            if result.information != (2 if disposition == 1 else 1):
+                raise CacheRefused("audit_relative_disposition")
+            info = _HandleInfo()
+            if (not self.kernel.GetFileInformationByHandle(handle, ctypes.byref(info))
+                    or self.kernel.GetFileType(handle) != 1 or info.attributes & 0x410):
+                raise CacheRefused("audit_relative_type")
+            if info.links != 1:
+                raise CacheRefused("audit_hardlink")
+            if disposition == 1:
+                self.set_created_user_owner(handle)
+            self.user_acl(handle)
+            return handle.value
+        except BaseException:
+            self.kernel.CloseHandle(handle)
+            raise
+
+    def rename_relative(self, source_handle, parent, name):
+        """Experimental NT rename using a held target directory handle."""
+        if _AUDIT_NAMESPACE_PROVEN is not True:
+            raise CacheRefused("audit_namespace_unverified")
+        if name != _CACHE_NAME:
+            raise CacheRefused("audit_leaf")
+        source_info, parent_info = _HandleInfo(), _HandleInfo()
+        if (not self.kernel.GetFileInformationByHandle(source_handle, ctypes.byref(source_info))
+                or not self.kernel.GetFileInformationByHandle(parent, ctypes.byref(parent_info))
+                or source_info.attributes & 0x410 or source_info.links != 1
+                or not parent_info.attributes & 0x10 or parent_info.attributes & 0x400):
+            raise CacheRefused("audit_relative_type")
+        self.user_acl(source_handle)
+        self.user_acl(parent, provisioned_dir=True)
+        class RenameInfo(ctypes.Structure):
+            _fields_ = [("replace", ctypes.c_ubyte), ("root", wintypes.HANDLE),
+                        ("length", wintypes.DWORD), ("name", wintypes.WCHAR * len(name))]
+        # Allocate at least sizeof(FILE_RENAME_INFORMATION) plus filename bytes,
+        # including padding and a terminator, as required by the NT contract.
+        name_bytes = len(name.encode("utf-16-le"))
+        storage = ctypes.create_string_buffer(ctypes.sizeof(RenameInfo) + name_bytes + 2)
+        info = ctypes.cast(storage, ctypes.POINTER(RenameInfo)).contents
+        info.replace, info.root, info.length, info.name = 1, parent, name_bytes, name
+        nt = ctypes.WinDLL("ntdll", use_last_error=True)
+        nt.NtSetInformationFile.argtypes = [wintypes.HANDLE, ctypes.POINTER(_IoStatusBlock),
+                                            ctypes.c_void_p, wintypes.ULONG, wintypes.ULONG]
+        nt.NtSetInformationFile.restype = ctypes.c_long
+        result = _IoStatusBlock()
+        status = nt.NtSetInformationFile(source_handle, ctypes.byref(result), storage,
+                                         len(storage), 10) & 0xffffffff
+        if status != 0:
+            raise CacheRefused("audit_relative_rename")
 
     def user_acl(self, handle, *, provisioned_dir=False):
         owner, acl, security, token, system = (ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p(),

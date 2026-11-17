@@ -76,7 +76,7 @@ class Ticket:
         try:
             if self._state=='PENDING' and time.monotonic()<self.deadline:
                 release=self._permit(self)
-            accepted=release is not None
+            accepted=release is not None and time.monotonic()<self.deadline
             if accepted:self._state='READY';self._value=value
             else:self._state='EXPIRED';self._value=None
         finally:
@@ -91,7 +91,7 @@ class Ticket:
         try:
             if self._state=='READY' and time.monotonic()<self.deadline:
                 release=self._permit(self)
-            if release is not None:
+            if release is not None and time.monotonic()<self.deadline:
                 value=self._value;self._value=None;self._state='CONSUMED';return value
             self._value=None;self._state='EXPIRED'
             return {'state':'WITHOUT_MIND','source_refs':[]}
@@ -157,10 +157,14 @@ class SyntheticIpcClient:
                     # Any potentially blocking connection or I/O lives only here.
                     sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
                     try:
+                        # Per-operation timeout is not an overall pump deadline.
                         sock.settimeout(3);sock.connect(self.address);_send(sock,message)
                         reply=_recv(sock);value=_validate_response(reply,digest,request)
                     finally:sock.close()
                     ticket.finish(value)
+                    # WITHOUT_MIND conflates healthy abstention with a still-running
+                    # remote operation. Retain HOLD until a future independently
+                    # bound quiescence/ownership proof exists.
                     held=value['state']!='CANDIDATES_UNTRUSTED'
                 except BaseException:
                     held=True;ticket.finish({'state':'WITHOUT_MIND','source_refs':[]})

@@ -143,3 +143,30 @@ def test_client_wait_returns_while_connect_is_blocked_without_new_worker(monkeyp
     finally:
         assert eventually(lambda:client.request_stop() in ('HOLD','STOPPED'))
         release.set();assert eventually(lambda:client.status()['state']=='STOPPED')
+
+
+@pytest.mark.parametrize('operation',['finish','wait'])
+def test_deadline_rechecked_after_permission_gate(monkeypatch,operation):
+    class FakeTime:
+        def __init__(self):self.value=1.0
+        def monotonic(self):return self.value
+    clock=FakeTime();monkeypatch.setattr(ipc,'time',clock)
+    entered,release=threading.Event(),threading.Event();out=[];leases=[]
+    def gate(ticket):
+        entered.set();assert release.wait(5)
+        return lambda:leases.append('released')
+    ticket=ipc.Ticket(2.0,gate)
+    value={'state':'CANDIDATES_UNTRUSTED','source_refs':['d'*64]}
+    if operation=='wait':
+        ticket._state='READY';ticket._value=value;ticket._event.set()
+    thread=threading.Thread(target=lambda:out.append(ticket.finish(value) if operation=='finish' else ticket.wait()))
+    thread.start()
+    try:
+        assert entered.wait(3)
+        clock.value=2.0
+    finally:
+        release.set();thread.join(3)
+    assert not thread.is_alive() and leases==['released']
+    if operation=='finish':assert out==[False]
+    else:assert out==[{'state':'WITHOUT_MIND','source_refs':[]}]
+    assert ticket._state=='EXPIRED' and ticket._value is None

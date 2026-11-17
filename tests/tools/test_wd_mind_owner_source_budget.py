@@ -8,6 +8,7 @@ import pytest
 
 from tools import wd_mind_full_runtime as runtime
 from tools import wd_mind_absent_generation_prefix_readonly as prefix
+from tools import wd_mind_content_query_readonly as reader
 
 
 def test_prefix_hash_reserves_before_every_read():
@@ -47,6 +48,34 @@ def test_budget_is_atomic_across_threads():
     for thread in threads:
         thread.join()
     assert sorted(outcomes) == ['accepted', 'refused']
+
+
+def test_narrow_index_reserves_before_readline(monkeypatch):
+    class Source(BytesIO):
+        def close(self):
+            pass
+
+    source = Source(b'{}\n')
+    opened = SimpleNamespace(_open_log=lambda _path: source,
+                             _parse_rows=lambda _line, **_kwargs: [{}])
+    monkeypatch.setattr(reader, '_narrow_dependencies', lambda: (opened, prefix))
+    monkeypatch.setattr(reader, '_narrow_fence', lambda *_args: None)
+    cursor = SimpleNamespace(offset=3)
+    context = {'messages': {'source_path': 'synthetic', 'generation_path': 'synthetic-generation',
+                            'end_cursor': cursor},
+               'decision': {'source_prefix': {'sha256': reader._sha(b'{}\n')}}}
+    references = {reader._sha(reader._canonical({}))}
+    with pytest.raises(ValueError, match='source_budget'):
+        reader._narrow_row_index(context, references, source_budget=prefix._SourceReadBudget(3))
+    assert source.tell() == 0
+
+
+def test_short_read_refunds_unused_reservation():
+    budget = prefix._SourceReadBudget(6)
+    assert prefix._budgeted_read(BytesIO(b'a'), 6, budget) == b'a'
+    budget.reserve(5)
+    with pytest.raises(ValueError, match='source_budget'):
+        budget.reserve(1)
 
 
 @pytest.mark.parametrize('direct', [False, True])

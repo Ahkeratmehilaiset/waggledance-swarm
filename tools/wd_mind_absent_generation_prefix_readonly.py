@@ -71,6 +71,10 @@ class _SourceReadBudget:
                 raise ValueError('source_budget')
             self._remaining -= size
 
+    def _refund(self, size):
+        with self._lock:
+            self._remaining += size
+
 
 def _budgeted_read(stream, size, source_budget=None, *, line=False):
     if type(size) is not int or size < 0:
@@ -79,7 +83,12 @@ def _budgeted_read(stream, size, source_budget=None, *, line=False):
         if type(source_budget) is not _SourceReadBudget:
             raise ValueError('source_budget')
         source_budget.reserve(size)
-    return stream.readline(size) if line else stream.read(size)
+    data = stream.readline(size) if line else stream.read(size)
+    if type(data) is not bytes or len(data) > size:
+        raise ValueError('source_read')
+    if source_budget is not None:
+        source_budget._refund(size - len(data))
+    return data
 
 
 @dataclass(frozen=True, slots=True)

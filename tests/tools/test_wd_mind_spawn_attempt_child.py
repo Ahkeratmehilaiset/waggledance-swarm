@@ -87,3 +87,64 @@ def test_noncooperative_route_refuses_before_popen(staged_graceful, monkeypatch)
     monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('unexpected native spawn'))
     with pytest.raises(child.LaunchRefused):
         child._start_e5_worker(cooperative=False, **staged_graceful)
+
+
+def test_partially_initialized_job_cannot_start_worker():
+    owner = lifecycle._Owner(require_spawn_attempt=True)
+    owner.mark_job_attempt()
+    owner.resources.job = _Job(kill_on_close=False)
+    with pytest.raises(lifecycle.LifecycleRefused):
+        owner.mark_spawn_attempt()
+    assert owner._job_state == 'ATTEMPTED'
+    assert owner._spawn_state == 'NOT_ENTERED'
+
+
+@pytest.mark.parametrize('phase', ['before_allocation', 'during_allocation'])
+def test_shutdown_during_job_initialization_retains_owner(
+        staged_graceful, monkeypatch, synthetic_windows_subprocess, phase):
+    entered, resume = threading.Event(), threading.Event()
+    captured, jobs, outcome = [], [], []
+
+    class BarrierJob(_Job):
+        def __init__(self, *, kill_on_close, _owner=None):
+            super().__init__(kill_on_close=kill_on_close, _owner=_owner)
+            self.allocated = False
+            jobs.append(self)
+            if phase == 'during_allocation':
+                _owner.resources.job = self  # Same early retention as the real Job.
+                entered.set()
+                resume.wait(3)
+            self.allocated = True
+
+    def sink(owner):
+        captured.append(owner)
+        if phase == 'before_allocation':
+            entered.set()
+            resume.wait(3)
+
+    def launch():
+        try:
+            outcome.append(child.start_e5_worker_graceful(enabled=True, owner_sink=sink, **staged_graceful))
+        except BaseException as error:
+            outcome.append(error)
+
+    monkeypatch.setattr(child, '_Job', BarrierJob)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('unexpected native spawn'))
+    worker = threading.Thread(target=launch, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        owner = captured[0]
+        assert owner.shutdown(timeout=0)['owned'] is True
+        owner._keeper.join(timeout=0.1)
+        assert owner.status()['owned'] is True
+        if jobs:
+            assert not jobs[0].closed
+    finally:
+        resume.set()
+        worker.join(timeout=3)
+        if captured:
+            captured[0]._keeper.join(timeout=3)
+    assert not worker.is_alive()
+    assert captured[0].status()['owned'] is False
+    assert jobs and jobs[0].allocated and jobs[0].closed

@@ -77,6 +77,7 @@ class _Owner:
         # Legacy callers may still bind without registering an attempt.  Until
         # they are migrated this state does not prove that no spawn occurred.
         self._spawn_state = "NOT_ENTERED"
+        self._job_state = "NOT_ENTERED"
         self._require_spawn_attempt = require_spawn_attempt
         self._owned, self._closing, self._eof = True, False, False
         self._output = bytearray()
@@ -97,15 +98,27 @@ class _Owner:
 
     def set_job(self, job):
         with self._condition:
-            if (not self._owned or self._closing or (self._job is not None and self._job is not job)
+            if (not self._owned or (self._closing and self._job_state != "ATTEMPTED")
+                    or (self._job is not None and self._job is not job)
                     or self._process is not None or job.kill_on_close is not False):
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
             self.resources.job = job
+            self._job_state = "BOUND"
+            self._condition.notify_all()
+
+    def mark_job_attempt(self):
+        """Retain ownership before publishing an owner or allocating a Job."""
+        with self._condition:
+            if (not self._owned or self._closing or self._job is not None
+                    or self._process is not None or self._job_state != "NOT_ENTERED"):
+                raise LifecycleRefused("mind_e5_lifecycle_refused")
+            self._job_state = "ATTEMPTED"
+            self._condition.notify_all()
 
     def mark_spawn_attempt(self):
         """Record uncertainty before entering native process creation."""
         with self._condition:
-            if (not self._owned or self._closing or self._job is None
+            if (not self._owned or self._closing or self._job is None or self._job_state != "BOUND"
                     or self._process is not None or self._spawn_state != "NOT_ENTERED"):
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
             self._spawn_state = "ATTEMPTED"
@@ -286,7 +299,7 @@ class _Owner:
             # A native spawn may have succeeded without returning a process
             # object. Neither shutdown nor an unbound process is proof that
             # the attempt was harmless; keep ownership and the slot on HOLD.
-            while self._owned and (self._spawn_state == "ATTEMPTED"
+            while self._owned and (self._job_state == "ATTEMPTED" or self._spawn_state == "ATTEMPTED"
                                    or (self._process is None and not self._closing)):
                 self._condition.wait()
             if not self._owned:

@@ -1732,6 +1732,8 @@ class _FlatRequestHandler:
             response = {'schema': 'wd.mind-flat-owner-response.v1', 'lane': bound_lane, 'scope': frozen['scope'],
                         'authority': 'none', 'expires_utc': None if expires is None else reader._utc_text(expires),
                         'expiry_scope': 'source_validity_only', 'snapshot_freshness': 'UNKNOWN', 'result': result}
+            if self._closed or self._failed:
+                response = None
         except Exception:
             pass
         finally:
@@ -2374,23 +2376,24 @@ class _SingleManifestOwner:
 
     def _refresh_generation(self, *, enabled=False):
         """Explicit in-process refresh; no scheduling, publishing or activation."""
+        previous = staged = generation = old_handler = None
+        old_rotation_snapshot = old_adapter_snapshot = None
+        accepted = handler_locked = rotator_locked = contention_only = False
+        pending = None
         if enabled is not True or not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        previous, staged, generation, accepted, pending = self._generation, None, None, False, None
-        old_handler = self._handler if self._state == 'READY' else None
-        handler_locked, rotator_locked = False, False
-        old_rotation_snapshot = old_adapter_snapshot = None
-        if type(old_handler) is _FlatRequestHandler:
-            if not old_handler._lock.acquire(blocking=False):
-                # Contention is refused before changing generation or state.
-                self._lock.release()
-                raise FullRuntimeRefused('mind_full_runtime_refused') from None
-            handler_locked = True
         try:
+            previous = self._generation
             if self._state != 'READY':
                 raise ValueError('owner_not_ready')
-            if type(old_handler) is not _FlatRequestHandler or not handler_locked:
+            old_handler = self._handler
+            if type(old_handler) is not _FlatRequestHandler:
                 raise ValueError('refresh_handler')
+            handler_locked = old_handler._lock.acquire(blocking=False)
+            if not handler_locked:
+                # Only this pre-state-change contention is a benign refusal.
+                contention_only = True
+                raise FullRuntimeRefused('mind_full_runtime_refused')
             if old_handler._pending_rotator is not None or old_handler._refresh_controller is not None:
                 raise ValueError('refresh_handler_busy')
             self._state = 'HOLD'
@@ -2428,17 +2431,19 @@ class _SingleManifestOwner:
             self._state = 'READY'
             accepted = True
         except BaseException as exc:
-            self._generation = previous
-            if rotator_locked:
-                self._client._snapshot = old_rotation_snapshot
-                self._adapter._snapshot = old_adapter_snapshot
-            if handler_locked:
-                old_handler._closed = True
-                old_handler._retained = None
-            if self._handler is not None:
-                self._handler._retained = None
-            self._retained = None
-            self._state = 'HOLD'
+            if not contention_only:
+                if previous is not None:
+                    self._generation = previous
+                if rotator_locked:
+                    self._client._snapshot = old_rotation_snapshot
+                    self._adapter._snapshot = old_adapter_snapshot
+                if type(old_handler) is _FlatRequestHandler:
+                    old_handler._closed = True
+                    old_handler._retained = None
+                if self._handler is not None:
+                    self._handler._retained = None
+                self._retained = None
+                self._state = 'HOLD'
             pending = _flat_cancellation(exc)
         finally:
             # These objects may contain identifier-policy and HMAC key bytes.

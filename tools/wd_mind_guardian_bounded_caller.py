@@ -198,6 +198,7 @@ class _BoundedCaller:
                         return
                 if ticket is None:
                     continue
+                query_closed = False
                 try:
                     query = process.create_local_candidate_query(enabled=True,
                         pipe_name=process.local_candidate_pipe_name(manifest_sha256=self._manifest),
@@ -234,6 +235,7 @@ class _BoundedCaller:
                     closed = query.close(timeout=0)
                     if type(closed) is not dict or closed.get('state') != 'STOPPED':
                         raise ValueError('query_hold')
+                    query_closed = True
                     raw = observed.get('candidate_frame') if type(observed) is dict else None
                     reply = process._local_candidate_reply(process._local_candidate_json(raw), ticket['request'])
                     request_raw = json.dumps(ticket['request'], sort_keys=True, separators=(',', ':'),
@@ -259,6 +261,21 @@ class _BoundedCaller:
                         self._state = 'STOPPED' if self._stop.is_set() else 'READY'
                         self._finished.set()
                 except BaseException:
+                    if query_closed:
+                        # The query thread has exited and close confirmed that
+                        # its local owner stopped. Invalid candidate data must
+                        # not strand the pump or prevent a later STOP.
+                        with self._lock:
+                            ticket['expired'], ticket['result'] = True, None
+                            if self._ticket is ticket:
+                                self._ticket = None
+                            self._query = None
+                            self._launch_committed = False
+                            self._state = 'STOPPED' if self._stop.is_set() else 'READY'
+                            self._finished.set()
+                            if self._stop.is_set():
+                                return
+                        continue
                     with self._lock:
                         ticket['expired'], ticket['result'], self._state = True, None, 'HOLD'
                     # Unknown thread start, transport or close cannot be

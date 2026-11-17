@@ -120,6 +120,71 @@ def test_submit_does_not_discard_live_or_unexpired_ticket(monkeypatch):
     assert caller._ticket is original and not original['expired']
 
 
+def _run_with_controlled_query(monkeypatch, query):
+    """Drive the pump synchronously; no real thread, process or pipe is created."""
+    from tools import wd_mind_runtime_process as process
+
+    class EscapeLoop(BaseException):
+        pass
+
+    class ControlledWake:
+        def __init__(self, caller):
+            self.caller, self.calls = caller, 0
+
+        def wait(self, timeout=None):
+            self.calls += 1
+            if self.calls == 2:
+                self.caller._stop.set()
+            if self.calls >= 3:
+                raise EscapeLoop()
+            return True
+
+        def clear(self):
+            pass
+
+        def set(self):
+            pass
+
+    monkeypatch.setattr(module, '_BOOTSTRAP_PROVEN', True)
+    monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kwargs: 'unused')
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **kwargs: query)
+    caller = module._BoundedCaller(True, MANIFEST)
+    caller._state = 'READY'
+    assert caller.attach(lane=LANE, session=SESSION)
+    assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=30)['state'] == 'PENDING'
+    caller._wake = ControlledWake(caller)
+    caller._run()
+    return caller
+
+
+def test_invalid_reply_after_confirmed_close_allows_pump_to_stop(monkeypatch):
+    class Done:
+        def wait(self, timeout): return True
+
+    class Thread:
+        def is_alive(self): return False
+
+    class Query:
+        _done, _thread = Done(), Thread()
+        def start(self): pass
+        def wait(self, *, timeout): return {'candidate_frame': b'not-json'}
+        def close(self, *, timeout): return {'state': 'STOPPED'}
+
+    caller = _run_with_controlled_query(monkeypatch, Query())
+    assert caller._state == 'STOPPED'
+    assert caller._query is None and caller._ticket is None
+
+
+def test_unknown_query_start_failure_retains_hold_and_query(monkeypatch):
+    class Query:
+        def start(self): raise RuntimeError('unknown start')
+
+    query = Query()
+    caller = _run_with_controlled_query(monkeypatch, query)
+    assert caller._state == 'HOLD'
+    assert caller._query is query
+
+
 @pytest.fixture
 def transport(monkeypatch):
     import multiprocessing.connection as connection

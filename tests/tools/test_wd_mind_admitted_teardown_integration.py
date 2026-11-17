@@ -22,8 +22,9 @@ from tools import wd_mind_runtime_process as process_module
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='reservation uses Windows byte locks')
+@pytest.mark.parametrize('hold_service', [False, True])
 def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeypatch, tmp_path,
-                                                        synthetic_windows_subprocess):
+                                                        synthetic_windows_subprocess, hold_service):
     """No native pipe/model/process: only lifecycle and teardown are real."""
     import multiprocessing.connection as transport
 
@@ -33,7 +34,8 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
     marker.write_bytes(child._OWNER_RESERVATION_MAGIC + b'C')
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)
     stop, ready, wake = threading.Event(), threading.Event(), threading.Event()
-    statuses, entries, listeners, services, owners = [], [], [], [], []
+    wake_entered, wake_release = threading.Event(), threading.Event()
+    statuses, entries, listeners, services, owners, admissions, marker_states = [], [], [], [], [], [], []
     policy = b'synthetic-policy'
     frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
 
@@ -49,6 +51,19 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
         def write(self, data):
             status = json.loads(bytes(data))
             statuses.append(status['state'])
+            if status['state'] in ('STARTING', 'READY', 'STOPPED'):
+                assert len(admissions) == 1
+                with admissions[0]._lock:
+                    marker_states.append((status['state'], admissions[0]._guard._read()))
+                assert marker_states[-1][1] == child._OWNER_RESERVATION_MAGIC + b'R'
+            if status['state'] == 'STOPPED':
+                adapter, owner, factory = owners[0]
+                assert services[0].status()['state'] == 'STOPPED' and services[0]._serve_done.is_set()
+                assert owner.status()['state'] == 'STOPPED' and owner.status()['owned'] is False
+                assert factory._admission._worker.status()['owned'] is False
+                assert not factory._admission._worker._keeper.is_alive()
+                assert not any(thread.name == 'mind-local-control' and thread.is_alive()
+                               for thread in threading.enumerate())
             if status['state'] == 'READY':
                 ready.set()
             return len(data)
@@ -70,6 +85,9 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
             self.closed = True
 
     def client(**kwargs):
+        wake_entered.set()
+        if hold_service:
+            wake_release.wait(5)
         wake.set()
         return Connection()
 
@@ -89,6 +107,11 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
         services.append(service)
         return service
     monkeypatch.setattr(process_module, 'create_local_candidate_service', create_service)
+    original_query_factory = child.create_local_manifest_query
+    def create_query(**kwargs):
+        admissions.append(kwargs['_admission'])
+        return original_query_factory(**kwargs)
+    monkeypatch.setattr(child, 'create_local_manifest_query', create_query)
     monkeypatch.setattr(child, '_Job', Job)
     monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: process)
     args = staged_graceful['tuple_args']
@@ -139,7 +162,17 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
     entry.start()
     try:
         assert ready.wait(5), (statuses, entries)
+        with pytest.raises(child.LaunchRefused):
+            child._reserve_local_owner(root)
         stop.set()
+        if hold_service:
+            assert wake_entered.wait(3)
+            assert entry.is_alive() and owners[0][1].status()['owned'] is True
+            assert services[0].status()['state'] == 'HOLD'
+            admission = owners[0][2]._admission
+            with admission._lock:
+                assert admission._guard._read() == child._OWNER_RESERVATION_MAGIC + b'R'
+            wake_release.set()
         entry.join(timeout=5)
         assert not entry.is_alive()
         assert entries == [0]
@@ -155,8 +188,10 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
         assert process.stdin.closed
         assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
         assert statuses[0] == 'STARTING' and statuses[-1] == 'STOPPED'
+        assert [state for state, _ in marker_states] == ['STARTING', 'READY', 'STOPPED']
     finally:
         stop.set()
+        wake_release.set()
         wake.set()
         process.finish()
         entry.join(timeout=5)

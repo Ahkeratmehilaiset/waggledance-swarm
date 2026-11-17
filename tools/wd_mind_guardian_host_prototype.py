@@ -53,7 +53,7 @@ class _Exchange:
         try:
             if self._state=='PENDING' and self._clock()<self.deadline:
                 release=self._permitted(self)
-            accepted=release is not None
+            accepted=release is not None and self._clock()<self.deadline
             if accepted:
                 self._result=result;self._state='READY'
             else:

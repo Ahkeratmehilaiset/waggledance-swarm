@@ -263,3 +263,20 @@ def test_consumption_and_session_invalidation_share_atomic_gate(monkeypatch,acti
         else:assert host.attach(lane=LANE,session='f'*64)
     finally:
         release.set();stop(host)
+
+
+def test_exchange_complete_rechecks_deadline_after_permission_gate():
+    now=[1.0];entered,release=threading.Event(),threading.Event();out=[];leases=[]
+    def permit(exchange):
+        entered.set();assert release.wait(5)
+        return lambda:leases.append('released')
+    exchange=_Exchange(request(),2.0,lambda:now[0],permit)
+    publisher=threading.Thread(target=lambda:out.append(exchange.complete({'schema':'synthetic'})))
+    publisher.start()
+    try:
+        assert entered.wait(3)
+        now[0]=2.0
+    finally:
+        release.set();publisher.join(3)
+    assert not publisher.is_alive() and leases==['released']
+    assert out==[False] and exchange._state=='EXPIRED' and exchange._result is None

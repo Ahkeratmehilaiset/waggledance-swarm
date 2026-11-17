@@ -1796,6 +1796,22 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
     return result
 
 
+_STARTUP_OWNER_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
+_STARTUP_PREWARM_SOURCE_READ_LIMIT = 2 * 1024 * 1024 * 1024
+
+
+def _startup_owner_source_budget(snapshot):
+    """Preflight known worst-case reads without touching the shared owner."""
+    cursor = snapshot['messages']['end_cursor']
+    offset = cursor.offset
+    # Three prefix hashes, three maximum-sized selected rows with their
+    # boundary bytes, and three rotation source-check bytes.
+    if (type(offset) is not int or offset <= 0 or
+            3 * offset + 3 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT):
+        raise ValueError('source_budget')
+    return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
+
+
 class _RetainedFlatQueryState:
     """One owner's verified flat rows and selected-row gate, retained in memory."""
     __slots__ = ('_owner', '_generation', '_handler', '_memory', '_flat', '_snapshot',

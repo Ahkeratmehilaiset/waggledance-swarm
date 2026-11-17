@@ -108,6 +108,14 @@ def test_retained_prefix_reserves_before_open_source_read(monkeypatch):
     assert source.reads == []
 
 
+def test_startup_owner_preflight_refuses_known_overbudget_without_io():
+    snapshot = {'messages': {'end_cursor': SimpleNamespace(offset=1024 * 1024 * 1024)}}
+    with pytest.raises(ValueError, match='source_budget'):
+        runtime._startup_owner_source_budget(snapshot)
+    accepted = {'messages': {'end_cursor': SimpleNamespace(offset=1)}}
+    assert type(runtime._startup_owner_source_budget(accepted)) is prefix._SourceReadBudget
+
+
 @pytest.mark.parametrize('direct', [False, True])
 def test_located_startup_request_refuses_before_owner_io_and_preserves_ready(monkeypatch, direct):
     owner = object.__new__(runtime._SingleManifestOwner)

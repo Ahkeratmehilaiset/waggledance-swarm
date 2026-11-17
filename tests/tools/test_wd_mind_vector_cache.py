@@ -61,6 +61,43 @@ def test_round_trip_and_raw_text_absent(private_dir):
     assert json.loads(raw[len(cache._MAGIC) + 4:header_end]) == cache._header(binding(), rows())
 
 
+def test_preflight_missing_only_inside_valid_private_root_and_then_present(private_dir):
+    path = private_dir / "vectors.bin"
+    assert cache.preflight(path) == "MISSING"
+    assert not path.exists() and (private_dir / "vectors.bin.lock").exists()
+    cache.write_cache(path, binding(), rows())
+    assert cache.preflight(path) == "PRESENT"
+
+
+def test_preflight_missing_root_is_not_cache_miss(private_dir, monkeypatch):
+    absent = private_dir / "unprovisioned"
+    monkeypatch.setattr(cache, "_CACHE_ROOT", absent)
+    with pytest.raises(cache.CacheRefused):
+        cache.preflight(absent / "vectors.bin")
+    assert not absent.exists()
+
+
+def test_preflight_open_error_is_not_cache_miss(private_dir, monkeypatch):
+    path = private_dir / "vectors.bin"
+    original = cache._Native.open
+    def fail(self, selected, *args, **kwargs):
+        if Path(selected) == path:
+            raise cache.CacheRefused("synthetic_access_denied")
+        return original(self, selected, *args, **kwargs)
+    monkeypatch.setattr(cache._Native, "open", fail)
+    with pytest.raises(cache.CacheRefused, match="synthetic_access_denied"):
+        cache.preflight(path)
+
+
+def test_preflight_busy_writer_is_not_cache_miss(private_dir):
+    path = private_dir / "vectors.bin"
+    program = ("from tools import wd_mind_vector_cache as c; from pathlib import Path; import sys; "
+               "p=Path(sys.argv[1]); c._CACHE_ROOT=p.parent; c.preflight(p)")
+    with cache._Directory(private_dir) as directory, cache._WriterLock(directory, path):
+        result = subprocess.run([sys.executable, "-c", program, str(path)], capture_output=True, text=True)
+    assert result.returncode != 0 and "CacheRefused" in result.stderr
+
+
 @pytest.mark.parametrize("key", ["source_identity_sha256", "source_generation_sha256", "model_sha256",
                                   "policy_sha256", "projection_code_sha256"])
 def test_pin_change_refuses_whole_cache(private_dir, key):
@@ -292,6 +329,8 @@ def test_broad_acl_refused(tmp_path, monkeypatch):
     assert result.returncode == 0, result.stderr
     with pytest.raises(cache.CacheRefused, match="acl_not_user_only"):
         cache.write_cache(tmp_path / "vectors.bin", binding(), rows())
+    with pytest.raises(cache.CacheRefused, match="acl_not_user_only"):
+        cache.preflight(tmp_path / "vectors.bin")
 
 
 def test_nonprivate_or_unknown_acl_refuses_access(private_dir, monkeypatch):
@@ -309,6 +348,8 @@ def test_wrong_owner_rejected_even_with_restricted_dacl(private_dir):
         pytest.skip("setting another owner requires privilege")
     with pytest.raises(cache.CacheRefused, match="owner_not_trusted"):
         cache.write_cache(private_dir / "vectors.bin", binding(), rows())
+    with pytest.raises(cache.CacheRefused, match="owner_not_trusted"):
+        cache.preflight(private_dir / "vectors.bin")
 
 
 @pytest.mark.parametrize("filename", ["vectors.bin", "vectors.bin.lock"])
@@ -324,6 +365,8 @@ def test_wrong_file_owner_refused_without_reassigning(private_dir, filename):
         lambda: cache.write_cache(path, binding(), rows()))
     with pytest.raises(cache.CacheRefused, match="owner_not_trusted"):
         operation()
+    with pytest.raises(cache.CacheRefused, match="owner_not_trusted"):
+        cache.preflight(path)
     native = cache._Native()
     handle = native.open(target, 3, 0, 3)
     try:
@@ -360,6 +403,8 @@ def test_linked_directory_or_file_refused(private_dir, monkeypatch):
     monkeypatch.setattr(cache, "_CACHE_ROOT", link)
     with pytest.raises(cache.CacheRefused):
         cache.write_cache(link / "vectors.bin", binding(), rows())
+    with pytest.raises(cache.CacheRefused):
+        cache.preflight(link / "vectors.bin")
 
 
 def test_hardlinked_cache_refused(private_dir):

@@ -162,10 +162,12 @@ class _Native:
         self.advapi.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
         self.advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
 
-    def open(self, path, disposition, access, share, directory=False):
+    def open(self, path, disposition, access, share, directory=False, missing_ok=False):
         flags = 0x00200000 | (0x02000000 if directory else 0x80)
         handle = self.kernel.CreateFileW(str(path), access | 0x20000, share, None, disposition, flags, None)
         if handle == wintypes.HANDLE(-1).value:
+            if missing_ok and disposition == 3 and ctypes.get_last_error() == 2:  # ERROR_FILE_NOT_FOUND
+                return None
             raise CacheRefused("open")
         try:
             info = _HandleInfo()
@@ -293,10 +295,13 @@ def _plain_path(path):
     return result
 
 
-def _fd(native, path, disposition, access, share, flags):
+def _fd(native, path, disposition, access, share, flags, *, missing_ok=False):
     import msvcrt
     created = disposition == 1  # CREATE_NEW; caller never changes existing owners
-    handle = native.open(path, disposition, access | (0x80000 if created else 0), share)
+    handle = native.open(path, disposition, access | (0x80000 if created else 0), share,
+                         missing_ok=missing_ok)
+    if handle is None:
+        return None
     try:
         if created:
             native.set_created_user_owner(handle)
@@ -335,6 +340,28 @@ class _WriterLock:
             finally:
                 os.close(self.fd)
                 self.fd = None
+
+
+def preflight(path):
+    """Validate root/ACL/owner/lock and report presence, without reading data.
+
+    MISSING is only the OS's exact FILE_NOT_FOUND for the single fixed cache
+    entry inside the pinned directory while holding its fixed writer lock. It
+    is not proof that a later create/write, disk allocation, or rename succeeds.
+    The root must already have been provisioned by an authorized operator.
+    """
+    path = _plain_path(path)
+    try:
+        with _Directory(path.parent) as directory, _WriterLock(directory, path):
+            fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
+            if fd is None:
+                return "MISSING"
+            os.close(fd)
+            return "PRESENT"
+    except CacheRefused:
+        raise
+    except Exception:
+        raise CacheRefused("preflight") from None
 
 
 def write_cache(path, binding, rows):

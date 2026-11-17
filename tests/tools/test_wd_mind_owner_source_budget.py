@@ -2,10 +2,51 @@
 
 import threading
 from types import SimpleNamespace
+from io import BytesIO
 
 import pytest
 
 from tools import wd_mind_full_runtime as runtime
+from tools import wd_mind_absent_generation_prefix_readonly as prefix
+
+
+def test_prefix_hash_reserves_before_every_read():
+    class Source(BytesIO):
+        def __init__(self):
+            super().__init__(b'abcdef')
+            self.reads = []
+
+        def read(self, count):
+            self.reads.append(count)
+            return super().read(count)
+
+    source = Source()
+    with pytest.raises(ValueError):
+        prefix._hash_prefix(source, 6, source_budget=prefix._SourceReadBudget(5))
+    assert source.reads == []
+    prefix._hash_prefix(source, 6, source_budget=prefix._SourceReadBudget(6))
+    assert source.reads == [6]
+
+
+def test_budget_is_atomic_across_threads():
+    budget = prefix._SourceReadBudget(1)
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def reserve():
+        barrier.wait()
+        try:
+            budget.reserve(1)
+            outcomes.append('accepted')
+        except ValueError:
+            outcomes.append('refused')
+
+    threads = [threading.Thread(target=reserve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == ['accepted', 'refused']
 
 
 @pytest.mark.parametrize('direct', [False, True])

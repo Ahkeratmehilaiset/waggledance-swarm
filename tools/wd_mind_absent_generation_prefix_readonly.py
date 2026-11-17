@@ -30,6 +30,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import threading
 
 from tools.bridge_compact_view import event_id
 from waggledance.core import bridge_log_reader as bridge
@@ -49,6 +50,36 @@ _TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}\Z")
 
 class PrefixSnapshotRefused(ValueError):
     """Fixed refusal without paths, source content or chained exceptions."""
+
+
+class _SourceReadBudget:
+    """Shared in-process byte allowance; reserve before reading the source."""
+
+    __slots__ = ('_remaining', '_lock')
+
+    def __init__(self, limit):
+        if type(limit) is not int or limit <= 0:
+            raise ValueError('source_budget')
+        self._remaining = limit
+        self._lock = threading.Lock()
+
+    def reserve(self, size):
+        if type(size) is not int or size < 0:
+            raise ValueError('source_budget')
+        with self._lock:
+            if size > self._remaining:
+                raise ValueError('source_budget')
+            self._remaining -= size
+
+
+def _budgeted_read(stream, size, source_budget=None, *, line=False):
+    if type(size) is not int or size < 0:
+        raise ValueError('source_budget')
+    if source_budget is not None:
+        if type(source_budget) is not _SourceReadBudget:
+            raise ValueError('source_budget')
+        source_budget.reserve(size)
+    return stream.readline(size) if line else stream.read(size)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,12 +261,12 @@ def _fence(stream, source: Path, sidecar: Path, identity: str, minimum_size: int
     return size
 
 
-def _hash_prefix(stream, end: int) -> str:
+def _hash_prefix(stream, end: int, *, source_budget=None) -> str:
     stream.seek(0)
     digest = hashlib.sha256()
     remaining = end
     while remaining:
-        data = stream.read(min(CHUNK_BYTES, remaining))
+        data = _budgeted_read(stream, min(CHUNK_BYTES, remaining), source_budget)
         if not data:
             raise ValueError("short_read")
         digest.update(data)
@@ -243,12 +274,12 @@ def _hash_prefix(stream, end: int) -> str:
     return digest.hexdigest()
 
 
-def _scan(stream, end: int, tasks: frozenset[str] | None):
+def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None):
     stream.seek(0)
     digest, pending, rows = hashlib.sha256(), bytearray(), {}
     remaining, scanned, first = end, 0, True
     while remaining:
-        data = stream.read(min(CHUNK_BYTES, remaining))
+        data = _budgeted_read(stream, min(CHUNK_BYTES, remaining), source_budget)
         if not data:
             raise ValueError("short_read")
         remaining -= len(data)
@@ -285,7 +316,8 @@ def _scan(stream, end: int, tasks: frozenset[str] | None):
     return digest.hexdigest(), rows
 
 
-def read_complete_generationless_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_sha256):
+def read_complete_generationless_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_sha256,
+                                             *, source_budget=None):
     """Read every canonical event in one caller-anchored LF-complete prefix.
 
     The caller must independently bind the exact source, sidecar, cursor and
@@ -312,11 +344,11 @@ def read_complete_generationless_prefix_rows(source_path, generation_path, end_c
             if identity != end_cursor.file_identity:
                 raise ValueError("identity_mismatch")
             size = _fence(stream, source, sidecar, identity, end_cursor.offset)
-            first_hash, rows = _scan(stream, end_cursor.offset, None)
+            first_hash, rows = _scan(stream, end_cursor.offset, None, source_budget=source_budget)
             if not hmac.compare_digest(first_hash, expected_prefix_sha256.lower()):
                 raise ValueError("prefix_mismatch")
             size = _fence(stream, source, sidecar, identity, size)
-            if not hmac.compare_digest(_hash_prefix(stream, end_cursor.offset), first_hash):
+            if not hmac.compare_digest(_hash_prefix(stream, end_cursor.offset, source_budget=source_budget), first_hash):
                 raise ValueError("prefix_changed")
             _fence(stream, source, sidecar, identity, size)
         result = rows

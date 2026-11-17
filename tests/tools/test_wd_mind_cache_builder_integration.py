@@ -120,7 +120,7 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
         return runtime._build_flat_memory_immutable(binding, encode, encoder, fixtures._sha(encoder),
                                                      5, None, vector_cache=adapter)
     return SimpleNamespace(case=case, source=source, cache_path=cache_path, snapshot=snapshot,
-                           passages=passages, checks=checks, build=build)
+                           passages=passages, checks=checks, build=build, adapter=adapter)
 
 
 @pytest.fixture
@@ -260,3 +260,42 @@ def test_sequential_processes_reuse_then_append_without_old_reencoding(tmp_path)
     assert appended['only_new'] is True and appended['screened_records'] == 3
     assert appended['source_sha256'] != first['source_sha256']
     assert appended['cache_sha256'] != first['cache_after_sha256']
+
+
+def test_incomplete_but_well_formed_cache_is_full_miss(synthetic):
+    binding, _ = synthetic.snapshot()
+    assert synthetic.build(binding).cache_status == 'MISS_STORED'
+    raw = synthetic.cache_path.read_bytes()
+    length = struct.unpack('<I', raw[len(cache._MAGIC):len(cache._MAGIC) + 4])[0]
+    start = len(cache._MAGIC) + 4
+    stored = json.loads(raw[start:start + length])['binding']
+    loaded = cache.load_cache(synthetic.cache_path, stored, lambda offset, digest: True)
+    cache.write_cache(synthetic.cache_path, stored, loaded.rows[:-1])
+    synthetic.passages.clear()
+    fresh, _ = synthetic.snapshot()
+    assert synthetic.build(fresh).cache_status == 'MISS_STORED'
+    assert len(synthetic.passages) == 2
+
+
+@pytest.mark.parametrize('fault', ['manifest_pin', 'cache_origin', 'unexpected_read',
+                                   'memory_error_read', 'unexpected_write', 'memory_error_write'])
+def test_unexpected_cache_or_control_failures_do_not_become_miss(synthetic, monkeypatch, fault):
+    binding, _ = synthetic.snapshot()
+    if fault == 'manifest_pin':
+        def fail(binding): raise ValueError('synthetic_manifest_pin')
+        monkeypatch.setattr(runtime, '_cache_content_pins', fail)
+    elif fault == 'cache_origin':
+        def fail(): raise ValueError('synthetic_cache_origin')
+        synthetic.adapter._verify = fail
+    elif fault in ('unexpected_read', 'memory_error_read'):
+        def fail(*args):
+            raise MemoryError('synthetic_memory') if fault == 'memory_error_read' else RuntimeError('synthetic_read')
+        monkeypatch.setattr(cache, 'load_cache', fail)
+    else:
+        def fail(*args):
+            raise MemoryError('synthetic_memory') if fault == 'memory_error_write' else RuntimeError('synthetic_write')
+        monkeypatch.setattr(cache, 'write_cache', fail)
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        synthetic.build(binding)
+    if fault not in ('unexpected_write', 'memory_error_write'):
+        assert synthetic.passages == []

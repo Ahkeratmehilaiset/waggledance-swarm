@@ -263,6 +263,8 @@ def audit_cache_case(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, '_AUDIT_CACHE_ROOT', cache_root)
     monkeypatch.setattr(cache, '_AUDIT_SOURCE_SHA256', hashlib.sha256(raw).hexdigest())
     monkeypatch.setattr(cache, '_AUDIT_WIP_ENABLED', True)
+    # This overrides the unproved namespace gate only for synthetic fixtures.
+    monkeypatch.setattr(cache, '_AUDIT_NAMESPACE_PROVEN', True)
     pin = hashlib.sha256(manifest).hexdigest()
     permit = cache._audit_permit(bundle, pin, manifest, source, cache._AUDIT_SOURCE_SHA256, len(raw), identity)
     bound = dict(binding(), prefix_offset=len(raw), prefix_sha256=cache._AUDIT_SOURCE_SHA256,
@@ -285,6 +287,54 @@ def test_audit_cache_real_acl_cold_warm_and_production_root_unchanged(audit_cach
     assert loaded.rows == rows()
 
 
+def test_audit_cache_cold_warm_rejects_absolute_leaf_operations(audit_cache_case, monkeypatch):
+    case = audit_cache_case
+    original_replace, original_lexists = os.replace, os.path.lexists
+
+    def is_cache_leaf(value):
+        return isinstance(value, (str, os.PathLike)) and Path(value).parent == case['path'].parent
+
+    def checked_replace(src, dst, *args, **kwargs):
+        if is_cache_leaf(src) or is_cache_leaf(dst):
+            raise AssertionError('audit cache must rename through held parent')
+        return original_replace(src, dst, *args, **kwargs)
+
+    def checked_lexists(path):
+        if is_cache_leaf(path):
+            raise AssertionError('audit cache must open through held parent')
+        return original_lexists(path)
+
+    monkeypatch.setattr(cache.os, 'replace', checked_replace)
+    monkeypatch.setattr(cache.os.path, 'lexists', checked_lexists)
+    assert cache.preflight(case['path'], _audit=case['permit']) == 'MISSING'
+    cache.write_cache(case['path'], case['binding'], rows(), _audit=case['permit'])
+    assert cache.load_cache(case['path'], case['binding'], lambda *_: True,
+                            _audit=case['permit']).rows == rows()
+
+
+def test_audit_scope_final_check_keeps_cache_directory_handles_open(audit_cache_case, monkeypatch):
+    import ctypes
+    case = audit_cache_case
+    check_original = cache._AuditScope._check
+    observed = []
+    held_directory = []
+
+    def checked_scope(scope):
+        if held_directory:
+            directory = held_directory[0]
+            assert directory.handles
+            for handle in directory.handles:
+                info = cache._HandleInfo()
+                assert directory.native.kernel.GetFileInformationByHandle(handle, ctypes.byref(info))
+            observed.append(True)
+        return check_original(scope)
+
+    monkeypatch.setattr(cache._AuditScope, '_check', checked_scope)
+    with cache._Directory(case['path'].parent, case['permit']) as directory:
+        held_directory.append(directory)
+    assert observed == [True]
+
+
 def test_unverified_audit_gate_refuses_before_any_cache_source_or_manifest_open(audit_cache_case, monkeypatch):
     case = audit_cache_case
     opened = []
@@ -295,6 +345,30 @@ def test_unverified_audit_gate_refuses_before_any_cache_source_or_manifest_open(
     monkeypatch.setattr(cache._Native, 'open', unexpected_open)
     with pytest.raises(cache.CacheRefused, match='audit_path_unverified'):
         cache.preflight(case['path'], _audit=case['permit'])
+    assert opened == []
+    assert not case['path'].exists() and not case['path'].with_name('vectors.bin.lock').exists()
+
+
+@pytest.mark.parametrize('operation', ['preflight', 'load', 'write'])
+def test_unverified_namespace_refuses_before_any_open(audit_cache_case, monkeypatch, operation):
+    case = audit_cache_case
+    monkeypatch.setattr(cache, '_AUDIT_NAMESPACE_PROVEN', False)
+    opened = []
+
+    def unexpected_open(*args, **kwargs):
+        opened.append(True)
+        raise AssertionError('unverified namespace must not open files')
+
+    monkeypatch.setattr(cache._Native, 'open', unexpected_open)
+    monkeypatch.setattr(cache._Native, 'open_relative', unexpected_open)
+    if operation == 'preflight':
+        action = lambda: cache.preflight(case['path'], _audit=case['permit'])
+    elif operation == 'load':
+        action = lambda: cache.load_cache(case['path'], case['binding'], lambda *_: True, _audit=case['permit'])
+    else:
+        action = lambda: cache.write_cache(case['path'], case['binding'], rows(), _audit=case['permit'])
+    with pytest.raises(cache.CacheRefused, match='audit_namespace_unverified'):
+        action()
     assert opened == []
     assert not case['path'].exists() and not case['path'].with_name('vectors.bin.lock').exists()
 

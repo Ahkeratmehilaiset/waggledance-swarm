@@ -575,6 +575,8 @@ class _Directory:
         else:
             if _AUDIT_WIP_ENABLED is not True:
                 raise CacheRefused("audit_path_unverified")
+            if _AUDIT_NAMESPACE_PROVEN is not True:
+                raise CacheRefused("audit_namespace_unverified")
             valid = type(self.audit) is _AuditPermit and _same_path(path, _AUDIT_CACHE_ROOT)
         if not valid:
             raise CacheRefused("cache_root")
@@ -600,13 +602,13 @@ class _Directory:
 
     def __exit__(self, exc_type, exc, tb):
         try:
-            for handle in reversed(self.handles):
-                self.native.kernel.CloseHandle(handle)
-            self.handles.clear()
-        finally:
             if self.scope is not None:
                 scope, self.scope = self.scope, None
                 scope.__exit__(exc_type, exc, tb)
+        finally:
+            for handle in reversed(self.handles):
+                self.native.kernel.CloseHandle(handle)
+            self.handles.clear()
 
 
 def _plain_path(path):
@@ -636,6 +638,22 @@ def _fd(native, path, disposition, access, share, flags, *, missing_ok=False):
         raise
 
 
+def _audit_fd(directory, path, disposition, access, share, flags, *, missing_ok=False):
+    """Experimental leaf open relative to held parent; never used by production."""
+    import msvcrt
+    if directory.audit is None or not directory.handles:
+        raise CacheRefused("audit_namespace_unverified")
+    handle = directory.native.open_relative(directory.handles[-1], path.name, disposition,
+                                            access, share, missing_ok=missing_ok)
+    if handle is None:
+        return None
+    try:
+        return msvcrt.open_osfhandle(handle, flags | os.O_BINARY)
+    except BaseException:
+        directory.native.kernel.CloseHandle(handle)
+        raise
+
+
 class _WriterLock:
     def __init__(self, directory, cache):
         self.directory, self.path, self.fd = directory, cache.with_name(cache.name + ".lock"), None
@@ -644,8 +662,13 @@ class _WriterLock:
         import msvcrt
         # The lock object is fixed for the one allowed cache name. A failed
         # racing CREATE_NEW refuses; it never adopts or changes an unknown file.
-        disposition = 3 if os.path.lexists(self.path) else 1
-        self.fd = _fd(self.directory.native, self.path, disposition, 0xC0000000, 3, os.O_RDWR)
+        if self.directory.audit is None:
+            disposition = 3 if os.path.lexists(self.path) else 1
+            self.fd = _fd(self.directory.native, self.path, disposition, 0xC0000000, 3, os.O_RDWR)
+        else:
+            self.fd = _audit_fd(self.directory, self.path, 3, 0xC0000000, 3, os.O_RDWR, missing_ok=True)
+            if self.fd is None:
+                self.fd = _audit_fd(self.directory, self.path, 1, 0xC0000000, 3, os.O_RDWR)
         try:
             os.lseek(self.fd, 0, os.SEEK_SET)
             msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
@@ -678,7 +701,8 @@ def preflight(path, *, _audit=None):
     try:
         directory_context = _Directory(path.parent) if _audit is None else _Directory(path.parent, _audit)
         with directory_context as directory, _WriterLock(directory, path):
-            fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
+            fd = (_fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
+                  if _audit is None else _audit_fd(directory, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True))
             if fd is None:
                 return "MISSING"
             os.close(fd)
@@ -699,6 +723,21 @@ def write_cache(path, binding, rows, *, _audit=None):
     try:
         directory_context = _Directory(path.parent) if _audit is None else _Directory(path.parent, _audit)
         with directory_context as directory, _WriterLock(directory, path):
+            if _audit is not None:
+                import msvcrt
+                existing = _audit_fd(directory, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
+                if existing is not None:
+                    os.close(existing)
+                tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+                fd = _audit_fd(directory, tmp, 1, 0x40010000, 0, os.O_WRONLY)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(_MAGIC + struct.pack("<I", len(header)) + header)
+                    for block in _encoded(rows):
+                        output.write(block)
+                    output.flush()
+                    os.fsync(output.fileno())
+                    directory.native.rename_relative(msvcrt.get_osfhandle(output.fileno()), directory.handles[-1], path.name)
+                return
             if os.path.lexists(path):
                 # A pre-existing link or a broadly readable file must not be
                 # silently replaced, even though rename itself is not a read.
@@ -733,7 +772,8 @@ def load_cache(path, expected_binding, verify_prefix, *, _audit=None):
             # Do not share write/delete while parsing: a concurrent writer must
             # either publish before this open or wait until this read closes.
             try:
-                fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
+                fd = (_fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
+                      if _audit is None else _audit_fd(directory, path, 3, 0x80000000, 1, os.O_RDONLY))
             except FileNotFoundError:
                 # A synthetic file opener can surface the OS exception rather
                 # than the native wrapper's typed missing-cache result.

@@ -1798,6 +1798,11 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
 
 _STARTUP_OWNER_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
 _STARTUP_PREWARM_SOURCE_READ_LIMIT = 2 * 1024 * 1024 * 1024
+_STARTUP_OWNER_SOURCE_BUDGET_ENABLED = False  # WIP: integrated accounting not yet verified.
+
+
+class _StartupSourceBudgetRefused(ValueError):
+    pass
 
 
 def _startup_owner_source_budget(snapshot):
@@ -1806,9 +1811,10 @@ def _startup_owner_source_budget(snapshot):
     offset = cursor.offset
     # Three prefix hashes, three maximum-sized selected rows with their
     # boundary bytes, and three rotation source-check bytes.
-    if (type(offset) is not int or offset <= 0 or
-            3 * offset + 3 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT):
+    if type(offset) is not int or offset <= 0:
         raise ValueError('source_budget')
+    if 3 * offset + 3 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
+        raise _StartupSourceBudgetRefused('source_budget')
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
 
 
@@ -2636,7 +2642,8 @@ class _SingleManifestOwner:
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
-                 '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget')
+                 '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget',
+                 '_prewarm_generation')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
                  vector_cache_enabled=False):
@@ -2660,6 +2667,7 @@ class _SingleManifestOwner:
         self._vector_cache_enabled = vector_cache_enabled
         self._cache_status = 'NOT_STARTED' if vector_cache_enabled else 'DISABLED'
         self._source_budget = None
+        self._prewarm_generation = None
 
     @property
     def _binding(self):
@@ -3229,6 +3237,11 @@ class _SingleManifestOwner:
                 if self._vector_cache_enabled:
                     self._cache_status = self._handler._memory.cache_status
                 self._check_factory()
+                if _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+                    self._source_budget = prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
+                    self._ensure_retained_locked(source_budget=self._source_budget)
+                    self._prewarm_generation = self._generation
+                    self._source_budget = None
                 self._state = 'READY'
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
                 self._launch_cancel.set()
@@ -3364,7 +3377,7 @@ class _SingleManifestOwner:
         # Located startup delivery is unavailable until the owner and its
         # rotation callback account for every source read under one budget.
         # Refuse before touching retained state; this is not an integrity fault.
-        if located:
+        if located and not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         frozen = dict(request, schema='wd.mind-pipe-request.v1')
         if not self._lock.acquire(blocking=False):
@@ -3373,7 +3386,15 @@ class _SingleManifestOwner:
         try:
             if self._state != 'READY' or self._handler is None:
                 raise ValueError('owner_not_ready')
+            if located and self._prewarm_generation is not self._generation:
+                raise ValueError('prewarm_unavailable')
             checking = True
+            if located:
+                try:
+                    self._source_budget = _startup_owner_source_budget(self._snapshot)
+                except _StartupSourceBudgetRefused:
+                    checking = False
+                    raise
             self._check_factory_or_hold()
             self._check_policy_anchor()
             self._ensure_retained_locked()
@@ -3383,7 +3404,10 @@ class _SingleManifestOwner:
             self._check_policy_anchor()
             # The caller can mutate its original dict during the query. Complete
             # all source/control checks before refusing that caller-only error.
-            self._check_candidate_delivery()
+            if located:
+                self._check_candidate_delivery(source_budget=self._source_budget)
+            else:
+                self._check_candidate_delivery()
             self._check_factory_or_hold()
             self._check_policy_anchor()
             try:
@@ -3404,6 +3428,8 @@ class _SingleManifestOwner:
                 if self._handler is not None:
                     self._handler._retained = None
         finally:
+            if self._state == 'READY':
+                self._source_budget = None
             self._lock.release()
         if pending is not None:
             raise pending from None

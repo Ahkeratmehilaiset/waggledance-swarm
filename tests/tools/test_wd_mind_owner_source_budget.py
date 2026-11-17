@@ -116,6 +116,57 @@ def test_startup_owner_preflight_refuses_known_overbudget_without_io():
     assert type(runtime._startup_owner_source_budget(accepted)) is prefix._SourceReadBudget
 
 
+def test_located_request_uses_same_budget_for_query_and_final_check(monkeypatch):
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._lanes = frozenset({'codex-lead-1'})
+    owner._generation = (None, {'messages': {'end_cursor': SimpleNamespace(offset=5)}},
+                         SimpleNamespace(_retained=None))
+    owner._state = 'READY'
+    owner._lock = threading.Lock()
+    owner._source_budget = None
+    owner._prewarm_generation = owner._generation
+    retained = object()
+    owner._retained = owner._handler._retained = retained
+    for name in ('_check_factory_or_hold', '_check_policy_anchor'):
+        monkeypatch.setattr(runtime._SingleManifestOwner, name, lambda _self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: self._retained)
+    seen = []
+    def query(**_kwargs):
+        seen.append(owner._source_budget)
+        return {'status': 'ok'}
+    def final_check(_self, *, source_budget=None):
+        seen.append(source_budget)
+    monkeypatch.setattr(runtime, 'map_pipe_candidates', query)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_candidate_delivery', final_check)
+    request = {'schema': 'wd.mind-pipe-request.v2', 'query_id': 'startup_work_overview',
+               'nonce': '0' * 64, 'lane': 'codex-lead-1', 'scope': 'own'}
+    assert owner.located_candidates(request) == {'status': 'ok'}
+    assert type(seen[0]) is prefix._SourceReadBudget and seen[0] is seen[1]
+    assert owner._source_budget is None and owner._state == 'READY'
+
+
+def test_located_request_preflight_refusal_preserves_ready(monkeypatch):
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._lanes = frozenset({'codex-lead-1'})
+    owner._generation = (None, {'messages': {'end_cursor': SimpleNamespace(offset=1024 ** 3)}},
+                         SimpleNamespace(_retained=None))
+    owner._state = 'READY'
+    owner._lock = threading.Lock()
+    owner._source_budget = None
+    owner._prewarm_generation = owner._generation
+    retained = object()
+    owner._retained = owner._handler._retained = retained
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory_or_hold',
+                        lambda _self: pytest.fail('no source or factory work is allowed'))
+    request = {'schema': 'wd.mind-pipe-request.v2', 'query_id': 'startup_work_overview',
+               'nonce': '0' * 64, 'lane': 'codex-lead-1', 'scope': 'own'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.located_candidates(request)
+    assert owner._state == 'READY' and owner._retained is retained
+
+
 @pytest.mark.parametrize('direct', [False, True])
 def test_located_startup_request_refuses_before_owner_io_and_preserves_ready(monkeypatch, direct):
     owner = object.__new__(runtime._SingleManifestOwner)

@@ -212,6 +212,55 @@ def test_real_retained_query_charges_three_prefixes_and_selected_rows(
     assert budget._remaining == 1024 * 1024 - sum(charged)
 
 
+@pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
+def test_candidate_request_charges_real_synthetic_source_reads(
+        synthetic_checkout_pins, flat_consumer_case, monkeypatch, located):
+    import json
+
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    _package, source_owner, _proposals, snapshot, clock, _response = flat_consumer_case
+    _projection, context, _ = source_owner._gate.verify_snapshot(snapshot)
+    records = json.loads(snapshot['projection_bytes'])['messages']['records']
+    owner = object.__new__(runtime._SingleManifestOwner)
+    retained = object.__new__(runtime._RetainedFlatQueryState)
+    handler = object.__new__(runtime._FlatRequestHandler)
+    memory = SimpleNamespace(ids=source_owner._gate._ids, vectors=source_owner._gate._vectors)
+    handler._retained, handler._memory = retained, memory
+    handler._adapter = SimpleNamespace(query=lambda _text: [1.0] + [0.0] * 383)
+    handler._lane, handler._lanes = 'codex-lead-1', frozenset({'codex-lead-1'})
+    handler._lock, handler._closed, handler._failed = threading.Lock(), False, False
+    owner._generation = (None, snapshot, handler)
+    owner._prewarm_generation, owner._retained = owner._generation, retained
+    owner._lanes, owner._state, owner._lock = handler._lanes, 'READY', threading.Lock()
+    owner._source_budget = None
+    retained._owner, retained._handler, retained._memory = owner, handler, memory
+    retained._records = {record['record_id']: record for record in records}
+    retained._source_owner = source_owner
+    monkeypatch.setattr(runtime._RetainedFlatQueryState, '_controls', lambda _self: context)
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_running_owner', lambda _self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory_or_hold', lambda _self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
+    monkeypatch.setattr(reader.dt, 'datetime', clock)
+    charged, budgets = [], []
+    original = prefix._budgeted_read
+    def tracked(stream, size, source_budget=None, *, line=False):
+        data = original(stream, size, source_budget, line=line)
+        if source_budget is not None:
+            budgets.append(source_budget)
+            charged.append(len(data))
+        return data
+    monkeypatch.setattr(prefix, '_budgeted_read', tracked)
+    request = {'schema': 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
+               'query_id': 'startup_work_overview', 'nonce': '0' * 64,
+               'lane': 'codex-lead-1', 'scope': 'shared'}
+    result = (owner.located_candidates if located else owner.candidates)(request)
+    assert result['status'] == 'CANDIDATES' and result['candidates']
+    assert len({id(item) for item in budgets}) == 1
+    assert sum(charged) > 3 * context['messages']['end_cursor'].offset
+    assert budgets[0]._remaining == 1024 ** 3 - sum(charged)
+    assert owner._state == 'READY' and owner._source_budget is None
+
+
 def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatch):
     class Source(BytesIO):
         def __init__(self):
@@ -328,6 +377,30 @@ def test_bad_candidate_request_preserves_ready(monkeypatch, located):
     with pytest.raises(runtime.FullRuntimeRefused):
         (owner.located_candidates if located else owner.candidates)(request)
     assert owner._state == 'READY' and owner._retained is retained
+
+
+@pytest.mark.parametrize('fault', ['missing_retained', 'source_error'])
+def test_candidate_integrity_error_holds_without_rebuilding(monkeypatch, fault):
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    owner = object.__new__(runtime._SingleManifestOwner)
+    retained = object() if fault == 'source_error' else None
+    handler = SimpleNamespace(_retained=retained)
+    owner._generation = (None, {'messages': {'end_cursor': SimpleNamespace(offset=5)}}, handler)
+    owner._prewarm_generation, owner._retained = owner._generation, retained
+    owner._lanes, owner._state, owner._lock = frozenset({'codex-lead-1'}), 'READY', threading.Lock()
+    owner._source_budget = None
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory_or_hold', lambda _self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked',
+                        lambda _self: pytest.fail('retained must never be rebuilt in candidate request'))
+    monkeypatch.setattr(runtime, 'map_pipe_candidates',
+                        lambda **_kwargs: (_ for _ in ()).throw(ValueError('synthetic source failure')))
+    request = {'schema': 'wd.mind-pipe-request.v2', 'query_id': 'startup_work_overview',
+               'nonce': '0' * 64, 'lane': 'codex-lead-1', 'scope': 'own'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.located_candidates(request)
+    assert owner._state == 'HOLD' and owner._retained is None and handler._retained is None
+    assert type(owner._source_budget) is prefix._SourceReadBudget
 
 
 @pytest.mark.parametrize('fault', [False, True], ids=['prewarm_ok', 'prewarm_fails'])

@@ -74,6 +74,9 @@ class _Owner:
         self._condition = threading.Condition()
         self.resources = _Resources()
         self._state, self._reason, self._code = "STARTING", None, None
+        # Legacy callers may still bind without registering an attempt.  Until
+        # they are migrated this state does not prove that no spawn occurred.
+        self._spawn_state = "NOT_ENTERED"
         self._owned, self._closing, self._eof = True, False, False
         self._output = bytearray()
         self._counts = {"stdout": 0, "stderr": 0}
@@ -98,6 +101,15 @@ class _Owner:
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
             self.resources.job = job
 
+    def mark_spawn_attempt(self):
+        """Record uncertainty before entering native process creation."""
+        with self._condition:
+            if (not self._owned or self._closing or self._job is None
+                    or self._process is not None or self._spawn_state != "NOT_ENTERED"):
+                raise LifecycleRefused("mind_e5_lifecycle_refused")
+            self._spawn_state = "ATTEMPTED"
+            self._condition.notify_all()
+
     def bind(self, process):
         """Retain the actual process immediately after Popen, before attachment."""
         with self._condition:
@@ -105,6 +117,7 @@ class _Owner:
                     or self._job is None):
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
             self.resources.process = process
+            self._spawn_state = "BOUND"
             self._condition.notify_all()
 
     def mark_ready(self):
@@ -266,7 +279,11 @@ class _Owner:
 
     def _keep(self):
         with self._condition:
-            while self._owned and self._process is None and not self._closing:
+            # A native spawn may have succeeded without returning a process
+            # object. Neither shutdown nor an unbound process is proof that
+            # the attempt was harmless; keep ownership and the slot on HOLD.
+            while self._owned and (self._spawn_state == "ATTEMPTED"
+                                   or (self._process is None and not self._closing)):
                 self._condition.wait()
             if not self._owned:
                 return

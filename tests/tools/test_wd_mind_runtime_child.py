@@ -84,6 +84,21 @@ def synthetic_worker_admission(synthetic_local_admission):
         lease.finish_worker_start(owner, factory)
 
 
+@pytest.fixture
+def synthetic_held_keeper(monkeypatch):
+    """A test-only keeper for synthetic resources; it never releases HOLD."""
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    done = threading.Event()
+    monkeypatch.setattr(lifecycle, '_active', None)
+    monkeypatch.setattr(lifecycle._Owner, '_keep', lambda self: done.wait(5))
+    yield
+    done.set()
+    owner = lifecycle._active
+    if owner is not None:
+        owner._keeper.join(timeout=2)
+        assert not owner._keeper.is_alive()
+
+
 def test_local_manifest_query_is_default_off_and_refuses_an_unpinned_bundle(tmp_path, synthetic_local_admission):
     policy = b'synthetic'
     args = {'bundle_root': str(tmp_path), 'expected_manifest_sha256': 'a' * 64,
@@ -1210,7 +1225,8 @@ def test_cooperative_job_close_failure_retains_actual_handle():
 
 
 @pytest.mark.parametrize("registered", [False, True])
-def test_review_bind_failure_keeps_live_process_owned(staged_graceful, monkeypatch, registered, synthetic_windows_subprocess):
+def test_review_bind_failure_keeps_live_process_owned(staged_graceful, monkeypatch, registered, synthetic_windows_subprocess,
+                                                      synthetic_worker_admission, synthetic_held_keeper):
     from test_wd_mind_e5_lifecycle import Job, Process
     from tools import wd_mind_e5_lifecycle as lifecycle
     process, job = Process(on_eof=False), Job()
@@ -1225,78 +1241,52 @@ def test_review_bind_failure_keeps_live_process_owned(staged_graceful, monkeypat
 
     monkeypatch.setattr(lifecycle._Owner, "bind", fail)
     try:
-        result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
+        result = child.start_e5_worker_graceful(enabled=True, **synthetic_worker_admission, **staged_graceful)
         owner = result["owner"]
         assert result["status"] == "HOLD" and owner.status()["owned"]
         assert owner._process is process and owner._job is job
+        assert owner._spawn_state == ('BOUND' if registered else 'ATTEMPTED')
         assert process.poll() is None and not job.closed
         with pytest.raises(lifecycle.LifecycleRefused):
             lifecycle.reserve(enabled=True)
     finally:
         process.finish()
-        if lifecycle._active is not None:
-            assert not lifecycle._active.shutdown(timeout=2)["owned"]
 
 
 @pytest.mark.parametrize("registered", [False, True])
-def test_review_set_job_failure_retains_job_only_hold_channel(staged_graceful, monkeypatch, registered):
+def test_review_set_job_failure_retains_job_only_hold_channel(staged_graceful, monkeypatch, registered,
+                                                             synthetic_worker_admission, synthetic_held_keeper):
     from test_wd_mind_e5_lifecycle import Job
     from tools import wd_mind_e5_lifecycle as lifecycle
     job = Job()
-    entered, unblock = threading.Event(), threading.Event()
-    original_close, original_set = job.close, lifecycle._Owner.set_job
-
-    def close():
-        entered.set()
-        unblock.wait()
-        original_close()
+    original_set = lifecycle._Owner.set_job
 
     def fail(owner, supplied):
         if registered:
             original_set(owner, supplied)
         raise RuntimeError("synthetic pre/post-registration failure")
 
-    job.close = close
     monkeypatch.setattr(child, "_Job", lambda **kwargs: job)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("spawn forbidden"))
     monkeypatch.setattr(lifecycle._Owner, "set_job", fail)
-    results, errors = [], []
-
-    def launch():
-        try:
-            results.append(child.start_e5_worker_graceful(enabled=True, **staged_graceful))
-        except Exception as exc:
-            errors.append(type(exc).__name__)
-
-    caller = threading.Thread(target=launch, daemon=True)
-    try:
-        caller.start()
-        caller.join(timeout=2)
-        assert not caller.is_alive(), "registration failure blocked on Job.close"
-        assert not errors, "registration failure lost the owner channel"
-        result = results[0]
-        assert result["status"] == "HOLD" and result["owner"]._job is job
-        assert result["owner"].status()["pid"] is None
-        assert entered.wait(2) and not job.closed
-        with pytest.raises(lifecycle.LifecycleRefused):
-            lifecycle.reserve(enabled=True)
-    finally:
-        unblock.set()
-        caller.join(timeout=2)
-        if lifecycle._active is not None:
-            assert not lifecycle._active.shutdown(timeout=2)["owned"]
+    result = child.start_e5_worker_graceful(enabled=True, **synthetic_worker_admission, **staged_graceful)
+    assert result["status"] == "HOLD" and result["owner"]._job is job
+    assert result["owner"].status()["pid"] is None
+    assert result['owner']._job_state == ('BOUND' if registered else 'ATTEMPTED')
+    assert result['owner'].status()['owned'] is True and not job.closed
+    with pytest.raises(lifecycle.LifecycleRefused):
+        lifecycle.reserve(enabled=True)
 
 
-def test_review_spawn_and_job_close_failure_return_owner_without_raw_error(staged_graceful, monkeypatch):
+def test_review_spawn_and_job_close_failure_return_owner_without_raw_error(staged_graceful, monkeypatch,
+                                                                          synthetic_worker_admission, synthetic_held_keeper):
     from test_wd_mind_e5_lifecycle import Job
     from tools import wd_mind_e5_lifecycle as lifecycle
-    job, failed, allow_close = Job(), threading.Event(), threading.Event()
+    job, failed = Job(), threading.Event()
 
     def close():
-        if not allow_close.is_set():
-            failed.set()
-            raise OSError("synthetic private error")
-        job.closed = True
+        failed.set()
+        raise OSError("synthetic private error")
 
     def unavailable(*args, **kwargs):
         raise OSError("synthetic spawn failure")
@@ -1304,25 +1294,20 @@ def test_review_spawn_and_job_close_failure_return_owner_without_raw_error(stage
     job.close = close
     monkeypatch.setattr(child, "_Job", lambda **kwargs: job)
     monkeypatch.setattr(subprocess, "Popen", unavailable)
-    try:
-        result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
-        owner = result["owner"]
-        assert result["status"] == "HOLD" and failed.wait(2)
-        assert owner.status()["owned"] and owner._job is job and owner._process is None
-        assert "private" not in repr(result["lifecycle"]) and "private" not in repr(owner.status())
-        assert owner._keeper.is_alive() and not owner._keeper.daemon
-        with pytest.raises(lifecycle.LifecycleRefused):
-            lifecycle.reserve(enabled=True)
-    finally:
-        allow_close.set()
-        if lifecycle._active is not None:
-            assert not lifecycle._active.shutdown(timeout=2)["owned"]
+    result = child.start_e5_worker_graceful(enabled=True, **synthetic_worker_admission, **staged_graceful)
+    owner = result["owner"]
+    assert result["status"] == "HOLD" and not failed.is_set()
+    assert owner._spawn_state == 'ATTEMPTED'
+    assert owner.status()["owned"] and owner._job is job and owner._process is None
+    assert "private" not in repr(result["lifecycle"]) and "private" not in repr(owner.status())
+    assert owner._keeper.is_alive() and not owner._keeper.daemon
+    with pytest.raises(lifecycle.LifecycleRefused):
+        lifecycle.reserve(enabled=True)
 
 
-def test_review_partial_job_constructor_failure_retains_created_handle(staged_graceful, monkeypatch, synthetic_windows_job_platform):
+def test_review_partial_job_constructor_failure_retains_created_handle(staged_graceful, monkeypatch, synthetic_windows_job_platform,
+                                                                       synthetic_worker_admission, synthetic_held_keeper):
     from tools import wd_mind_e5_lifecycle as lifecycle
-    allow_close = threading.Event()
-
     class Call:
         def __init__(self, function):
             self.function = function
@@ -1334,25 +1319,21 @@ def test_review_partial_job_constructor_failure_retains_created_handle(staged_gr
                           SetInformationJobObject=Call(lambda *args: 0),
                           AssignProcessToJobObject=Call(lambda *args: pytest.fail("attach forbidden")),
                           TerminateJobObject=Call(lambda *args: pytest.fail("terminate forbidden")),
-                          CloseHandle=Call(lambda *args: 1 if allow_close.is_set() else 0))
+                          CloseHandle=Call(lambda *args: pytest.fail('uncertain Job init must not close')))
     native = SimpleNamespace(**{name: getattr(child.ctypes, name) for name in ("c_void_p", "c_int", "byref", "sizeof")},
                              WinDLL=lambda *a, **k: api)
     monkeypatch.setattr(child, "ctypes", native)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("spawn forbidden"))
-    try:
-        result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
-        owner = result["owner"]
-        assert result["status"] == "HOLD" and owner.status()["owned"]
-        assert owner._job is not None and owner._job.handle == 123
-        assert owner._process is None
-    finally:
-        allow_close.set()
-        if lifecycle._active is not None:
-            assert not lifecycle._active.shutdown(timeout=2)["owned"]
+    result = child.start_e5_worker_graceful(enabled=True, **synthetic_worker_admission, **staged_graceful)
+    owner = result["owner"]
+    assert result["status"] == "HOLD" and owner.status()["owned"]
+    assert owner._job is not None and owner._job.handle == 123
+    assert owner._job_state == 'ATTEMPTED' and owner._process is None
 
 
 @pytest.mark.parametrize('signal_name', ['keyboard', 'cancelled'])
-def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_graceful, monkeypatch, signal_name, synthetic_windows_subprocess):
+def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_graceful, monkeypatch, signal_name,
+                                                                 synthetic_windows_subprocess, synthetic_worker_admission):
     import asyncio
     from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
     from tools import wd_mind_e5_lifecycle as lifecycle
@@ -1374,7 +1355,8 @@ def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_gracefu
     monkeypatch.setattr(subprocess, 'Popen', spawn)
     try:
         with pytest.raises(signal):
-            child.start_e5_worker_graceful(enabled=True, owner_sink=captured.append, **staged_graceful)
+            child.start_e5_worker_graceful(enabled=True, owner_sink=captured.append,
+                                            **synthetic_worker_admission, **staged_graceful)
         assert calls == ['spawn'] and captured[0] is lifecycle._active
         assert captured[0]._process is process and captured[0].status()['owned'] is True
         assert process.poll() is None and not captured[0]._job.closed

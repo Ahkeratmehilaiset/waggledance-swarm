@@ -49,6 +49,21 @@ def test_direct_host_construction_cannot_bypass_closed_bootstrap(tmp_path):
     assert owner._thread is None
 
 
+def test_direct_run_refuses_without_importing_child(tmp_path, monkeypatch):
+    import builtins
+    original = builtins.__import__
+
+    def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == 'tools' and 'wd_mind_runtime_child' in fromlist:
+            raise AssertionError('child imported before verified host start')
+        return original(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, '__import__', guarded)
+    owner = host._OwnedHost(True, str(tmp_path), MANIFEST, str(tmp_path / 'policy'), POLICY, APPROVAL)
+    owner._run()
+    assert owner.status()['state'] == 'HOLD'
+
+
 def test_off_module_import_does_not_execute_child(monkeypatch):
     import builtins
     original = builtins.__import__

@@ -3374,10 +3374,9 @@ class _SingleManifestOwner:
                 or not reader._hex(request['nonce']) or request['lane'] not in self._lanes
                 or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        # Located startup delivery is unavailable until the owner and its
-        # rotation callback account for every source read under one budget.
-        # Refuse before touching retained state; this is not an integrity fault.
-        if located and not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+        # Both candidate protocols stay unavailable until accounting across
+        # the owner and rotation callback has been verified end to end.
+        if not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         frozen = dict(request, schema='wd.mind-pipe-request.v1')
         if not self._lock.acquire(blocking=False):
@@ -3386,28 +3385,27 @@ class _SingleManifestOwner:
         try:
             if self._state != 'READY' or self._handler is None:
                 raise ValueError('owner_not_ready')
-            if located and self._prewarm_generation is not self._generation:
+            if self._prewarm_generation is not self._generation:
                 raise ValueError('prewarm_unavailable')
             checking = True
-            if located:
-                try:
-                    self._source_budget = _startup_owner_source_budget(self._snapshot)
-                except _StartupSourceBudgetRefused:
-                    checking = False
-                    raise
+            try:
+                self._source_budget = _startup_owner_source_budget(self._snapshot)
+            except _StartupSourceBudgetRefused:
+                checking = False
+                raise
             self._check_factory_or_hold()
             self._check_policy_anchor()
-            self._ensure_retained_locked()
+            # This path may never lazily rebuild retained state: prewarm has a
+            # separate allowance and finished before this generation was ready.
+            if self._retained is None or self._handler._retained is not self._retained:
+                raise ValueError('prewarm_changed')
             response = map_pipe_candidates(enabled=True, handler=self._handler, request=frozen,
                                            _include_locations=located)
             self._check_factory_or_hold()
             self._check_policy_anchor()
             # The caller can mutate its original dict during the query. Complete
             # all source/control checks before refusing that caller-only error.
-            if located:
-                self._check_candidate_delivery(source_budget=self._source_budget)
-            else:
-                self._check_candidate_delivery()
+            self._check_candidate_delivery(source_budget=self._source_budget)
             self._check_factory_or_hold()
             self._check_policy_anchor()
             try:

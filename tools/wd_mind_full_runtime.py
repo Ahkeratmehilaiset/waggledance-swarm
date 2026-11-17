@@ -1138,7 +1138,15 @@ def _cache_descriptor_content_sha(raw, relative):
     return reader._sha(reader._canonical({'schema': schema, 'files': rows}))
 
 
-def _cache_snapshot_binding(binding, snapshot, encoder_binding_bytes, encoder_binding_sha256):
+def _cache_projection_sha256(projection):
+    """Bind screened records without persisting the per-process policy HMAC."""
+    if (type(projection) is not dict or type(projection.get('messages')) is not dict
+            or type(projection['messages'].get('records')) is not list):
+        raise ValueError('cache_projection')
+    return reader._sha(reader._canonical(projection['messages']['records']))
+
+
+def _cache_snapshot_binding(binding, snapshot, projection, encoder_binding_bytes, encoder_binding_sha256):
     """Pin inputs that affect screened passages or vectors, independently of bundle ID."""
     if type(binding) is not _PrivateBinding or type(snapshot) is not dict:
         raise ValueError('cache_binding')
@@ -1152,7 +1160,6 @@ def _cache_snapshot_binding(binding, snapshot, encoder_binding_bytes, encoder_bi
             or not all(type(item) is bytes for item in controls)
             or not reader._hex(binding._PrivateBinding__policy_pin)
             or not reader._hex(args['expected_prefix_sha256'])
-            or not reader._hex(snapshot.get('projection_sha256'))
             or snapshot['messages']['end_cursor'] != cursor):
         raise ValueError('cache_binding')
     policy = {'roster_sha256': reader._sha(controls[1]),
@@ -1166,7 +1173,7 @@ def _cache_snapshot_binding(binding, snapshot, encoder_binding_bytes, encoder_bi
     return {'source_identity_sha256': reader._sha(reader._canonical(cursor.file_identity)),
             'source_generation_sha256': reader._sha(reader._canonical(cursor.generation)),
             'prefix_offset': cursor.offset, 'prefix_sha256': args['expected_prefix_sha256'],
-            'projection_sha256': snapshot['projection_sha256'],
+            'projection_sha256': _cache_projection_sha256(projection),
             'model_sha256': reader._sha(reader._canonical({'encoder_binding_sha256': encoder_binding_sha256,
                                                            'content_pins': content_pins})),
             'policy_sha256': reader._sha(reader._canonical(policy)),

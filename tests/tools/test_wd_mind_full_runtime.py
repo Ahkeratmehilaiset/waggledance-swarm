@@ -54,13 +54,17 @@ def test_cache_binding_ignores_unrelated_bundle_but_binds_policy_and_model(monke
                 'projection_sha256': '7' * 64}
     args = {'cursor': cursor, 'expected_prefix_sha256': '2' * 64}
     controls = (b'irrelevant-fleet-metadata', b'roster', b'policy')
+    projection = {'messages': {'records': [], 'identifier_policy_hmac': 'ephemeral'}}
     first = runtime._PrivateBinding(snapshot, Path('bundle-a'), 'a' * 64, controls, args, '3' * 64)
     second = runtime._PrivateBinding(snapshot, Path('bundle-b'), 'b' * 64, controls, args, '3' * 64)
-    one = runtime._cache_snapshot_binding(first, snapshot, b'encoder', '4' * 64)
-    assert one == runtime._cache_snapshot_binding(second, snapshot, b'encoder', '4' * 64)
+    one = runtime._cache_snapshot_binding(first, snapshot, projection, b'encoder', '4' * 64)
+    projection['messages']['identifier_policy_hmac'] = 'another-ephemeral-key'
+    assert one == runtime._cache_snapshot_binding(second, snapshot, projection, b'encoder', '4' * 64)
     changed = runtime._PrivateBinding(snapshot, Path('bundle-b'), 'b' * 64, controls, args, '5' * 64)
-    assert one['policy_sha256'] != runtime._cache_snapshot_binding(changed, snapshot, b'encoder', '4' * 64)['policy_sha256']
-    assert one['model_sha256'] != runtime._cache_snapshot_binding(first, snapshot, b'encoder', '6' * 64)['model_sha256']
+    assert one['policy_sha256'] != runtime._cache_snapshot_binding(changed, snapshot, projection, b'encoder', '4' * 64)['policy_sha256']
+    assert one['model_sha256'] != runtime._cache_snapshot_binding(first, snapshot, projection, b'encoder', '6' * 64)['model_sha256']
+    projection['messages']['records'].append({'record_id': 'synthetic'})
+    assert one['projection_sha256'] != runtime._cache_snapshot_binding(first, snapshot, projection, b'encoder', '4' * 64)['projection_sha256']
 
 
 def test_cache_runtime_content_ignores_generation_but_not_tokenizer():

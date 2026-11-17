@@ -1071,7 +1071,8 @@ def _flat_hashes(ids, vectors):
 
 
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
-                                 encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease):
+                                 encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
+                                 prior_memory=None):
     """Use the pinned immutable snapshot helper and retain watcher ownership on HOLD.
 
     This captures the full prefix as immutable bytes and can use substantial RAM;
@@ -1105,6 +1106,30 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             if not records or len(by_id) != len(records):
                 raise ValueError('records')
             ids, vectors = tuple(sorted(by_id)), []
+            reusable = {}
+            if prior_memory is not None:
+                # The old content is reused only after both complete source
+                # snapshots, all controls and the encoder have been checked.
+                if type(prior_memory) is not _PrivateFlatMemory:
+                    raise ValueError('refresh_memory')
+                old_binding = prior_memory.binding
+                old_args, new_args = old_binding._PrivateBinding__args, binding._PrivateBinding__args
+                old_cursor, new_cursor = old_args['cursor'], new_args['cursor']
+                if (old_binding._PrivateBinding__bundle != binding._PrivateBinding__bundle
+                        or old_binding._PrivateBinding__manifest != binding._PrivateBinding__manifest
+                        or old_binding._PrivateBinding__controls != binding._PrivateBinding__controls
+                        or old_binding._PrivateBinding__policy_pin != binding._PrivateBinding__policy_pin
+                        or prior_memory.encoder_binding != encoder_binding_bytes
+                        or not startup._same_path(Path(old_args['source_path']), Path(new_args['source_path']))
+                        or not startup._same_path(Path(old_args['generation_path']), Path(new_args['generation_path']))
+                        or old_cursor.file_identity != new_cursor.file_identity
+                        or old_cursor.generation != new_cursor.generation
+                        or new_cursor.offset < old_cursor.offset):
+                    raise ValueError('refresh_basis_changed')
+                old_records = _flat_check(prior_memory)
+                for index, record_id in enumerate(prior_memory.ids):
+                    if record_id in by_id and old_records[record_id] == by_id[record_id]:
+                        reusable[record_id] = prior_memory.vectors[index * 1536:(index + 1) * 1536]
 
             def checkpoint():
                 watcher.check()
@@ -1113,8 +1138,9 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 binding._immutable_checkpoint(frozen)
                 _checked_encoder_binding(encoder_binding_bytes, encoder_binding_sha256)
 
-            for start in range(0, len(ids), 16):
-                chosen = ids[start:start + 16]
+            missing = tuple(record_id for record_id in ids if record_id not in reusable)
+            for start in range(0, len(missing), 16):
+                chosen = missing[start:start + 16]
                 texts = tuple('passage: ' + reader.decode_text(by_id[key]['stored_text'])[:2000] for key in chosen)
                 checkpoint()
                 raw = passage_encoder(texts)
@@ -1123,8 +1149,11 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     raise ValueError('passage')
                 for index in range(len(chosen)):
                     reader._q4_vector(struct.unpack('<384f', raw[index * 1536:(index + 1) * 1536]))
-                vectors.append(raw)
-            vectors = b''.join(vectors)
+                for index, record_id in enumerate(chosen):
+                    reusable[record_id] = raw[index * 1536:(index + 1) * 1536]
+            vectors = b''.join(reusable[record_id] for record_id in ids)
+            if prior_memory is not None:
+                _flat_check(prior_memory)
             manifest = {'schema': 'wd.mind-flat-f32-memory.v1', 'authority': 'none',
                         'projection_sha256': snapshot['projection_sha256'], 'records': len(ids),
                         'encoder_binding_sha256': encoder_binding_sha256, **_flat_hashes(ids, vectors)}
@@ -1169,7 +1198,8 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
 
 def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                       encoder_binding_bytes=None, encoder_binding_sha256=None,
-                      source_verification=None, watcher_join_timeout_seconds=None, _watcher_lease=None):
+                      source_verification=None, watcher_join_timeout_seconds=None, _watcher_lease=None,
+                      _prior_memory=None):
     """Build one memory-only float32 vector per screened, source-bound record.
 
     Provider identity and supplied encoder metadata are caller-trusted; this
@@ -1186,7 +1216,10 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
             if type(source_verification) is not str or source_verification != 'verified_immutable_snapshot_v1':
                 raise ValueError('source_verification')
             return _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
-                                                encoder_binding_sha256, watcher_join_timeout_seconds, _watcher_lease)
+                                                encoder_binding_sha256, watcher_join_timeout_seconds, _watcher_lease,
+                                                _prior_memory)
+        if _prior_memory is not None:
+            raise ValueError('refresh_requires_immutable_snapshot')
         if watcher_join_timeout_seconds is not None:
             raise ValueError('unexpected_join_timeout')
         snapshot = binding.snapshot_for_query()
@@ -1613,6 +1646,9 @@ class _FlatRequestHandler:
         return self._snapshot['projection_sha256']
 
     def build(self):
+        return self._build(None)
+
+    def _build(self, prior_memory):
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         try:
@@ -1621,7 +1657,8 @@ class _FlatRequestHandler:
             memory = build_flat_memory(enabled=True, binding=self._binding, passage_encoder=self._adapter.passage,
                 encoder_binding_bytes=self._adapter.encoder_binding_bytes,
                 encoder_binding_sha256=self._adapter.encoder_binding_sha256,
-                source_verification='verified_immutable_snapshot_v1', _watcher_lease=self._watcher_lease)
+                source_verification='verified_immutable_snapshot_v1', _watcher_lease=self._watcher_lease,
+                _prior_memory=prior_memory)
             self._memory = memory
             self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
             self._source_check()
@@ -2137,7 +2174,7 @@ def _stage_refresh_generation(owner):
     snapshot = binding.snapshot_for_query()
     handler = _FlatRequestHandler(binding, snapshot, owner._lane, owner._lanes, owner._client,
         owner._adapter, owner._factory, owner._timeout, owner._factory._bulk, owner._watcher_lease)
-    handler.build()
+    handler._build(owner._handler._memory)
     return {'binding':binding, 'snapshot':snapshot, 'memory':handler._memory, 'handler':handler}
 
 
@@ -2340,20 +2377,68 @@ class _SingleManifestOwner:
         if enabled is not True or not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         previous, staged, generation, accepted, pending = self._generation, None, None, False, None
+        old_handler, handler_locked, rotator_locked = None, False, False
+        old_rotation_snapshot = old_adapter_snapshot = None
         try:
             if self._state != 'READY':
                 raise ValueError('owner_not_ready')
+            old_handler = self._handler
+            if type(old_handler) is not _FlatRequestHandler:
+                raise ValueError('refresh_handler')
+            if not old_handler._lock.acquire(blocking=False):
+                # A previously issued lane view may still hold this lock.
+                # Treat that normal contention as a caller-only refusal.
+                old_handler = None
+                raise _GenerationInputRefused('mind_full_runtime_refused')
+            handler_locked = True
+            if old_handler._pending_rotator is not None or old_handler._refresh_controller is not None:
+                raise ValueError('refresh_handler_busy')
             self._state = 'HOLD'
             _verify_refresh_basis(self)
             staged = _stage_refresh_generation(self)
             generation = _validate_refresh_generation(self, staged)
-            self._handler._retained = None
+            if self._rotation_enabled:
+                if not self._rotation_is_bound() or self._adapter is None:
+                    raise ValueError('rotation_binding')
+                if not self._client._lock.acquire(blocking=False):
+                    raise ValueError('rotation_busy')
+                rotator_locked = True
+                old_rotation_snapshot = self._client._snapshot
+                old_adapter_snapshot = self._adapter._snapshot
+                if (old_rotation_snapshot != previous[1]['projection_sha256']
+                        or old_adapter_snapshot != old_rotation_snapshot
+                        or self._adapter._rotator is not self._client):
+                    raise ValueError('rotation_binding')
+                self._adapter._static_check()
+                self._client._check_worker_identity()
+                self._generation = generation
+                self._client._snapshot = generation[1]['projection_sha256']
+                self._adapter._snapshot = generation[1]['projection_sha256']
+                self._adapter._static_check()
+                self._client._check_worker_identity()
+                self._client._check_source()
+            else:
+                self._generation = generation
+            # Retire direct lane views without closing the shared worker.
+            old_handler._closed = True
+            old_handler._retained = None
+            old_handler._rotator = None
+            old_handler._adapter = None
             self._retained = None
-            self._generation = generation
             self._state = 'READY'
             accepted = True
+        except _GenerationInputRefused:
+            # The old handler remains intact when another caller merely owns
+            # its lock; no new snapshot or worker has been touched.
+            pass
         except BaseException as exc:
             self._generation = previous
+            if rotator_locked:
+                self._client._snapshot = old_rotation_snapshot
+                self._adapter._snapshot = old_adapter_snapshot
+            if handler_locked:
+                old_handler._closed = True
+                old_handler._retained = None
             if self._handler is not None:
                 self._handler._retained = None
             self._retained = None
@@ -2362,7 +2447,11 @@ class _SingleManifestOwner:
         finally:
             # These objects may contain identifier-policy and HMAC key bytes.
             # Keep them out of this frame before any refusal or cancellation.
-            previous = staged = generation = None
+            if rotator_locked:
+                self._client._lock.release()
+            if handler_locked:
+                old_handler._lock.release()
+            previous = staged = generation = old_handler = None
             self._lock.release()
         if pending is not None:
             raise pending from None

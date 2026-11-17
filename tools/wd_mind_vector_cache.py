@@ -1,4 +1,4 @@
-"""Private vector-only cache; not wired into the Mind runtime.
+"""Private vector-only cache for the pinned Mind runtime.
 
 Cache bytes are derived data, not an authenticated statement.  A writer running
 as the same Windows user can replace both vectors and checksums: UNKNOWN.

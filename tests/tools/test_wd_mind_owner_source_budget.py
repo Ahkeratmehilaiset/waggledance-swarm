@@ -472,7 +472,14 @@ def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatc
     stream = Source()
     monkeypatch.setattr(runtime.bridge, '_open_log', lambda _source: stream)
     monkeypatch.setattr(prefix, '_fence', lambda *_args: 1)
-    assert owner._rotation_source_check() == snapshot['projection_sha256']
+    seen = []
+    def callback():
+        seen.append((threading.get_ident(), owner._rotation_source_check()))
+    worker = threading.Thread(target=callback)
+    worker.start()
+    worker.join()
+    assert seen == [(worker.ident, snapshot['projection_sha256'])]
+    assert seen[0][0] != threading.get_ident()
     assert stream.reads == 1 and owner._source_budget._remaining == 0
     with pytest.raises(ValueError, match='source_budget'):
         owner._rotation_source_check()

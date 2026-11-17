@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import runpy
 import sys
+import types
 
 import pytest
 
@@ -22,7 +23,7 @@ def _bootstrap():
     return match.group(1)
 
 
-def _run_bootstrap(monkeypatch, path, pin, *arguments, manifest_raw=None, manifest_pin=None):
+def _run_bootstrap(monkeypatch, path, pin, *arguments, manifest_raw=None, manifest_pin=None, namespace_matches=True):
     if manifest_raw is None:
         manifest_raw = json.dumps({'schema_version':1, 'files':{
             'tools-bootstrap/tools/wd_mind_runtime_child.py':pin}}).encode()
@@ -38,7 +39,10 @@ def _run_bootstrap(monkeypatch, path, pin, *arguments, manifest_raw=None, manife
             return getattr(original_flags, name)
 
     monkeypatch.setattr(sys, 'flags', SafeFlags())
-    exec(compile(_bootstrap(), '<synthetic-wrapper-bootstrap>', 'exec'), {'__builtins__':builtins.__dict__})
+    main = types.ModuleType('__main__')
+    monkeypatch.setitem(sys.modules, '__main__', main)
+    namespace = main.__dict__ if namespace_matches else {'__builtins__':builtins.__dict__}
+    exec(compile(_bootstrap(), '<synthetic-wrapper-bootstrap>', 'exec'), namespace)
 
 
 def test_bootstrap_executes_only_manifest_pinned_bytes_and_preserves_argv(tmp_path, monkeypatch):
@@ -119,6 +123,25 @@ def test_bootstrap_and_runpy_preserve_script_argv_and_exit(tmp_path, monkeypatch
     assert runpy_result[:2] == current[:2] and runpy_result[3] == current[3]
     # Direct Python script execution sets None; runpy.run_path sets ''.
     assert runpy_result[2] == '' and current[2] is None
+
+
+def test_bootstrap_executes_in_the_actual_main_module_namespace(tmp_path, monkeypatch):
+    target = tmp_path / 'synthetic.py'
+    raw = b'import sys\nsys._mind_wrapper_test_result = globals() is sys.modules["__main__"].__dict__\n'
+    target.write_bytes(raw)
+    monkeypatch.setattr(sys, '_mind_wrapper_test_result', None, raising=False)
+    _run_bootstrap(monkeypatch, target, hashlib.sha256(raw).hexdigest())
+    assert sys._mind_wrapper_test_result is True
+
+
+def test_bootstrap_refuses_unexpected_main_module_namespace(tmp_path, monkeypatch):
+    target = tmp_path / 'synthetic.py'
+    raw = b'import sys\nsys._mind_wrapper_test_result = "executed"\n'
+    target.write_bytes(raw)
+    monkeypatch.setattr(sys, '_mind_wrapper_test_result', None, raising=False)
+    with pytest.raises(SystemExit) as result:
+        _run_bootstrap(monkeypatch, target, hashlib.sha256(raw).hexdigest(), namespace_matches=False)
+    assert result.value.code == 2 and sys._mind_wrapper_test_result is None
 
 
 def test_bootstrap_refuses_when_python_safe_path_is_disabled(tmp_path, monkeypatch):

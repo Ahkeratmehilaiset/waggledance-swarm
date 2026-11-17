@@ -38,7 +38,7 @@ $script:WdBridgeCodeDefinitionName = 'bridge-code-files.json'
 $script:WdBridgeCodeCharterRelative = 'docs/architecture/IDLE_AUTONOMY_CHARTER.md'
 $script:WdBridgeCodePythonFlags = @('-S', '-B')
 $script:WdMindPinnedSourceTrampoline = @'
-import hashlib, hmac, importlib.machinery, json, sys
+import builtins, hashlib, hmac, importlib.machinery, json, sys, types
 try:
     path, manifest_path, expected = sys.argv[1], sys.argv[2], sys.argv[3].lower()
     if not sys.flags.safe_path:
@@ -72,8 +72,19 @@ try:
 except BaseException:
     raise SystemExit(2) from None
 sys.argv = [path] + sys.argv[4:]
-exec(compile(source, path, 'exec'), {'__name__':'__main__', '__file__':path, '__package__':None,
-     '__spec__':None, '__cached__':None, '__loader__':importlib.machinery.SourceFileLoader('__main__', path)})
+def run_verified_script(script_path, script_source):
+    main = sys.modules.get('__main__')
+    if type(main) is not types.ModuleType or main.__dict__ is not globals():
+        raise SystemExit(2)
+    namespace = main.__dict__
+    compiled = compile(script_source, script_path, 'exec')
+    loader = importlib.machinery.SourceFileLoader('__main__', script_path)
+    bootstrap_builtins = builtins
+    namespace.clear()
+    namespace.update({'__name__':'__main__', '__file__':script_path, '__package__':None,
+        '__spec__':None, '__cached__':None, '__loader__':loader, '__builtins__':bootstrap_builtins})
+    exec(compiled, namespace)
+run_verified_script(path, source)
 '@
 # Invoke-WdBridgePythonTool streams the packaged tool's own output to the
 # caller, so its exit code travels here instead of on the output stream.

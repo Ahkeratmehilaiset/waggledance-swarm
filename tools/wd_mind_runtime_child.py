@@ -22,6 +22,8 @@ HOLD. This bounds pipe waits, not the lifetime of a stuck native operation.
 """
 
 import asyncio
+import ast
+import _imp
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -122,6 +124,93 @@ class _LocalOwnerReservation:
             self.fd = -1
         except BaseException:
             raise LaunchRefused('owner_reservation_release_failed') from None
+
+
+class _LocalAdmission:
+    """One owner/factory capability backed by a held cooperating reservation.
+
+    This does not exclude legacy interpreters or authenticate callers. A
+    missing or uncertain worker remains HOLD; no recovery is attempted here.
+    """
+    def __init__(self, guard):
+        if type(guard) is not _LocalOwnerReservation:
+            raise LaunchRefused('owner_admission_refused')
+        self._guard, self._pid, self._lock = guard, os.getpid(), threading.Lock()
+        self._owner = self._factory = self._worker = None
+        self._spawning = self._unknown = self._closed = False
+
+    def _check_locked(self):
+        if self._closed or self._unknown or self._pid != os.getpid() or self._guard.fd < 0:
+            raise LaunchRefused('owner_admission_refused')
+        self._guard._check()
+        if self._guard._read() != _OWNER_RESERVATION_MAGIC + b'R':
+            raise LaunchRefused('owner_admission_refused')
+
+    def bind_owner(self, owner):
+        with self._lock:
+            self._check_locked()
+            if owner is None or (self._owner is not None and self._owner is not owner):
+                raise LaunchRefused('owner_admission_refused')
+            self._owner = owner
+
+    def bind_factory(self, owner, factory):
+        with self._lock:
+            self._check_locked()
+            if (owner is not self._owner or owner is None or factory is None
+                    or (self._factory is not None and self._factory is not factory)):
+                raise LaunchRefused('owner_admission_refused')
+            self._factory = factory
+
+    def _worker_finished_locked(self):
+        if self._worker is None:
+            return True
+        worker = self._worker
+        try:
+            from tools import wd_mind_e5_lifecycle as lifecycle
+            if (type(worker) is not lifecycle._Owner or worker._keeper.is_alive()
+                    or worker._require_spawn_attempt is not True):
+                return False
+            status = worker.status()
+            return (type(status) is dict and status.get('owned') is False
+                    and ((status.get('state') == 'CANCELLED' and worker._spawn_state == 'NOT_ENTERED')
+                         or (status.get('state') in ('EXITED', 'FAILED') and worker._spawn_state == 'BOUND')))
+        except BaseException:
+            return False
+
+    def begin_worker(self, owner, factory):
+        with self._lock:
+            self._check_locked()
+            if (owner is not self._owner or factory is not self._factory or factory is None
+                    or self._spawning or not self._worker_finished_locked()):
+                raise LaunchRefused('owner_admission_refused')
+            self._worker = None
+            self._spawning = True
+
+    def capture_worker(self, owner, factory, worker):
+        with self._lock:
+            self._check_locked()
+            from tools import wd_mind_e5_lifecycle as lifecycle
+            if (owner is not self._owner or factory is not self._factory or not self._spawning
+                    or self._worker is not None or type(worker) is not lifecycle._Owner
+                    or worker._require_spawn_attempt is not True):
+                self._unknown = True
+                raise LaunchRefused('owner_admission_refused')
+            self._worker = worker
+
+    def finish_worker_start(self, owner, factory):
+        with self._lock:
+            if (owner is not self._owner or factory is not self._factory
+                    or not self._spawning or self._worker is None):
+                self._unknown = True
+            self._spawning = False
+
+    def quiescent(self):
+        with self._lock:
+            try:
+                self._check_locked()
+                return not self._spawning and self._worker_finished_locked()
+            except BaseException:
+                return False
 
 
 def _reserve_local_owner(root):
@@ -2425,11 +2514,12 @@ def _load_pinned_canonical_child(bundle, expected_manifest_sha256):
     """
     names = ('tools', 'tools.wd_mind_runtime_child')
     inserted = []
+    _imp.acquire_lock()
     try:
         if (not isinstance(bundle, Path) or not bundle.is_absolute()
                 or type(expected_manifest_sha256) is not str
                 or not _HEX.fullmatch(expected_manifest_sha256)
-                or any(name in sys.modules for name in names)):
+                or any(name == 'tools' or name.startswith('tools.') for name in sys.modules)):
             raise ValueError('canonical_input')
 
         def read_regular(path, limit):
@@ -2472,8 +2562,14 @@ def _load_pinned_canonical_child(bundle, expected_manifest_sha256):
             if (type(digest) is not str or not _HEX.fullmatch(digest.lower())
                     or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), digest.lower())):
                 raise ValueError('canonical_pin')
+        # Do not execute arbitrary package initialization as part of the
+        # bootstrap; today's pinned package is inert. Nonempty code refuses.
+        if ast.parse(raw_files[0].decode('utf-8-sig'), filename=str(source_paths[0])).body:
+            raise ValueError('canonical_package_not_inert')
 
         for name, path, raw in zip(names, source_paths, raw_files):
+            if name in sys.modules:
+                raise ValueError('canonical_collision')
             spec = importlib.util.spec_from_file_location(name, path,
                 submodule_search_locations=[str(path.parent)] if name == 'tools' else None)
             if spec is None or spec.loader is None:
@@ -2482,12 +2578,18 @@ def _load_pinned_canonical_child(bundle, expected_manifest_sha256):
             sys.modules[name] = module
             inserted.append(name)
             exec(compile(raw, str(path), 'exec'), module.__dict__)
+            if sys.modules.get(name) is not module:
+                raise ValueError('canonical_replaced')
+            if any(key.startswith('tools.') and key != names[1] for key in sys.modules):
+                raise ValueError('canonical_foreign_import')
         setattr(sys.modules['tools'], 'wd_mind_runtime_child', sys.modules[names[1]])
         return sys.modules[names[1]]
     except BaseException:
         for name in reversed(inserted):
             sys.modules.pop(name, None)
         raise LaunchRefused('canonical_child_refused') from None
+    finally:
+        _imp.release_lock()
 
 
 def _fixed_child_main(argv):

@@ -64,6 +64,100 @@ _SHARED_SCOPE = "wd.q4-shared-projected-events.v1"
 # One fixed fleet-wide lock name preserves the reader-slot sharing contract.
 # It is an inert sentinel under the operator's audit tree; no lock file is opened.
 _AUDIT_ROOT = Path(r"C:\Python\project2\.codex-audit")
+_OWNER_RESERVATION_NAME = 'mind-owner-reservation.v1'
+_OWNER_RESERVATION_MAGIC = b'WD_MIND_OWNER_V1\n'
+
+
+class _LocalOwnerReservation:
+    """A crash-persistent slot for cooperating owners, not a migration proof."""
+
+    def __init__(self, root, path, fd, root_id, file_id):
+        self.root, self.path, self.fd = root, path, fd
+        self.root_id, self.file_id = root_id, file_id
+
+    def _check(self):
+        from tools import wd_mind_absent_generation_prefix_readonly as absent
+        absent._plain(self.root, directory=True)
+        absent._plain(self.path, directory=False)
+        root = os.lstat(self.root)
+        path = os.lstat(self.path)
+        opened = os.fstat(self.fd)
+        if ((root.st_dev, root.st_ino) != self.root_id
+                or (path.st_dev, path.st_ino) != self.file_id
+                or (opened.st_dev, opened.st_ino) != self.file_id
+                or path.st_nlink != 1 or opened.st_nlink != 1
+                or path.st_size != len(_OWNER_RESERVATION_MAGIC) + 1
+                or opened.st_size != len(_OWNER_RESERVATION_MAGIC) + 1):
+            raise LaunchRefused('owner_reservation_changed')
+
+    def _read(self):
+        os.lseek(self.fd, 0, os.SEEK_SET)
+        return os.read(self.fd, len(_OWNER_RESERVATION_MAGIC) + 2)
+
+    def release_clean(self, *, service_stopped, owner_stopped, owner_owned, control_stopped):
+        if not (service_stopped is True and owner_stopped is True
+                and owner_owned is False and control_stopped is True):
+            raise LaunchRefused('owner_cleanup_unproven')
+        try:
+            self._check()
+            if self._read() != _OWNER_RESERVATION_MAGIC + b'R':
+                raise LaunchRefused('owner_reservation_changed')
+            os.lseek(self.fd, len(_OWNER_RESERVATION_MAGIC), os.SEEK_SET)
+            if os.write(self.fd, b'C') != 1:
+                raise LaunchRefused('owner_reservation_write')
+            os.fsync(self.fd)
+            self._check()
+            if self._read() != _OWNER_RESERVATION_MAGIC + b'C':
+                raise LaunchRefused('owner_reservation_changed')
+            import msvcrt
+            os.lseek(self.fd, 0, os.SEEK_SET)
+            msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+            os.close(self.fd)
+            self.fd = -1
+        except BaseException:
+            raise LaunchRefused('owner_reservation_release_failed') from None
+
+
+def _reserve_local_owner(root):
+    """Reserve only an existing valid CLEAR sentinel; never provision or recover it.
+
+    This serializes cooperating owners only.  Absence of an older unguarded
+    owner must be independently established before provisioning; it is UNKNOWN.
+    """
+    fd = None
+    try:
+        if os.name != 'nt' or not isinstance(root, Path) or not root.is_absolute():
+            raise LaunchRefused('owner_reservation_invalid')
+        from tools import wd_mind_absent_generation_prefix_readonly as absent
+        import msvcrt
+        path = root / _OWNER_RESERVATION_NAME
+        absent._plain(root, directory=True)
+        absent._plain(path, directory=False)
+        root_stat, path_stat = os.lstat(root), os.lstat(path)
+        if not root_stat.st_ino or not path_stat.st_ino or path_stat.st_nlink != 1:
+            raise LaunchRefused('owner_reservation_invalid')
+        fd = os.open(path, os.O_RDWR | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0))
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        guard = _LocalOwnerReservation(root, path, fd,
+            (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
+        guard._check()
+        if guard._read() != _OWNER_RESERVATION_MAGIC + b'C':
+            raise LaunchRefused('owner_reservation_hold')
+        os.lseek(fd, len(_OWNER_RESERVATION_MAGIC), os.SEEK_SET)
+        if os.write(fd, b'R') != 1:
+            raise LaunchRefused('owner_reservation_write')
+        os.fsync(fd)
+        guard._check()
+        if guard._read() != _OWNER_RESERVATION_MAGIC + b'R':
+            raise LaunchRefused('owner_reservation_changed')
+        fd = None
+        return guard
+    except BaseException:
+        if fd is not None:
+            try: os.close(fd)
+            except OSError: pass
+        raise LaunchRefused('owner_reservation_hold') from None
 _BOOTSTRAP_REFUSALS = frozenset({"isolation_required", "runtime_verification_failed", "reader_execution_failed"})
 _READER_REFUSALS = frozenset({
     "stdin_unreadable", "stdin_over_budget", "stdin_not_json", "query_shape", "situation_invalid", "time_invalid",

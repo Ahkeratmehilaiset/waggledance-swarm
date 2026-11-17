@@ -293,11 +293,13 @@ def _worker_factory_preflight(bundle_root, manifest_sha256, expected_lock):
 
 class _ManifestWorkerFactory:
     """Reusable rotator factory; no worker is created by its constructor."""
-    __slots__ = ('_bundle', '_manifest', '_location', '_lock', '_timeout', '_lock_timeout', '_bulk')
+    __slots__ = ('_bundle', '_manifest', '_location', '_lock', '_timeout', '_lock_timeout', '_bulk',
+                 '_admission', '_admission_owner')
 
-    def __init__(self, bundle, manifest, location, lock, timeout, lock_timeout, bulk):
+    def __init__(self, bundle, manifest, location, lock, timeout, lock_timeout, bulk, admission=None, admission_owner=None):
         self._bundle, self._manifest, self._location, self._lock = bundle, manifest, location, lock
         self._timeout, self._lock_timeout, self._bulk = timeout, lock_timeout, bulk
+        self._admission, self._admission_owner = admission, admission_owner
 
     def __repr__(self):
         return '<PrivateMindManifestWorkerFactory>'
@@ -323,24 +325,35 @@ class _ManifestWorkerFactory:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         # Preserve the graceful launcher's returned owner, including HOLD. Do
         # not add a fallible post-launch check that could discard ownership.
-        return child.start_e5_worker_graceful(enabled=True, bundle_root=self._bundle,
-            deployment_manifest_sha256=self._manifest, interpreter=current['interpreter'],
-            interpreter_sha256=current['interpreter_sha256'], interpreter_root=current['interpreter_root'],
-            tuple_args=args, timeout=remaining, scratch_root=None, worker_only=True,
-            bulk_contract_sha256=self._bulk, owner_sink=owner_sink)
+        if type(self._admission) is not child._LocalAdmission:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        self._admission.begin_worker(self._admission_owner, self)
+        try:
+            return child.start_e5_worker_graceful(enabled=True, bundle_root=self._bundle,
+                deployment_manifest_sha256=self._manifest, interpreter=current['interpreter'],
+                interpreter_sha256=current['interpreter_sha256'], interpreter_root=current['interpreter_root'],
+                tuple_args=args, timeout=remaining, scratch_root=None, worker_only=True,
+                bulk_contract_sha256=self._bulk, owner_sink=owner_sink,
+                _admission=self._admission, _admission_owner=self._admission_owner, _admission_factory=self)
+        finally:
+            self._admission.finish_worker_start(self._admission_owner, self)
 
 
 def create_manifest_worker_factory(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                                    worker_timeout_seconds=None, lock_timeout_seconds=None,
-                                   bulk_contract_sha256=None):
+                                   bulk_contract_sha256=None, _admission=None, _admission_owner=None):
     """Prepare a pinned graceful factory, without creating a worker or files."""
     result = None
     try:
-        if (enabled is not True or type(worker_timeout_seconds) not in (int, float)
+        from tools import wd_mind_runtime_child as child
+        if (enabled is not True or type(_admission) is not child._LocalAdmission
+                or type(_admission_owner) is not child._LocalManifestQuery
+                or type(worker_timeout_seconds) not in (int, float)
                 or not math.isfinite(worker_timeout_seconds) or not 0 < worker_timeout_seconds <= 1800
                 or type(lock_timeout_seconds) not in (int, float) or not math.isfinite(lock_timeout_seconds)
                 or not 0 <= lock_timeout_seconds <= 30):
             raise ValueError('timeout')
+        _admission.assert_owner(_admission_owner)
         # The pinned worker contract is shared by the single-worker route.
         # Preparing a factory must not require or start the optional rotator.
         from tools import wd_mind_e5_client as worker_client
@@ -351,9 +364,11 @@ def create_manifest_worker_factory(*, enabled=False, bundle_root=None, expected_
         lock = _fixed_worker_audit_lock()
         _worker_factory_preflight(bundle_root, expected_manifest_sha256, lock)
         result = _ManifestWorkerFactory(bundle_root, expected_manifest_sha256, location, lock,
-                                        float(worker_timeout_seconds), float(lock_timeout_seconds), bulk_contract_sha256)
+                                        float(worker_timeout_seconds), float(lock_timeout_seconds), bulk_contract_sha256,
+                                        _admission, _admission_owner)
+        _admission.bind_factory(_admission_owner, result)
     except Exception:
-        pass
+        result = None
     if result is None:
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
     return result
@@ -2642,7 +2657,8 @@ class _SingleManifestOwner:
     The caller must retain this object through HOLD. This is not an IPC server,
     an authenticated lane, an installed startup path, or an automatic refresh.
     """
-    __slots__ = ('_generation', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
+    __slots__ = ('_generation', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes',
+                 '_factory_admission_anchor', '_factory_admission_owner_anchor', '_timeout',
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
@@ -2655,6 +2671,8 @@ class _SingleManifestOwner:
         self._lane = lane
         self._lanes, self._factory, self._timeout = frozenset(lanes), factory, timeout
         self._factory_anchor, self._factory_bytes = factory, self._factory_snapshot(factory)
+        self._factory_admission_anchor = factory._admission
+        self._factory_admission_owner_anchor = factory._admission_owner
         self._state, self._launch, self._owner = 'NEW', None, None
         self._client = self._adapter = None
         self._lock = threading.Lock()
@@ -3070,8 +3088,14 @@ class _SingleManifestOwner:
 
     def _check_factory(self):
         if (self._factory is not self._factory_anchor
+                or self._factory._admission is not self._factory_admission_anchor
+                or self._factory._admission_owner is not self._factory_admission_owner_anchor
                 or not hmac.compare_digest(self._factory_snapshot(self._factory), self._factory_bytes)):
             raise ValueError('factory_changed')
+        from tools import wd_mind_runtime_child as child
+        if type(self._factory_admission_anchor) is not child._LocalAdmission:
+            raise ValueError('factory_admission')
+        self._factory_admission_anchor.assert_owner(self._factory_admission_owner_anchor)
 
     def _check_factory_or_hold(self):
         accepted = False

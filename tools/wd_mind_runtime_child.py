@@ -22,6 +22,8 @@ HOLD. This bounds pipe waits, not the lifetime of a stuck native operation.
 """
 
 import asyncio
+import ast
+import _imp
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -122,6 +124,124 @@ class _LocalOwnerReservation:
             self.fd = -1
         except BaseException:
             raise LaunchRefused('owner_reservation_release_failed') from None
+
+
+class _LocalAdmission:
+    """One owner/factory capability backed by a held cooperating reservation.
+
+    This does not exclude legacy interpreters or authenticate callers. A
+    missing or uncertain worker remains HOLD; no recovery is attempted here.
+    """
+    def __init__(self, guard, cleanup_evidence=None):
+        if type(guard) is not _LocalOwnerReservation:
+            raise LaunchRefused('owner_admission_refused')
+        self._guard, self._pid, self._lock = guard, os.getpid(), threading.Lock()
+        self._guard_anchor, self._cleanup_evidence = guard, cleanup_evidence
+        self._owner = self._factory = self._worker = None
+        self._spawning = self._unknown = self._closed = False
+
+    def _check_locked(self):
+        if (self._closed or self._unknown or self._guard is not self._guard_anchor
+                or self._pid != os.getpid() or self._guard.fd < 0):
+            raise LaunchRefused('owner_admission_refused')
+        self._guard._check()
+        if self._guard._read() != _OWNER_RESERVATION_MAGIC + b'R':
+            raise LaunchRefused('owner_admission_refused')
+
+    def bind_owner(self, owner):
+        with self._lock:
+            self._check_locked()
+            if owner is None or (self._owner is not None and self._owner is not owner):
+                raise LaunchRefused('owner_admission_refused')
+            self._owner = owner
+
+    def bind_factory(self, owner, factory):
+        with self._lock:
+            self._check_locked()
+            if (owner is not self._owner or owner is None or factory is None
+                    or (self._factory is not None and self._factory is not factory)):
+                raise LaunchRefused('owner_admission_refused')
+            self._factory = factory
+
+    def assert_owner(self, owner):
+        with self._lock:
+            self._check_locked()
+            if owner is None or owner is not self._owner:
+                raise LaunchRefused('owner_admission_refused')
+
+    def _worker_finished_locked(self):
+        if self._worker is None:
+            return True
+        worker = self._worker
+        try:
+            from tools import wd_mind_e5_lifecycle as lifecycle
+            if (type(worker) is not lifecycle._Owner or worker._keeper.is_alive()
+                    or worker._require_spawn_attempt is not True):
+                return False
+            status = worker.status()
+            return (type(status) is dict and status.get('owned') is False
+                    and ((status.get('state') == 'CANCELLED' and worker._spawn_state == 'NOT_ENTERED')
+                         or (status.get('state') in ('EXITED', 'FAILED') and worker._spawn_state == 'BOUND')))
+        except BaseException:
+            return False
+
+    def begin_worker(self, owner, factory):
+        with self._lock:
+            self._check_locked()
+            if (owner is not self._owner or factory is not self._factory or factory is None
+                    or self._spawning or not self._worker_finished_locked()):
+                raise LaunchRefused('owner_admission_refused')
+            self._worker = None
+            self._spawning = True
+
+    def capture_worker(self, owner, factory, worker):
+        with self._lock:
+            self._check_locked()
+            from tools import wd_mind_e5_lifecycle as lifecycle
+            if (owner is not self._owner or factory is not self._factory or not self._spawning
+                    or self._worker is not None or type(worker) is not lifecycle._Owner
+                    or worker._require_spawn_attempt is not True):
+                self._unknown = True
+                raise LaunchRefused('owner_admission_refused')
+            self._worker = worker
+
+    def assert_worker_start(self, owner, factory):
+        with self._lock:
+            self._check_locked()
+            if (owner is not self._owner or factory is not self._factory
+                    or factory is None or not self._spawning or self._worker is not None):
+                raise LaunchRefused('owner_admission_refused')
+
+    def finish_worker_start(self, owner, factory):
+        with self._lock:
+            if (owner is not self._owner or factory is not self._factory
+                    or not self._spawning or self._worker is None):
+                self._unknown = True
+            self._spawning = False
+
+    def quiescent(self):
+        with self._lock:
+            try:
+                self._check_locked()
+                return not self._spawning and self._worker_finished_locked()
+            except BaseException:
+                return False
+
+    def release_clean(self):
+        """Additional to the caller's separately established cleanup evidence."""
+        with self._lock:
+            self._check_locked()
+            if (type(self._cleanup_evidence) is not dict or self._cleanup_evidence.get('clean') is not True
+                    or self._spawning or not self._worker_finished_locked()):
+                raise LaunchRefused('owner_admission_refused')
+            self._guard.release_clean(service_stopped=True, owner_stopped=True,
+                                      owner_owned=False, control_stopped=True)
+            self._closed = True
+
+    def abandon(self):
+        with self._lock:
+            self._closed = True
+            self._guard.abandon()
 
 
 def _reserve_local_owner(root):
@@ -890,16 +1010,22 @@ class _LocalManifestQuery:
     automatic refresh is provided by this adapter.
     """
     __slots__ = ('_owner', '_metadata', '_bundle', '_manifest', '_policy', '_policy_sha', '_approval_sha', '_policy_path',
+                 '_admission', '_admission_anchor',
                  '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_lock', '_cancel',
-                 '_state', '_policy_invalid', '_pending_result')
+                 '_state', '_policy_invalid', '_pending_result', '_host_start_gate', '_host_stop',
+                 '_host_owner_start_inflight')
 
     def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
-                 worker_timeout, lock_timeout, shutdown_timeout, policy_path=None):
+                 worker_timeout, lock_timeout, shutdown_timeout, policy_path=None, admission=None,
+                 host_start_gate=None, host_stop=None, host_owner_start_inflight=None):
         self._owner = None
         self._metadata = {'lane': lane}
         self._bundle, self._manifest = bundle, manifest
         self._policy, self._policy_sha, self._approval_sha = policy, policy_sha, approval_sha
         self._policy_path = policy_path
+        self._admission = self._admission_anchor = admission
+        self._host_start_gate, self._host_stop = host_start_gate, host_stop
+        self._host_owner_start_inflight = host_owner_start_inflight
         self._worker_timeout, self._lock_timeout, self._shutdown_timeout = worker_timeout, lock_timeout, shutdown_timeout
         self._thread, self._lock, self._cancel = None, threading.Lock(), threading.Event()
         self._state, self._policy_invalid = 'NEW', False
@@ -942,6 +1068,9 @@ class _LocalManifestQuery:
         from tools import wd_mind_e5_client as client
         binding = factory = owner = None
         try:
+            if self._admission is not self._admission_anchor:
+                raise ValueError('admission_changed')
+            self._admission.assert_owner(self)
             self._check_policy()
             self._check_external_policy()
             if self._cancel.is_set():
@@ -953,7 +1082,8 @@ class _LocalManifestQuery:
                 return
             factory = runtime.create_manifest_worker_factory(enabled=True, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, worker_timeout_seconds=self._worker_timeout,
-                lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+                lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256,
+                _admission=self._admission, _admission_owner=self)
             anchor = self._check_policy()
             owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=self._metadata['lane'],
                 worker_factory=factory, shutdown_timeout=self._shutdown_timeout, policy_anchor=anchor,
@@ -961,9 +1091,23 @@ class _LocalManifestQuery:
             with self._lock:
                 self._owner = owner  # Retain before any worker may be launched.
             self._check_external_policy()
-            if self._cancel.is_set():
-                return
-            outcome = owner.start()
+            if self._host_start_gate is None:
+                if self._cancel.is_set():
+                    return
+                outcome = owner.start()
+            else:
+                # Never hold the host gate across the potentially long build.
+                # A host STOP can only be accepted before this commitment or
+                # after owner.start has returned and the owner is retained.
+                with self._host_start_gate:
+                    if self._cancel.is_set() or self._host_stop.is_set():
+                        return
+                    self._host_owner_start_inflight.set()
+                try:
+                    outcome = owner.start()
+                finally:
+                    with self._host_start_gate:
+                        self._host_owner_start_inflight.clear()
             with self._lock:
                 self._state = ('READY' if not self._cancel.is_set() and type(outcome) is dict
                                and outcome.get('state') == 'READY' and outcome.get('owned') is True else 'HOLD')
@@ -977,6 +1121,9 @@ class _LocalManifestQuery:
                     self._state = 'STOPPED'
 
     def start(self):
+        if self._admission is not self._admission_anchor:
+            raise LaunchRefused('owner_admission_refused')
+        self._admission.assert_owner(self)
         with self._lock:
             if self._state != 'NEW':
                 raise LaunchRefused('mind_e5_start_refused') from None
@@ -1173,7 +1320,8 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
                                 identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
                                 operator_approval_reference_sha256=None, lane=None,
                                 worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5,
-                                policy_path=None):
+                                policy_path=None, _admission=None, _host_start_gate=None,
+                                _host_stop=None, _host_owner_start_inflight=None):
     """Prepare, but do not start, a pinned in-process Mind owner.
 
     The manifest and operator-policy inputs must come independently from the
@@ -1182,7 +1330,9 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
     """
     result = None
     try:
-        if (enabled is not True or type(bundle_root) is not str
+        host_args = (_host_start_gate, _host_stop, _host_owner_start_inflight)
+        if (not (all(value is None for value in host_args) or all(value is not None for value in host_args))
+                or enabled is not True or type(_admission) is not _LocalAdmission or type(bundle_root) is not str
                 or type(expected_manifest_sha256) is not str or not _HEX.fullmatch(expected_manifest_sha256)
                 or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
                 or type(expected_identifier_policy_sha256) is not str or not _HEX.fullmatch(expected_identifier_policy_sha256)
@@ -1201,9 +1351,11 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
         # Return before the expensive source preparation or any worker launch.
         result = _LocalManifestQuery(lane, bundle_root, expected_manifest_sha256, identifier_policy_bytes,
             expected_identifier_policy_sha256, operator_approval_reference_sha256,
-            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path)
+            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path, _admission,
+            _host_start_gate, _host_stop, _host_owner_start_inflight)
+        _admission.bind_owner(result)
     except Exception:
-        pass
+        result = None
     finally:
         identifier_policy_bytes = None
     if result is None:
@@ -1932,9 +2084,11 @@ def start_e5_worker_graceful(*, enabled=False, **options):
 
 def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, interpreter_sha256,
                      interpreter_root, tuple_args, timeout, scratch_root=None, cooperative,
-                     bulk_contract_sha256=None, worker_only=False, owner_sink=None):
-    if cooperative is not True:
+                     bulk_contract_sha256=None, worker_only=False, owner_sink=None,
+                     _admission=None, _admission_owner=None, _admission_factory=None):
+    if cooperative is not True or type(_admission) is not _LocalAdmission:
         raise LaunchRefused("mind_e5_start_refused") from None
+    _admission.assert_worker_start(_admission_owner, _admission_factory)
     job = process = owner = None
     try:
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800
@@ -2065,6 +2219,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                                           require_spawn_attempt=True)
             else:
                 owner = lifecycle.reserve(enabled=True, require_spawn_attempt=True)
+            _admission.capture_worker(_admission_owner, _admission_factory, owner)
             owner.mark_job_attempt()
             if owner_sink is not None:
                 owner_sink(owner)
@@ -2141,7 +2296,7 @@ def _read_local_policy_frame(stream, *, require_eof=True):
 
 
 def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
-                       lane, policy_sha256, approval_reference_sha256, _cleanup_evidence=None):
+                       lane, policy_sha256, approval_reference_sha256, _cleanup_evidence=None, _admission=None):
     """Run one local query; retain uncertain work and write only after STOPPED."""
     adapter = policy = result = None
     try:
@@ -2149,7 +2304,7 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
         adapter = create_local_manifest_query(enabled=True, bundle_root=bundle_root,
             expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
             expected_identifier_policy_sha256=policy_sha256,
-            operator_approval_reference_sha256=approval_reference_sha256, lane=lane)
+            operator_approval_reference_sha256=approval_reference_sha256, lane=lane, _admission=_admission)
         policy = None
         if adapter.start().get('state') != 'STARTING':
             raise ValueError('local_start')
@@ -2199,7 +2354,9 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
 
 
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
-                                 policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None):
+                                 policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
+                                 _admission=None, _host_start_gate=None, _host_stop=None,
+                                 _host_owner_start_inflight=None):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2210,6 +2367,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     stop, service_done = threading.Event(), threading.Event()
     service_error, control_error = [], []
     last_state, failed = None, False
+
+    class _HostStopBeforeStart(Exception):
+        pass
 
     def emit(state):
         nonlocal last_state
@@ -2257,9 +2417,22 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
             expected_identifier_policy_sha256=policy_sha256,
             operator_approval_reference_sha256=approval_reference_sha256, lane='codex-lead-1',
-            policy_path=policy_path)
+            policy_path=policy_path, _admission=_admission, _host_start_gate=_host_start_gate,
+            _host_stop=_host_stop, _host_owner_start_inflight=_host_owner_start_inflight)
         policy = None
-        if adapter.start().get('state') != 'STARTING':
+        # A host-accepted STOP and adapter-start commitment share one gate.
+        # CLI stream callers have no host gate and retain their old semantics.
+        host_args = (_host_start_gate, _host_stop, _host_owner_start_inflight)
+        if not (all(value is None for value in host_args) or all(value is not None for value in host_args)):
+            raise ValueError('host_start_guard')
+        if _host_start_gate is None:
+            start_status = adapter.start()
+        else:
+            with _host_start_gate:
+                if _host_stop.is_set():
+                    raise _HostStopBeforeStart()
+                start_status = adapter.start()
+        if start_status.get('state') != 'STARTING':
             raise ValueError('owner_start')
         emit('STARTING')
         control_thread = threading.Thread(target=read_stop, name='mind-local-control', daemon=False)
@@ -2292,6 +2465,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     break
                 emit('READY')
             stop.wait(0.1)
+    except _HostStopBeforeStart:
+        pass
     except BaseException:
         failed = True
     finally:
@@ -2405,16 +2580,104 @@ def _guarded_local_entry(entry, **kwargs):
     """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
     guard = _reserve_local_owner(_AUDIT_ROOT)
     cleanup_evidence = {'clean': False}
+    admission = _LocalAdmission(guard, cleanup_evidence)
     try:
-        result = entry(_cleanup_evidence=cleanup_evidence, **kwargs)
-        if cleanup_evidence['clean'] is True:
-            guard.release_clean(service_stopped=True, owner_stopped=True,
-                                owner_owned=False, control_stopped=True)
-        if type(result) is not int or result != 0 or cleanup_evidence['clean'] is not True:
+        result = entry(_cleanup_evidence=cleanup_evidence, _admission=admission, **kwargs)
+        if cleanup_evidence['clean'] is True and admission.quiescent():
+            admission.release_clean()
+        else:
+            return 2
+        if type(result) is not int or result != 0:
             return 2
         return result
     finally:
-        guard.abandon()
+        admission.abandon()
+
+
+def _load_pinned_canonical_child(bundle, expected_manifest_sha256):
+    """Load verified bytes under one package identity before owner admission.
+
+    The caller independently pins the manifest. Same-user path races and
+    caller authentication remain UNKNOWN; this is not a sandbox.
+    """
+    names = ('tools', 'tools.wd_mind_runtime_child')
+    inserted = []
+    _imp.acquire_lock()
+    try:
+        if (not isinstance(bundle, Path) or not bundle.is_absolute()
+                or type(expected_manifest_sha256) is not str
+                or not _HEX.fullmatch(expected_manifest_sha256)
+                or any(name == 'tools' or name.startswith('tools.') for name in sys.modules)):
+            raise ValueError('canonical_input')
+
+        def read_regular(path, limit):
+            before = os.lstat(path)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or getattr(before, 'st_file_attributes', 0) & 0x400):
+                raise ValueError('canonical_file')
+            with path.open('rb') as stream:
+                opened = os.fstat(stream.fileno())
+                if ((opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                        or opened.st_nlink != 1):
+                    raise ValueError('canonical_identity')
+                raw = stream.read(limit + 1)
+                after = os.fstat(stream.fileno())
+            if (len(raw) > limit or (after.st_dev, after.st_ino, after.st_size)
+                    != (opened.st_dev, opened.st_ino, opened.st_size)
+                    or len(raw) != opened.st_size):
+                raise ValueError('canonical_changed')
+            return raw
+
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('canonical_duplicate')
+                result[key] = value
+            return result
+
+        manifest_raw = read_regular(bundle / 'deployment-manifest.json', 4 * 1024 * 1024)
+        if not hmac.compare_digest(hashlib.sha256(manifest_raw).hexdigest(), expected_manifest_sha256):
+            raise ValueError('canonical_manifest')
+        manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=unique)
+        paths = ('tools-bootstrap/tools/__init__.py', 'tools-bootstrap/tools/wd_mind_runtime_child.py')
+        source_paths = tuple(bundle.joinpath(*name.split('/')) for name in paths)
+        if not os.path.samefile(source_paths[1], Path(__file__)):
+            raise ValueError('canonical_script')
+        raw_files = tuple(read_regular(path, 8 * 1024 * 1024) for path in source_paths)
+        for name, raw in zip(paths, raw_files):
+            digest = manifest['files'][name]
+            if (type(digest) is not str or not _HEX.fullmatch(digest.lower())
+                    or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), digest.lower())):
+                raise ValueError('canonical_pin')
+        # Do not execute arbitrary package initialization as part of the
+        # bootstrap; today's pinned package is inert. Nonempty code refuses.
+        if ast.parse(raw_files[0].decode('utf-8-sig'), filename=str(source_paths[0])).body:
+            raise ValueError('canonical_package_not_inert')
+
+        for name, path, raw in zip(names, source_paths, raw_files):
+            if name in sys.modules:
+                raise ValueError('canonical_collision')
+            spec = importlib.util.spec_from_file_location(name, path,
+                submodule_search_locations=[str(path.parent)] if name == 'tools' else None)
+            if spec is None or spec.loader is None:
+                raise ValueError('canonical_spec')
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            inserted.append(name)
+            exec(compile(raw, str(path), 'exec'), module.__dict__)
+            if sys.modules.get(name) is not module:
+                raise ValueError('canonical_replaced')
+            if any(key.startswith('tools.') and key != names[1] for key in sys.modules):
+                raise ValueError('canonical_foreign_import')
+        setattr(sys.modules['tools'], 'wd_mind_runtime_child', sys.modules[names[1]])
+        return sys.modules[names[1]]
+    except BaseException:
+        for name in reversed(inserted):
+            sys.modules.pop(name, None)
+        raise LaunchRefused('canonical_child_refused') from None
+    finally:
+        _imp.release_lock()
 
 
 def _fixed_child_main(argv):
@@ -2436,6 +2699,9 @@ def _fixed_child_main(argv):
         if not _HEX.fullmatch(expected):
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
+        if __name__ == '__main__':
+            canonical = _load_pinned_canonical_child(Path(bundle), expected)
+            return canonical._fixed_child_main(argv)
         if local_owner_path:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],

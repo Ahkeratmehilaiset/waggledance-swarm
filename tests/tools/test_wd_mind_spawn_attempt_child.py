@@ -1,5 +1,6 @@
 """Synthetic tests of the actual cooperative worker-start route."""
 
+import os
 import subprocess
 import threading
 
@@ -22,9 +23,28 @@ class _Job(SyntheticJob):
         pass
 
 
+@pytest.fixture
+def admission_args(tmp_path):
+    if os.name != 'nt':
+        pytest.skip('reservation uses Windows byte locks')
+    root = tmp_path / 'synthetic-admission'
+    root.mkdir()
+    (root / child._OWNER_RESERVATION_NAME).write_bytes(child._OWNER_RESERVATION_MAGIC + b'C')
+    guard = child._reserve_local_owner(root)
+    lease, owner, factory = child._LocalAdmission(guard), object(), object()
+    lease.bind_owner(owner)
+    lease.bind_factory(owner, factory)
+    lease.begin_worker(owner, factory)
+    try:
+        yield {'_admission':lease, '_admission_owner':owner, '_admission_factory':factory}
+    finally:
+        lease.finish_worker_start(owner, factory)
+        lease.abandon()
+
+
 @pytest.mark.parametrize('worker_only', [False, True])
 def test_production_worker_marks_attempt_before_popen(staged_graceful, monkeypatch, synthetic_windows_subprocess,
-                                                     worker_only):
+                                                     worker_only, admission_args):
     process = Process(response(0, 0), on_eof=False)
     observed = []
 
@@ -40,7 +60,7 @@ def test_production_worker_marks_attempt_before_popen(staged_graceful, monkeypat
         options['tuple_args'] = {k: v for k, v in options['tuple_args'].items()
                                  if k not in ('memory', 'descriptor', 'descriptor-sha256')}
         options.update(worker_only=True, bulk_contract_sha256=child.BULK_CONTRACT_SHA256)
-    result = child.start_e5_worker_graceful(enabled=True, **options)
+    result = child.start_e5_worker_graceful(enabled=True, **admission_args, **options)
     owner = result['owner']
     try:
         assert observed == [(True, 'ATTEMPTED')]
@@ -52,7 +72,7 @@ def test_production_worker_marks_attempt_before_popen(staged_graceful, monkeypat
 
 @pytest.mark.parametrize('worker_only', [False, True])
 def test_ambiguous_popen_exception_holds_actual_owner(staged_graceful, monkeypatch, synthetic_windows_subprocess,
-                                                      worker_only):
+                                                      worker_only, admission_args):
     done = threading.Event()
     observed = []
     monkeypatch.setattr(lifecycle._Owner, '_keep', lambda self: done.wait(3))
@@ -69,7 +89,7 @@ def test_ambiguous_popen_exception_holds_actual_owner(staged_graceful, monkeypat
         options['tuple_args'] = {k: v for k, v in options['tuple_args'].items()
                                  if k not in ('memory', 'descriptor', 'descriptor-sha256')}
         options.update(worker_only=True, bulk_contract_sha256=child.BULK_CONTRACT_SHA256)
-    result = child.start_e5_worker_graceful(enabled=True, **options)
+    result = child.start_e5_worker_graceful(enabled=True, **admission_args, **options)
     owner = result['owner']
     try:
         assert observed == [(True, 'ATTEMPTED')]
@@ -101,7 +121,7 @@ def test_partially_initialized_job_cannot_start_worker():
 
 @pytest.mark.parametrize('phase', ['before_allocation', 'during_allocation'])
 def test_shutdown_during_job_initialization_retains_owner(
-        staged_graceful, monkeypatch, synthetic_windows_subprocess, phase):
+        staged_graceful, monkeypatch, synthetic_windows_subprocess, phase, admission_args):
     entered, resume = threading.Event(), threading.Event()
     captured, jobs, outcome = [], [], []
 
@@ -124,7 +144,8 @@ def test_shutdown_during_job_initialization_retains_owner(
 
     def launch():
         try:
-            outcome.append(child.start_e5_worker_graceful(enabled=True, owner_sink=sink, **staged_graceful))
+            outcome.append(child.start_e5_worker_graceful(enabled=True, owner_sink=sink,
+                                                          **admission_args, **staged_graceful))
         except BaseException as error:
             outcome.append(error)
 

@@ -26,8 +26,9 @@ def _fixture(tmp_path, monkeypatch):
     raw = json.dumps({'schema_version': 1, 'files': files}, sort_keys=True).encode()
     (bundle / 'deployment-manifest.json').write_bytes(raw)
     monkeypatch.setattr(child, '__file__', str(script))
-    monkeypatch.delitem(sys.modules, 'tools.wd_mind_runtime_child', raising=False)
-    monkeypatch.delitem(sys.modules, 'tools', raising=False)
+    for name in tuple(sys.modules):
+        if name == 'tools' or name.startswith('tools.'):
+            monkeypatch.delitem(sys.modules, name, raising=False)
     return bundle, hashlib.sha256(raw).hexdigest(), script
 
 
@@ -156,6 +157,21 @@ def test_guarded_entry_requires_cleanup_and_quiescent_admission(tmp_path, monkey
 
     assert child._guarded_local_entry(entry) == 2
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='reservation uses Windows byte locks')
+def test_guarded_entry_releases_only_after_separate_cleanup_evidence(tmp_path, monkeypatch):
+    marker = tmp_path / child._OWNER_RESERVATION_NAME
+    marker.write_bytes(child._OWNER_RESERVATION_MAGIC + b'C')
+    monkeypatch.setattr(child, '_AUDIT_ROOT', tmp_path)
+
+    def entry(*, _cleanup_evidence, _admission):
+        assert _admission.quiescent()
+        _cleanup_evidence['clean'] = True
+        return 0
+
+    assert child._guarded_local_entry(entry) == 0
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
 
 
 def test_direct_local_owner_without_admission_refuses(tmp_path):

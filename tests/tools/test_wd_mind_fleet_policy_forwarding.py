@@ -24,6 +24,9 @@ APPROVAL = 'b' * 64
     (r'C:\Program Files\Mind\policy.json', SHA.upper(), APPROVAL.upper(),
      ['-MindOperatorPolicyPath', r'"C:\Program Files\Mind\policy.json"',
       '-MindOperatorPolicySha256', SHA, '-MindOperatorApprovalReferenceSha256', APPROVAL]),
+    ('C:/Python/synthetic-policy.json', SHA, APPROVAL,
+     ['-MindOperatorPolicyPath', r'"C:\Python\synthetic-policy.json"',
+      '-MindOperatorPolicySha256', SHA, '-MindOperatorApprovalReferenceSha256', APPROVAL]),
 ])
 def test_explicit_complete_pins_only(ps, policy, sha, approval, expected):
     script = load(FLEET, 'Get-WdMindFleetPolicyArguments') + f'''
@@ -44,6 +47,7 @@ ConvertTo-Json -InputObject $value -Compress
     (r'C:\Python\policy.json', SHA, 'b' * 63),
     (r'C:relative\policy.json', SHA, APPROVAL),
     (r'C:\Python\..\policy.json', SHA, APPROVAL),
+    ('C:/Python/../policy.json', SHA, APPROVAL),
     ('C:\\Python\\policy" -Apply', SHA, APPROVAL),
     ('C:\\Python\\', SHA, APPROVAL),
 ])

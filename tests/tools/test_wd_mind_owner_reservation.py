@@ -118,3 +118,27 @@ raise RuntimeError('synthetic interruption')
     assert (root / MARKER).read_bytes() == PREFIX + b'R'
     with pytest.raises(child.LaunchRefused):
         child._reserve_local_owner(root)
+
+
+@WINDOWS
+def test_other_process_cannot_write_locked_state_byte(tmp_path):
+    root = _seed(tmp_path / 'audit')
+    guard = child._reserve_local_owner(root)
+    script = r'''import os,sys
+fd=os.open(sys.argv[1],os.O_RDWR|os.O_BINARY)
+try:
+    os.lseek(fd,int(sys.argv[2]),os.SEEK_SET)
+    os.write(fd,b'C')
+except PermissionError:
+    print('BLOCKED')
+else:
+    print('WRITTEN')
+finally:
+    os.close(fd)
+'''
+    result = subprocess.run([sys.executable, '-I', '-c', script, str(root / MARKER), str(len(PREFIX))],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=True,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    assert result.stdout.strip() == b'BLOCKED'
+    assert guard._read() == PREFIX + b'R'
+    guard.release_clean(service_stopped=True, owner_stopped=True, owner_owned=False, control_stopped=True)

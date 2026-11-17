@@ -94,7 +94,7 @@ def test_selected_row_resolver_selected_gate_uses_retained_prefix_verifier(flat_
     assert rows
 
 
-@pytest.mark.parametrize('fault', ['none', 'origin', 'code', 'missing_pin', 'manifest'])
+@pytest.mark.parametrize('fault', ['none', 'uppercase', 'origin', 'code', 'missing_pin', 'manifest'])
 def test_selected_row_resolver_requires_manifest_pinned_prefix_code(tmp_path, monkeypatch, fault):
     from tools import wd_mind_retained_query as retained
     bundle = tmp_path / 'bundle'
@@ -103,18 +103,43 @@ def test_selected_row_resolver_requires_manifest_pinned_prefix_code(tmp_path, mo
     code = Path(retained.__file__).read_bytes()
     path.write_bytes(code)
     relative = 'tools-bootstrap/tools/wd_mind_retained_query.py'
-    manifest = {'schema_version':1, 'files':{} if fault == 'missing_pin' else {relative:content._sha(code)}}
+    code_pin = content._sha(code)
+    if fault == 'uppercase':
+        code_pin = code_pin.upper()
+    manifest = {'schema_version':1, 'files':{} if fault == 'missing_pin' else {relative:code_pin}}
     raw = json.dumps(manifest, separators=(',', ':')).encode()
     (bundle / 'deployment-manifest.json').write_bytes(raw)
     pin = content._sha(raw)
     if fault == 'manifest': pin = '0'*64
     if fault == 'code': path.write_bytes(code + b'\n# changed\n')
     monkeypatch.setattr(retained, '__file__', str(bundle / 'other.py' if fault == 'origin' else path))
-    if fault == 'none':
+    if fault in ('none', 'uppercase'):
         session._pin_selected_resolver_code(str(bundle), pin)
     else:
         with pytest.raises(Exception):
             session._pin_selected_resolver_code(str(bundle), pin)
+
+
+@pytest.mark.parametrize('relative', [
+    'tools-bootstrap/tools/__init__.py',
+    'tools-bootstrap/waggledance/__init__.py',
+    'tools-bootstrap/waggledance/core/__init__.py',
+    *(f'tools-bootstrap/tools/{name}.py' for name in (
+        'wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
+        'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process',
+        'wd_mind_absent_generation_prefix_readonly', 'wd_mind_startup_content',
+        'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind')),
+    'tools-bootstrap/waggledance/core/bridge_log_reader.py',
+])
+def test_selected_preflight_accepts_deploy_style_uppercase_module_pins(tmp_path, relative):
+    path = tmp_path.joinpath(*relative.split('/'))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'synthetic dependency')
+    files = {relative: hashlib.sha256(path.read_bytes()).hexdigest().upper()}
+    session._selected_pin_module(tmp_path, files, 'synthetic_unloaded_module', relative)
+    path.write_bytes(b'changed synthetic dependency')
+    with pytest.raises(ValueError):
+        session._selected_pin_module(tmp_path, files, 'synthetic_unloaded_module', relative)
 
 
 @pytest.mark.parametrize('target', ['wd_mind_content_query_readonly',

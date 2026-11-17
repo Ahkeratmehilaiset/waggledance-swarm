@@ -612,7 +612,12 @@ def _selected_manifest(bundle_root, expected_manifest_sha256):
 
 def _selected_pin_module(root, files, module_name, relative):
     expected = root.joinpath(*relative.split('/'))
-    _selected_pin_read(expected, files.get(relative), 8 * 1024 * 1024)
+    pin = files.get(relative)
+    # Deployment manifests encode file hashes in uppercase. Normalize only
+    # these manifest-owned pins; separately supplied anchors remain strict.
+    if type(pin) is not str or re.fullmatch(r'[0-9A-Fa-f]{64}', pin) is None:
+        raise ValueError('pin')
+    _selected_pin_read(expected, pin.lower(), 8 * 1024 * 1024)
     loaded = sys.modules.get(module_name)
     if loaded is not None:
         origin = getattr(loaded, '__file__', None)

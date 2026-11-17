@@ -1282,13 +1282,21 @@ class _PrivateVectorCache:
 
     def load(self, binding, verify_prefix):
         self._verify()
-        value = self._module.load_cache(self._path, binding, verify_prefix)
+        try:
+            value = self._module.load_cache(self._path, binding, verify_prefix)
+        except Exception:
+            self._verify()
+            raise
         self._verify()
         return value
 
     def preflight(self):
         self._verify()
-        status = self._module.preflight(self._path)
+        try:
+            status = self._module.preflight(self._path)
+        except Exception:
+            self._verify()
+            raise
         self._verify()
         if status not in ('MISSING', 'PRESENT'):
             raise ValueError('cache_preflight')
@@ -1296,7 +1304,11 @@ class _PrivateVectorCache:
 
     def write(self, binding, rows):
         self._verify()
-        self._module.write_cache(self._path, binding, rows)
+        try:
+            self._module.write_cache(self._path, binding, rows)
+        except Exception:
+            self._verify()
+            raise
         self._verify()
 
 

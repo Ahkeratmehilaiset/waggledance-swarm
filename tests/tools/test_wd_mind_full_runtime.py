@@ -138,6 +138,25 @@ def test_private_cache_provider_checks_module_before_and_after_io():
         runtime._PrivateVectorCache(module, 'synthetic-path', None)
 
 
+@pytest.mark.parametrize('operation', ['load', 'write', 'preflight'])
+def test_private_cache_provider_rechecks_pins_after_io_refusal(operation):
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    class CacheRefused(ValueError): pass
+    calls = []
+    def fail(*_args): raise CacheRefused('synthetic cache failure')
+    def verify():
+        calls.append('verify')
+        if len(calls) == 2: raise RuntimeError('synthetic pin changed')
+    provider = runtime._PrivateVectorCache(SimpleNamespace(load_cache=fail, write_cache=fail, preflight=fail),
+                                            'synthetic-path', verify)
+    with pytest.raises(RuntimeError, match='pin changed'):
+        if operation == 'load': provider.load({}, lambda *_: True)
+        elif operation == 'write': provider.write({}, ())
+        else: provider.preflight()
+    assert calls == ['verify', 'verify']
+
+
 def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_path):
     import types
     import tools

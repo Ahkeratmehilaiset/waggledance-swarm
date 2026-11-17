@@ -1,6 +1,7 @@
 """Nested worker integration with synthetic pins, job, process and I/O only."""
 
 import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -131,3 +132,33 @@ def test_quiescent_alone_cannot_release_reservation(tmp_path):
     finally:
         guard.abandon()
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
+
+
+def test_deferred_parent_and_coordinator_entrypoints_refuse_before_io(monkeypatch):
+    class NoRead(io.BytesIO):
+        def read(self, *args, **kwargs):
+            pytest.fail('parent control read before authorization')
+
+    stream = NoRead()
+    assert child._parent_control_entry(control_stream=stream, output_stream=io.BytesIO(),
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64) == 2
+    assert child._owner_child_entry(control_stream=stream, data_stream=io.BytesIO(), candidate_stream=io.BytesIO(),
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64) == 2
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime._require_trusted_parent_export(owner=None, stream=None, bootstrap=None)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.create_manifest_coordinator(enabled=True)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.start_manifest_bound_owner(enabled=True)
+
+
+def test_private_unleased_coordinator_holds_before_worker(monkeypatch):
+    args = {'bundle_root':'synthetic', 'expected_manifest_sha256':'a' * 64,
+            'worker_timeout_seconds':5, 'lock_timeout_seconds':0,
+            'bulk_contract_sha256':child.BULK_CONTRACT_SHA256}
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', lambda **kwargs: pytest.fail('worker preflight'))
+    coordinator = runtime._ManifestCoordinator(args)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        coordinator.start()
+    assert coordinator.status()['state'] == 'HOLD'

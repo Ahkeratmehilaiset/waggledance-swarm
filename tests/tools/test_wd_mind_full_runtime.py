@@ -108,6 +108,20 @@ def test_cache_requires_complete_screened_old_prefix_set(monkeypatch):
         runtime._cache_verified_reusable(snapshot, current, {'old': old, 'new': new}, result)
 
 
+def test_cache_rows_are_hashes_and_vectors_only(monkeypatch):
+    import struct
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(reader, 'decode_text', lambda value: value)
+    record = {'record_id': 'synthetic-id', 'stored_text': 'synthetic-private-content'}
+    projection = {'messages': {'records': [record]}}
+    vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+    rows = runtime._cache_rows_from_screened_projection(projection, ('synthetic-id',), vector)
+    assert len(rows) == 1 and rows[0][2] == vector
+    assert all('synthetic' not in field for field in rows[0][:2])
+    with pytest.raises(ValueError, match='cache_records'):
+        runtime._cache_rows_from_screened_projection(projection, ('other',), vector)
+
+
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     """Constructing a disabled/default owner must not start a worker."""
     from tools import wd_mind_full_runtime as runtime

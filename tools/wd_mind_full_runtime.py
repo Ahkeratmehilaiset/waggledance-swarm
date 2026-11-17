@@ -1245,6 +1245,23 @@ def _cache_verified_reusable(snapshot, projection, by_id, cache_result):
     return _cache_vectors_from_rows(by_id, rows)
 
 
+def _cache_rows_from_screened_projection(projection, ids, vectors):
+    """Prepare hash-only cache rows from the already verified screened projection."""
+    _flat_hashes(ids, vectors)
+    records = projection['messages']['records']
+    by_id = {record['record_id']: record for record in records}
+    if len(by_id) != len(records) or tuple(sorted(by_id)) != ids:
+        raise ValueError('cache_records')
+    rows = []
+    for index, record_id in enumerate(ids):
+        record_sha, passage_sha = _cache_record_keys(by_id[record_id])
+        rows.append((record_sha, passage_sha, vectors[index * 1536:(index + 1) * 1536]))
+    rows.sort(key=lambda row: row[0])
+    if len({row[0] for row in rows}) != len(rows):
+        raise ValueError('cache_duplicate')
+    return tuple(rows)
+
+
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
                                  prior_memory=None):

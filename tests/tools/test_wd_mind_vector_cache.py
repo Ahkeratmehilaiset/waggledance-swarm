@@ -84,6 +84,163 @@ def test_missing_and_stale_cache_are_typed_misses(private_dir):
         cache.load_cache(path, binding(), lambda *_: False)
 
 
+@pytest.fixture
+def audit_cache_case(tmp_path, monkeypatch):
+    """Real Windows handles/ACLs in an isolated synthetic directory only."""
+    if os.name != 'nt':
+        pytest.skip('native Windows ACL and file identity')
+    from waggledance.core import bridge_log_reader as bridge
+    assert '.codex-audit' in str(tmp_path).lower()
+    root = tmp_path / 'audit'
+    root.mkdir()
+    shared = root / 'source-runtime' / 'shared'
+    shared.mkdir(parents=True)
+    cache_root = root / 'private' / 'vector-cache'
+    cache_root.mkdir(parents=True)
+    bundle = root / ('git-bundle-' + 'a' * 8 + '-real-pending')
+    bundle.mkdir()
+    source = shared / 'events.jsonl'
+    raw = b's' * 38400
+    source.write_bytes(raw)
+    user = subprocess.check_output(['whoami'], text=True).strip()
+    for path, flags in ((shared, '(OI)(CI)F'), (cache_root.parent, '(OI)(CI)F'),
+                        (cache_root, '(OI)(CI)F'), (source, 'F')):
+        for args in (['/setowner', user], ['/inheritance:r', '/grant:r',
+                     user + ':' + flags, 'SYSTEM:' + flags],
+                     ['/remove:g', '*S-1-5-32-544', '*S-1-3-4']):
+            result = subprocess.run(['icacls', str(path), *args], capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr
+    manifest = json.dumps({'schema_version': 1, 'source_commit': 'a' * 40, 'files': {}}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    with bridge._open_log(source) as stream:
+        identity = bridge._file_identity(stream)
+    monkeypatch.setattr(cache, '_AUDIT_ROOT', root)
+    monkeypatch.setattr(cache, '_AUDIT_SOURCE', source)
+    monkeypatch.setattr(cache, '_AUDIT_CACHE_ROOT', cache_root)
+    monkeypatch.setattr(cache, '_AUDIT_SOURCE_SHA256', hashlib.sha256(raw).hexdigest())
+    monkeypatch.setattr(cache, '_AUDIT_WIP_ENABLED', True)
+    pin = hashlib.sha256(manifest).hexdigest()
+    permit = cache._audit_permit(bundle, pin, manifest, source, cache._AUDIT_SOURCE_SHA256, len(raw), identity)
+    bound = dict(binding(), prefix_offset=len(raw), prefix_sha256=cache._AUDIT_SOURCE_SHA256,
+                 source_identity_sha256=hashlib.sha256(cache._canonical(identity)).hexdigest(),
+                 source_generation_sha256=hashlib.sha256(cache._canonical(None)).hexdigest())
+    return {'bundle': bundle, 'manifest': manifest, 'pin': pin, 'source': source, 'identity': identity,
+            'permit': permit, 'path': cache_root / 'vectors.bin', 'binding': bound}
+
+
+def test_audit_cache_real_acl_cold_warm_and_production_root_unchanged(audit_cache_case):
+    case = audit_cache_case
+    path, permit = case['path'], case['permit']
+    assert str(cache._CACHE_ROOT).lower() == r'c:\wd-mind-private\vector-cache'
+    assert cache._audit_cache_path(permit) == path
+    with pytest.raises(cache.CacheRefused, match='cache_root'):
+        cache.preflight(path)  # Audit path never works without a permit.
+    assert cache.preflight(path, _audit=permit) == 'MISSING'
+    cache.write_cache(path, case['binding'], rows(), _audit=permit)
+    loaded = cache.load_cache(path, case['binding'], lambda *_: True, _audit=permit)
+    assert loaded.rows == rows()
+
+
+def test_unverified_audit_gate_refuses_before_any_cache_source_or_manifest_open(audit_cache_case, monkeypatch):
+    case = audit_cache_case
+    opened = []
+    monkeypatch.setattr(cache, '_AUDIT_WIP_ENABLED', False)
+    def unexpected_open(*args, **kwargs):
+        opened.append(True)
+        raise AssertionError('unverified audit must not open files')
+    monkeypatch.setattr(cache._Native, 'open', unexpected_open)
+    with pytest.raises(cache.CacheRefused, match='audit_path_unverified'):
+        cache.preflight(case['path'], _audit=case['permit'])
+    assert opened == []
+    assert not case['path'].exists() and not case['path'].with_name('vectors.bin.lock').exists()
+
+
+def test_audit_bundle_selector_never_falls_back_for_bad_audit_binding(audit_cache_case):
+    from types import SimpleNamespace
+    case = audit_cache_case
+    cursor = SimpleNamespace(offset=38400, file_identity=case['identity'], generation=None)
+    args = {'cursor': cursor, 'source_path': str(case['source']),
+            'expected_prefix_sha256': cache._AUDIT_SOURCE_SHA256}
+    permit = cache._audit_for_bundle(case['bundle'], case['pin'], case['manifest'], args)
+    assert cache._audit_cache_path(permit) == case['path']
+    assert cache._audit_for_bundle(Path(r'C:\Python\wd-reboot-bundles\normal'),
+                                   'not-inspected', b'', {}) is None
+    with pytest.raises(cache.CacheRefused):
+        cache._audit_for_bundle(case['bundle'] / 'unexpected', case['pin'], case['manifest'], args)
+    args['source_path'] = r'C:\Python\project2-master\.agent-bridge\shared\events.jsonl'
+    with pytest.raises(cache.CacheRefused, match='audit_binding'):
+        cache._audit_for_bundle(case['bundle'], case['pin'], case['manifest'], args)
+
+
+def test_audit_bundle_alias_never_falls_back_to_production(audit_cache_case, monkeypatch):
+    from types import SimpleNamespace
+    case = audit_cache_case
+    alias = Path(r'C:\synthetic-alias\git-bundle-aaaaaaaa-real-pending')
+    original = cache.os.path.realpath
+    def resolve(path):
+        return str(case['bundle']) if str(path) == str(alias) else original(path)
+    monkeypatch.setattr(cache.os.path, 'realpath', resolve)
+    args = {'cursor': SimpleNamespace(offset=38400, file_identity=case['identity'], generation=None),
+            'source_path': str(case['source']), 'expected_prefix_sha256': cache._AUDIT_SOURCE_SHA256}
+    with pytest.raises(cache.CacheRefused, match='audit_bundle_alias'):
+        cache._audit_for_bundle(alias, case['pin'], case['manifest'], args)
+
+
+@pytest.mark.parametrize('fault', ['source_path', 'source_sha', 'source_size', 'source_identity',
+                                   'manifest_pin', 'bundle_name', 'manifest_commit'])
+def test_audit_grant_refuses_unbound_source_or_bundle(audit_cache_case, fault):
+    case = audit_cache_case
+    bundle, raw, pin, source, sha, size, identity = (case['bundle'], case['manifest'], case['pin'],
+        case['source'], cache._AUDIT_SOURCE_SHA256, cache._AUDIT_SOURCE_SIZE, case['identity'])
+    if fault == 'source_path': source = Path(r'C:\Python\project2-master\.agent-bridge\shared\events.jsonl')
+    if fault == 'source_sha': sha = '0' * 64
+    if fault == 'source_size': size -= 1
+    if fault == 'source_identity': identity = 'not-a-file-identity'
+    if fault == 'manifest_pin': pin = '0' * 64
+    if fault == 'bundle_name': bundle = bundle.with_name('wrong-bundle')
+    if fault == 'manifest_commit':
+        raw = json.dumps({'schema_version': 1, 'source_commit': 'b' * 40, 'files': {}}).encode()
+        pin = hashlib.sha256(raw).hexdigest()
+    with pytest.raises(cache.CacheRefused):
+        cache._audit_permit(bundle, pin, raw, source, sha, size, identity)
+    assert not case['path'].exists()
+
+
+@pytest.mark.parametrize('fault', ['source_content', 'source_identity', 'source_acl', 'source_hardlink',
+                                  'cache_parent_acl', 'cache_target_acl', 'manifest_content'])
+def test_audit_revalidates_actual_inputs_before_cache_io(audit_cache_case, fault):
+    case = audit_cache_case
+    if fault == 'source_content':
+        case['source'].write_bytes(b't' * 38400)
+    elif fault == 'source_identity':
+        case['permit'] = cache._audit_permit(case['bundle'], case['pin'], case['manifest'], case['source'],
+            cache._AUDIT_SOURCE_SHA256, 38400, 'windows-v1:00000000:0000000000000000')
+    elif fault == 'source_acl':
+        result = subprocess.run(['icacls', str(case['source'].parent), '/grant', '*S-1-1-0:(OI)(CI)R'],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    elif fault == 'source_hardlink':
+        os.link(case['source'], case['source'].with_name('synthetic-second-link'))
+    elif fault in ('cache_parent_acl', 'cache_target_acl'):
+        directory = case['path'].parent.parent if fault == 'cache_parent_acl' else case['path'].parent
+        result = subprocess.run(['icacls', str(directory), '/grant', '*S-1-1-0:(OI)(CI)R'],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    else:
+        (case['bundle'] / 'deployment-manifest.json').write_bytes(b'changed')
+    with pytest.raises(cache.CacheRefused):
+        cache.preflight(case['path'], _audit=case['permit'])
+    assert not case['path'].exists() and not case['path'].with_name('vectors.bin.lock').exists()
+
+
+def test_audit_rejects_binding_from_another_source_before_write(audit_cache_case):
+    case = audit_cache_case
+    foreign = dict(case['binding'], source_identity_sha256='0' * 64)
+    with pytest.raises(cache.CacheRefused, match='audit_binding'):
+        cache.write_cache(case['path'], foreign, rows(), _audit=case['permit'])
+    assert not case['path'].exists()
+
+
 def test_preflight_missing_root_is_not_cache_miss(private_dir, monkeypatch):
     absent = private_dir / "unprovisioned"
     monkeypatch.setattr(cache, "_CACHE_ROOT", absent)

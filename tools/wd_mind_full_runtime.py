@@ -1298,17 +1298,20 @@ def _cache_rows_from_screened_projection(projection, ids, vectors):
 
 class _PrivateVectorCache:
     """Owner-only adapter; the installed route must supply a pinned module."""
-    __slots__ = ('_module', '_path', '_verify')
+    __slots__ = ('_module', '_path', '_verify', '_audit')
 
-    def __init__(self, module, path, verify):
+    def __init__(self, module, path, verify, audit=None):
         if not callable(verify) or not callable(getattr(module, 'load_cache', None)) or not callable(getattr(module, 'write_cache', None)):
             raise ValueError('cache_provider')
-        self._module, self._path, self._verify = module, path, verify
+        self._module, self._path, self._verify, self._audit = module, path, verify, audit
 
     def load(self, binding, verify_prefix):
         self._verify()
         try:
-            value = self._module.load_cache(self._path, binding, verify_prefix)
+            if self._audit is None:
+                value = self._module.load_cache(self._path, binding, verify_prefix)
+            else:
+                value = self._module.load_cache(self._path, binding, verify_prefix, _audit=self._audit)
         except Exception:
             self._verify()
             raise
@@ -1318,7 +1321,8 @@ class _PrivateVectorCache:
     def preflight(self):
         self._verify()
         try:
-            status = self._module.preflight(self._path)
+            status = (self._module.preflight(self._path) if self._audit is None
+                      else self._module.preflight(self._path, _audit=self._audit))
         except Exception:
             self._verify()
             raise
@@ -1330,7 +1334,10 @@ class _PrivateVectorCache:
     def write(self, binding, rows):
         self._verify()
         try:
-            self._module.write_cache(self._path, binding, rows)
+            if self._audit is None:
+                self._module.write_cache(self._path, binding, rows)
+            else:
+                self._module.write_cache(self._path, binding, rows, _audit=self._audit)
         except Exception:
             self._verify()
             raise
@@ -1339,6 +1346,21 @@ class _PrivateVectorCache:
 
 _CACHE_MODULE_LOCK = threading.Lock()
 _CACHE_MODULE_ATTESTATION = None
+# Audit namespace ancestry has not been proved safe. No environment/config
+# value may enable this WIP test seam in the runtime.
+_AUDIT_WIP_ENABLED = False
+_AUDIT_WIP_ROOT = Path(r'C:\Python\project2\.codex-audit\pr2179-real-e5-160-20261117')
+
+
+def _refuse_unverified_audit_bundle(bundle):
+    root = os.path.normcase(os.path.normpath(str(_AUDIT_WIP_ROOT)))
+    selected = os.path.normcase(os.path.normpath(str(bundle)))
+    real_root = os.path.normcase(os.path.normpath(os.path.realpath(str(_AUDIT_WIP_ROOT))))
+    real_selected = os.path.normcase(os.path.normpath(os.path.realpath(str(bundle))))
+    inside = (selected == root or selected.startswith(root + os.sep)
+              or real_selected == real_root or real_selected.startswith(real_root + os.sep))
+    if inside and _AUDIT_WIP_ENABLED is not True:
+        raise ValueError('audit_path_unverified')
 
 
 def _load_pinned_vector_cache(binding):
@@ -1348,6 +1370,7 @@ def _load_pinned_vector_cache(binding):
         raise ValueError('cache_loader')
     try:
         bundle, manifest_pin = binding._PrivateBinding__bundle, binding._PrivateBinding__manifest
+        _refuse_unverified_audit_bundle(bundle)
         relative = 'tools-bootstrap/tools/wd_mind_vector_cache.py'
         path, name = bundle.joinpath(*relative.split('/')), 'tools.wd_mind_vector_cache'
         raw = prefix._read_pinned(bundle / 'deployment-manifest.json', manifest_pin, prefix.MAX_CONTROL_BYTES)
@@ -1393,7 +1416,10 @@ def _load_pinned_vector_cache(binding):
             prefix._read_pinned(path, digest, 8 * 1024 * 1024)
 
         verify()
-        return _PrivateVectorCache(module, r'C:\wd-mind-private\vector-cache\vectors.bin', verify)
+        audit = module._audit_for_bundle(bundle, manifest_pin, raw, binding._PrivateBinding__args)
+        cache_path = (r'C:\wd-mind-private\vector-cache\vectors.bin' if audit is None
+                      else str(module._audit_cache_path(audit)))
+        return _PrivateVectorCache(module, cache_path, verify, audit)
     finally:
         _CACHE_MODULE_LOCK.release()
 

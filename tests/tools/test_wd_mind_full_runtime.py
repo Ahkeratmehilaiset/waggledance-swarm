@@ -195,7 +195,9 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
     relative = 'tools-bootstrap/tools/wd_mind_vector_cache.py'
     path = bundle.joinpath(*relative.split('/'))
     path.parent.mkdir(parents=True)
-    code = b'def load_cache(path, binding, verify): return "synthetic"\ndef write_cache(path, binding, rows): pass\n'
+    code = (b'def load_cache(path, binding, verify): return "synthetic"\n'
+            b'def write_cache(path, binding, rows): pass\n'
+            b'def _audit_for_bundle(bundle, pin, raw, args): return None\n')
     path.write_bytes(code)
     manifest = json.dumps({'files': {relative: hashlib.sha256(code).hexdigest().upper()}}).encode()
     (bundle / 'deployment-manifest.json').write_bytes(manifest)
@@ -220,6 +222,67 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
         if previous_attr is not None:
             setattr(tools, attr, previous_attr)
         runtime._CACHE_MODULE_ATTESTATION = previous_attestation
+
+
+def test_private_cache_adapter_passes_audit_permit_on_every_io():
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    calls, permit = [], object()
+    def verify(): calls.append('verify')
+    def preflight(path, *, _audit):
+        calls.append(('preflight', path, _audit))
+        return 'MISSING'
+    def load(path, binding, prefix, *, _audit):
+        calls.append(('load', path, _audit))
+        return 'synthetic'
+    def write(path, binding, rows, *, _audit):
+        calls.append(('write', path, _audit))
+    module = SimpleNamespace(preflight=preflight, load_cache=load, write_cache=write)
+    provider = runtime._PrivateVectorCache(module, 'synthetic-audit-cache', verify, permit)
+    assert provider.preflight() == 'MISSING'
+    assert provider.load({}, lambda *_: True) == 'synthetic'
+    provider.write({}, ())
+    assert calls == ['verify', ('preflight', 'synthetic-audit-cache', permit), 'verify',
+                     'verify', ('load', 'synthetic-audit-cache', permit), 'verify',
+                     'verify', ('write', 'synthetic-audit-cache', permit), 'verify']
+
+
+def test_runtime_refuses_unverified_audit_before_reading_manifest(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    bundle = runtime._AUDIT_WIP_ROOT / 'git-bundle-aaaaaaaa-real-pending'
+    binding = runtime._PrivateBinding({}, bundle, 'a' * 64, (), {})
+    opened = []
+    def unexpected_read(*args, **kwargs):
+        opened.append(True)
+        raise AssertionError('unverified audit must not read the manifest')
+    monkeypatch.setattr(runtime, '_AUDIT_WIP_ENABLED', False)
+    monkeypatch.setattr(runtime.prefix, '_read_pinned', unexpected_read)
+    with pytest.raises(ValueError, match='audit_path_unverified'):
+        runtime._load_pinned_vector_cache(binding)
+    assert opened == []
+
+
+def test_unverified_audit_gates_default_off_and_use_same_fixed_root():
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_vector_cache as vector_cache
+    assert runtime._AUDIT_WIP_ENABLED is False
+    assert vector_cache._AUDIT_WIP_ENABLED is False
+    assert runtime._AUDIT_WIP_ROOT == vector_cache._AUDIT_ROOT
+
+
+def test_runtime_refuses_audit_alias_before_reading_manifest(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    alias = Path(r'C:\synthetic-alias\git-bundle-aaaaaaaa-real-pending')
+    target = runtime._AUDIT_WIP_ROOT / 'git-bundle-aaaaaaaa-real-pending'
+    original = runtime.os.path.realpath
+    def resolve(path):
+        return str(target) if str(path) == str(alias) else original(path)
+    monkeypatch.setattr(runtime.os.path, 'realpath', resolve)
+    monkeypatch.setattr(runtime, '_AUDIT_WIP_ENABLED', False)
+    monkeypatch.setattr(runtime.prefix, '_read_pinned', lambda *_: pytest.fail('manifest must remain unread'))
+    binding = runtime._PrivateBinding({}, alias, 'a' * 64, (), {})
+    with pytest.raises(ValueError, match='audit_path_unverified'):
+        runtime._load_pinned_vector_cache(binding)
 
 
 @pytest.mark.parametrize('operation', ['load_cache', 'write_cache'])

@@ -231,6 +231,29 @@ def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_worker_factory_passes_only_remaining_call_deadline(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    now, calls = [100.0], []
+    location = {'runtime_root': 'root', 'runtime_manifest': 'manifest', 'runtime_manifest_sha256': 'a' * 64,
+                'runtime_generation': 'b' * 40, 'runtime_revision': 'c' * 40, 'interpreter': 'python',
+                'interpreter_sha256': 'd' * 64, 'interpreter_root': 'python-root'}
+    monkeypatch.setattr(runtime.time, 'monotonic', lambda: now[0])
+    def resolve(**_kwargs):
+        now[0] = 102.0
+        return location
+    monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', resolve)
+    child = SimpleNamespace(start_e5_worker_graceful=lambda **kwargs: calls.append(kwargs) or {'status': 'synthetic'})
+    monkeypatch.setattr(runtime, '_worker_factory_preflight', lambda *_args: child)
+    factory = runtime._ManifestWorkerFactory(str(tmp_path), 'e' * 64, location, tmp_path / 'lock', 300, 1, 'f' * 64)
+    assert factory(owner_sink=lambda _owner: None, call_deadline=110.0) == {'status': 'synthetic'}
+    assert calls[0]['timeout'] == 8.0
+    calls.clear()
+    with pytest.raises(runtime.FullRuntimeRefused):
+        factory(owner_sink=lambda _owner: None, call_deadline=101.0)
+    assert not calls
+
+
 @pytest.mark.parametrize('policy,pin', [(None, None), (b'{}', '0' * 64), (b'{}', None),
                                         (b'{}', hashlib.sha256(b'{}').hexdigest())])
 def test_runtime_requires_independently_pinned_identifier_policy_before_source_read(tmp_path, monkeypatch, policy, pin):
@@ -656,7 +679,7 @@ binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root), exp
 assert binding._PrivateBinding__snapshot['identifier_policy_binding'][0] == policy
 factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-lock', 1, 0,
                                          client_module.BULK_CONTRACT_SHA256)
-def launch(self, *, owner_sink):
+def launch(self, *, owner_sink, call_deadline=None):
     owner_sink(owner)
     return {'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
 runtime._ManifestWorkerFactory.__call__ = launch
@@ -881,7 +904,7 @@ client.encode_supervised = encode
 client.close = lambda **kwargs: {'state':'EXITED', 'owned':False}
 factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-lock', 1, 0,
                                          client_module.BULK_CONTRACT_SHA256)
-def launch(self, *, owner_sink):
+def launch(self, *, owner_sink, call_deadline=None):
     owner_sink(owner)
     return {'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
 runtime._ManifestWorkerFactory.__call__ = launch
@@ -2328,7 +2351,7 @@ try:
             def passage(self, values): return struct.pack('<384f', 1.0, *([0.0]*383)) * len(values)
             def query(self, text): return (1.0,) + (0.0,) * 383
         worker = SyntheticOwner(); fake_client = SyntheticClient(worker)
-        def fake_factory(self, *, owner_sink):
+        def fake_factory(self, *, owner_sink, call_deadline=None):
             owner_sink(worker)
             return {'status':'READY','owner':worker,'client':fake_client}
         runtime._ManifestWorkerFactory.__call__ = fake_factory
@@ -3857,7 +3880,7 @@ def test_single_owner_interrupt_during_spawn_preserves_owned_hold(tmp_path, monk
         def status(self): return {'state': 'RUNNING', 'owned': True}
         def shutdown(self, *, timeout): return {'state': 'HOLD', 'owned': True}
     held = Held()
-    def launch(self, *, owner_sink):
+    def launch(self, *, owner_sink, call_deadline=None):
         owner_sink(held)
         entered.set()
         assert release.wait(5)
@@ -3920,7 +3943,7 @@ def test_single_owner_retains_both_owners_on_mismatched_launch_result(tmp_path, 
     sink_owner, returned_owner = Owner(), Owner()
     class Client:
         owner = returned_owner
-    def launch(self, *, owner_sink):
+    def launch(self, *, owner_sink, call_deadline=None):
         owner_sink(sink_owner)
         return {'status':'READY', 'client':Client(), 'owner':returned_owner}
     monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', launch)
@@ -3937,7 +3960,7 @@ def test_single_owner_retains_conflicting_sink_owners(tmp_path, monkeypatch):
     class Owner:
         def status(self): return {'state':'RUNNING','owned':True}
     first, second = Owner(), Owner()
-    def launch(self, *, owner_sink):
+    def launch(self, *, owner_sink, call_deadline=None):
         owner_sink(first)
         owner_sink(second)
         pytest.fail('duplicate owner must refuse')
@@ -3957,7 +3980,7 @@ def test_cancelled_single_owner_retains_later_conflicting_factory_owner(tmp_path
         def status(self): return {'state':'RUNNING','owned':True}
         def shutdown(self, *, timeout): return {'state':'EXITED','owned':False}
     first, second = Owner(), Owner()
-    def launch(self, *, owner_sink):
+    def launch(self, *, owner_sink, call_deadline=None):
         owner_sink(first)
         entered.set()
         assert release.wait(5)

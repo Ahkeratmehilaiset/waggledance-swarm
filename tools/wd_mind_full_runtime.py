@@ -302,8 +302,11 @@ class _ManifestWorkerFactory:
     def __repr__(self):
         return '<PrivateMindManifestWorkerFactory>'
 
-    def __call__(self, *, owner_sink=None):
+    def __call__(self, *, owner_sink=None, call_deadline=None):
         try:
+            if (call_deadline is not None and
+                    (type(call_deadline) not in (int, float) or not math.isfinite(call_deadline))):
+                raise ValueError('deadline')
             current = resolve_manifest_runtime_location(enabled=True, bundle_root=self._bundle,
                                                          expected_manifest_sha256=self._manifest)
             if current != self._location:
@@ -313,6 +316,9 @@ class _ManifestWorkerFactory:
                     'runtime-manifest-sha256': current['runtime_manifest_sha256'],
                     'runtime-generation': current['runtime_generation'], 'runtime-revision': current['runtime_revision'],
                     'lock-file': str(self._lock), 'lock-timeout': format(self._lock_timeout, '.15g')}
+            remaining = self._timeout if call_deadline is None else min(self._timeout, call_deadline - time.monotonic())
+            if not 0 < remaining <= self._timeout:
+                raise ValueError('deadline')
         except Exception:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         # Preserve the graceful launcher's returned owner, including HOLD. Do
@@ -320,7 +326,7 @@ class _ManifestWorkerFactory:
         return child.start_e5_worker_graceful(enabled=True, bundle_root=self._bundle,
             deployment_manifest_sha256=self._manifest, interpreter=current['interpreter'],
             interpreter_sha256=current['interpreter_sha256'], interpreter_root=current['interpreter_root'],
-            tuple_args=args, timeout=self._timeout, scratch_root=None, worker_only=True,
+            tuple_args=args, timeout=remaining, scratch_root=None, worker_only=True,
             bulk_contract_sha256=self._bulk, owner_sink=owner_sink)
 
 

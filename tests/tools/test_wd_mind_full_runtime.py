@@ -1181,6 +1181,32 @@ def test_generation_refresh_is_default_off_and_does_not_stage(monkeypatch, tmp_p
     with pytest.raises(runtime.FullRuntimeRefused): owner._handler.refresh()
 
 
+def test_generation_refresh_interrupted_handler_lock_releases_owner_lock(monkeypatch, tmp_path):
+    runtime, owner, old, _ = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    old_handler = owner._handler
+    old_view = old_handler.lane_view('codex-lead-1')
+    original_lock = old_handler._lock
+
+    class InterruptedLock:
+        def acquire(self, *, blocking):
+            assert blocking is False
+            raise KeyboardInterrupt('synthetic lock interruption')
+
+    old_handler._lock = InterruptedLock()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            owner._refresh_generation(enabled=True)
+    finally:
+        old_handler._lock = original_lock
+    assert owner._state == 'HOLD' and _test_generation_view(owner) == old
+    assert old_handler._closed
+    with pytest.raises(runtime.FullRuntimeRefused):
+        old_view.handle({'schema':'wd.mind-flat-owner-request.v1', 'lane':'codex-lead-1',
+                         'scope':'own', 'query':'synthetic unrelated target'})
+    assert owner._lock.acquire(blocking=False)
+    owner._lock.release()
+
+
 def test_generation_refresh_publishes_binding_and_memory_together(monkeypatch, tmp_path):
     runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
     observed = []

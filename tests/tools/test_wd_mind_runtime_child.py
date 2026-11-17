@@ -1146,10 +1146,13 @@ def test_graceful_expired_preflight_never_spawns(staged_graceful, monkeypatch):
         child.start_e5_worker_graceful(enabled=True, **staged_graceful)
 
 
-def test_graceful_spawn_failure_closes_only_unstarted_job(staged_graceful, monkeypatch):
+def test_graceful_spawn_failure_retains_uncertain_owner(staged_graceful, monkeypatch):
     from test_wd_mind_e5_lifecycle import Job
     from tools import wd_mind_e5_lifecycle as lifecycle
     job = Job()
+    stop_synthetic_keeper = threading.Event()
+    monkeypatch.setattr(lifecycle._Owner, '_keep', lambda self: stop_synthetic_keeper.wait(3))
+    monkeypatch.setattr(lifecycle, '_active', None)
     monkeypatch.setattr(child, "_Job", lambda **kwargs: job)
 
     def unavailable(*args, **kwargs):
@@ -1157,10 +1160,16 @@ def test_graceful_spawn_failure_closes_only_unstarted_job(staged_graceful, monke
 
     monkeypatch.setattr(subprocess, "Popen", unavailable)
     result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
-    assert result["client"] is None and result["owner"]._job is job
-    assert not result["owner"].shutdown(timeout=2)["owned"] and job.closed
-    owner = lifecycle.reserve(enabled=True)
-    owner.cancel_unstarted()
+    owner = result['owner']
+    try:
+        assert result['status'] == 'HOLD' and result['client'] is None
+        assert owner._job is job and owner._spawn_state == 'ATTEMPTED'
+        assert owner.status()['owned'] is True and not job.closed
+    finally:
+        # No native process was created; only the synthetic keeper is stopped.
+        stop_synthetic_keeper.set()
+        owner._keeper.join(timeout=2)
+        assert not owner._keeper.is_alive()
 
 
 def test_cooperative_job_close_failure_retains_actual_handle():

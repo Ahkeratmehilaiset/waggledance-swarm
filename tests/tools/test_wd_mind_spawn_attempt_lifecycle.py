@@ -1,6 +1,7 @@
 """Synthetic spawn-state tests: no native processes or live reservation."""
 
 from types import SimpleNamespace
+import threading
 
 import pytest
 
@@ -89,8 +90,10 @@ def test_attempt_cannot_be_registered_twice_or_after_close():
     with pytest.raises(lifecycle.LifecycleRefused):
         owner.mark_spawn_attempt()
     owner.shutdown(timeout=0)
+    owner.bind(SimpleNamespace(pid=123))
+    assert owner._spawn_state == 'BOUND'
     with pytest.raises(lifecycle.LifecycleRefused):
-        owner.bind(object())
+        owner.mark_ready()
     assert owner.status()['owned'] is True
 
 
@@ -111,3 +114,57 @@ def test_unbound_process_after_attempt_is_not_released(monkeypatch):
     with pytest.raises(_ObservedWait):
         owner._keep()
     assert owner.status()['owned'] is True
+
+
+def test_verified_owner_requires_attempt_before_bind():
+    owner = lifecycle._Owner(require_spawn_attempt=True)
+    owner.set_job(_Job())
+    with pytest.raises(lifecycle.LifecycleRefused):
+        owner.bind(object())
+    assert owner._spawn_state == 'NOT_ENTERED'
+
+
+def test_attempt_cannot_bind_none():
+    owner = lifecycle._Owner(require_spawn_attempt=True)
+    owner.set_job(_Job())
+    owner.mark_spawn_attempt()
+    with pytest.raises(lifecycle.LifecycleRefused):
+        owner.bind(None)
+    assert owner._spawn_state == 'ATTEMPTED'
+
+
+def test_shutdown_between_attempt_and_bind_still_drains_cooperatively():
+    from test_wd_mind_e5_lifecycle import Process
+
+    owner = lifecycle._Owner(require_spawn_attempt=True)
+    owner._keeper.daemon = True  # Only this synthetic test owner is daemonized.
+    job, process = _Job(), Process()
+    owner.set_job(job)
+    owner._keeper.start()
+    owner.mark_spawn_attempt()
+    adoption_allowed = threading.Event()
+    adopted = threading.Event()
+    errors = []
+
+    def adopt():
+        adoption_allowed.wait(2)
+        try:
+            owner.bind(process)
+        except BaseException as error:
+            errors.append(type(error).__name__)
+        finally:
+            adopted.set()
+
+    thread = threading.Thread(target=adopt, daemon=True)
+    thread.start()
+    try:
+        assert owner.shutdown(timeout=0)['owned'] is True
+        adoption_allowed.set()
+        assert adopted.wait(2)
+        assert not errors
+        owner._keeper.join(timeout=2)
+        assert not owner._keeper.is_alive()
+        assert owner.status()['owned'] is False
+        assert process.stdin.closed and job.closed
+    finally:
+        adoption_allowed.set()

@@ -47,17 +47,17 @@ def _duration(value):
     return float(value)
 
 
-def reserve(*, enabled=False, bulk_contract_sha256=None):
+def reserve(*, enabled=False, bulk_contract_sha256=None, require_spawn_attempt=False):
     """Reserve before creating a child. HOLD also occupies this single slot."""
     global _active
-    if (enabled is not True or (bulk_contract_sha256 is not None and
+    if (enabled is not True or type(require_spawn_attempt) is not bool or (bulk_contract_sha256 is not None and
             (type(bulk_contract_sha256) is not str or bulk_contract_sha256 != BULK_CONTRACT_SHA256
              or hashlib.sha256(BULK_CONTRACT).hexdigest() != BULK_CONTRACT_SHA256))):
         raise LifecycleRefused("mind_e5_lifecycle_refused")
     with _slot_lock:
         if _active is not None:
             raise LifecycleRefused("mind_e5_lifecycle_refused")
-        owner = _Owner(bulk_contract_sha256)
+        owner = _Owner(bulk_contract_sha256, require_spawn_attempt=require_spawn_attempt)
         _active = owner
         try:
             # Start the lifetime keeper BEFORE any native process can exist.
@@ -69,7 +69,7 @@ def reserve(*, enabled=False, bulk_contract_sha256=None):
 
 
 class _Owner:
-    def __init__(self, bulk_contract_sha256=None):
+    def __init__(self, bulk_contract_sha256=None, *, require_spawn_attempt=False):
         self._bulk_contract_sha256 = bulk_contract_sha256
         self._condition = threading.Condition()
         self.resources = _Resources()
@@ -77,6 +77,7 @@ class _Owner:
         # Legacy callers may still bind without registering an attempt.  Until
         # they are migrated this state does not prove that no spawn occurred.
         self._spawn_state = "NOT_ENTERED"
+        self._require_spawn_attempt = require_spawn_attempt
         self._owned, self._closing, self._eof = True, False, False
         self._output = bytearray()
         self._counts = {"stdout": 0, "stderr": 0}
@@ -113,7 +114,10 @@ class _Owner:
     def bind(self, process):
         """Retain the actual process immediately after Popen, before attachment."""
         with self._condition:
-            if (not self._owned or self._closing or (self._process is not None and self._process is not process)
+            if (process is None or not self._owned
+                    or (self._closing and self._spawn_state != "ATTEMPTED")
+                    or (self._require_spawn_attempt and self._spawn_state != "ATTEMPTED")
+                    or (self._process is not None and self._process is not process)
                     or self._job is None):
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
             self.resources.process = process

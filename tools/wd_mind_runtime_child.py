@@ -2061,15 +2061,18 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                         or lifecycle.BULK_STDOUT_BYTES != 64 * 1024 * 1024
                         or client_module.BULK_CONTRACT_SHA256 != BULK_CONTRACT_SHA256):
                     raise ValueError('bulk_contract_mismatch')
-                owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=bulk_contract_sha256)
+                owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=bulk_contract_sha256,
+                                          require_spawn_attempt=True)
             else:
-                owner = lifecycle.reserve(enabled=True)
+                owner = lifecycle.reserve(enabled=True, require_spawn_attempt=True)
             if owner_sink is not None:
                 owner_sink(owner)
             owner.resources.job = job = _Job(kill_on_close=False, _owner=owner)
             owner.set_job(job)
             if time.monotonic() >= deadline:
                 raise ValueError("deadline")
+        if cooperative:
+            owner.mark_spawn_attempt()
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE,
                                    cwd=str(bootstrap.parent), env=env, creationflags=subprocess.CREATE_NO_WINDOW)

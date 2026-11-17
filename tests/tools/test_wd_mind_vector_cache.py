@@ -31,6 +31,8 @@ def private_dir(tmp_path, monkeypatch):
         pytest.skip("native Windows ACL and directory leases")
     assert ".codex-audit" in str(tmp_path).lower()
     user = subprocess.check_output(["whoami"], text=True).strip()
+    result = subprocess.run(["icacls", str(tmp_path), "/setowner", user], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     result = subprocess.run(["icacls", str(tmp_path), "/inheritance:r", "/grant:r",
                              user + ":(OI)(CI)F", "SYSTEM:(OI)(CI)F"],
                             capture_output=True, text=True)
@@ -137,6 +139,9 @@ def test_nonunit_vector_refused_even_if_checksums_are_recomputed(private_dir):
     invalid = (("a" * 64, "b" * 64, bytes(1536)),)
     header = cache._canonical(cache._header(binding(), invalid))
     path.write_bytes(cache._MAGIC + struct.pack("<I", len(header)) + header + b"".join(cache._encoded(invalid)))
+    user = subprocess.check_output(["whoami"], text=True).strip()
+    result = subprocess.run(["icacls", str(path), "/setowner", user], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     with pytest.raises(cache.CacheRefused, match="vector_norm"):
         cache.load_cache(path, binding(), lambda *_: True)
 
@@ -178,11 +183,25 @@ def test_second_process_cannot_write_while_first_holds_lock(private_dir):
     assert not path.exists()
 
 
+def test_second_cache_name_refused_even_while_first_writer_holds_lock(private_dir):
+    path = private_dir / "vectors.bin"
+    other = private_dir / "different.bin"
+    program = ("from tools import wd_mind_vector_cache as c; from pathlib import Path; import sys; "
+               "p=Path(sys.argv[1]); c._CACHE_ROOT=p.parent; c.write_cache(p," + repr(binding()) + ",())")
+    with cache._Directory(private_dir) as directory, cache._WriterLock(directory, path):
+        result = subprocess.run([sys.executable, "-c", program, str(other)], capture_output=True, text=True)
+    assert result.returncode != 0 and "CacheRefused: path" in result.stderr
+    assert not other.exists()
+
+
 def test_broad_acl_refused(tmp_path, monkeypatch):
     if os.name != "nt":
         pytest.skip("native Windows ACL")
     assert ".codex-audit" in str(tmp_path).lower()
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    user = subprocess.check_output(["whoami"], text=True).strip()
+    result = subprocess.run(["icacls", str(tmp_path), "/setowner", user], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     result = subprocess.run(["icacls", str(tmp_path), "/grant", "*S-1-1-0:(OI)(CI)R"],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -196,6 +215,53 @@ def test_nonprivate_or_unknown_acl_refuses_access(private_dir, monkeypatch):
     monkeypatch.setattr(cache._Native, "user_acl", unknown)
     with pytest.raises(cache.CacheRefused, match="acl_unknown"):
         cache.write_cache(private_dir / "vectors.bin", binding(), rows())
+
+
+def test_wrong_owner_rejected_even_with_restricted_dacl(private_dir):
+    result = subprocess.run(["icacls", str(private_dir), "/setowner", "*S-1-5-32-544"],
+                            capture_output=True, text=True)
+    if result.returncode:
+        pytest.skip("setting another owner requires privilege")
+    with pytest.raises(cache.CacheRefused, match="owner_not_trusted"):
+        cache.write_cache(private_dir / "vectors.bin", binding(), rows())
+
+
+@pytest.mark.parametrize("filename", ["vectors.bin", "vectors.bin.lock"])
+def test_wrong_file_owner_refused_without_reassigning(private_dir, filename):
+    path = private_dir / "vectors.bin"
+    cache.write_cache(path, binding(), rows())
+    target = private_dir / filename
+    result = subprocess.run(["icacls", str(target), "/setowner", "*S-1-5-32-544"],
+                            capture_output=True, text=True)
+    if result.returncode:
+        pytest.skip("setting another owner requires privilege")
+    operation = (lambda: cache.load_cache(path, binding(), lambda *_: True)) if filename == "vectors.bin" else (
+        lambda: cache.write_cache(path, binding(), rows()))
+    with pytest.raises(cache.CacheRefused, match="owner_not_trusted"):
+        operation()
+    native = cache._Native()
+    handle = native.open(target, 3, 0, 3)
+    try:
+        with pytest.raises(cache.CacheRefused, match="owner_not_trusted"):
+            native.user_acl(handle)
+    finally:
+        native.kernel.CloseHandle(handle)
+
+
+def test_inherit_only_user_ace_does_not_authorize_directory(private_dir):
+    user = subprocess.check_output(["whoami"], text=True).strip()
+    native = cache._Native()
+    handle = native.open(private_dir, 3, 0, 3, directory=True)
+    try:
+        removed = subprocess.run(["icacls", str(private_dir), "/remove:g", user], capture_output=True, text=True)
+        assert removed.returncode == 0, removed.stderr
+        added = subprocess.run(["icacls", str(private_dir), "/grant:r", user + ":(OI)(CI)(IO)F"],
+                               capture_output=True, text=True)
+        assert added.returncode == 0, added.stderr
+        with pytest.raises(cache.CacheRefused, match="acl_unknown"):
+            native.user_acl(handle)
+    finally:
+        native.kernel.CloseHandle(handle)
 
 
 def test_linked_directory_or_file_refused(private_dir, monkeypatch):

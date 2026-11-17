@@ -427,8 +427,36 @@ def b16_worker(flat_bundle, monkeypatch, request):
         finish(owner, process)
 
 
-def test_single_b16_one_nonce_four_ordered_frames(b16_worker, monkeypatch):
-    single, client, _, process, texts, binding = b16_worker
+@pytest.fixture
+def stable_b16_worker(b16_worker, monkeypatch):
+    """Isolate protocol/deadline tests from repeated filesystem timing.
+
+    The real bundle binding is checked once here and separately exercised by
+    the binding-change tests. A per-module clock avoids patching Python's
+    process-wide time module or changing any production timeout.
+    """
+    from types import SimpleNamespace
+    import time
+    from tools import (wd_mind_e5_snapshot_adapter as adapter, wd_mind_e5_client as client_module,
+                       wd_mind_e5_lifecycle as lifecycle)
+    single = b16_worker[0]
+    expected = adapter._flat_bundle_bindings(single._bundle, single._manifest)
+
+    def checked_binding(bundle, manifest):
+        assert (bundle, manifest) == (single._bundle, single._manifest)
+        return expected
+
+    clock = [100.0]
+    fake_time = SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep)
+    monkeypatch.setattr(adapter, '_flat_bundle_bindings', checked_binding)
+    monkeypatch.setattr(adapter, 'time', fake_time)
+    monkeypatch.setattr(client_module, 'time', fake_time)
+    monkeypatch.setattr(lifecycle, 'time', fake_time)
+    return (*b16_worker, clock)
+
+
+def test_single_b16_one_nonce_four_ordered_frames(stable_b16_worker, monkeypatch):
+    single, client, _, process, texts, binding, _ = stable_b16_worker
     original_check = type(single)._check
     checks = []
     def counted_check(adapter):
@@ -461,8 +489,8 @@ def test_single_b16_refuses_bad_intermediate_frame_and_keeps_hold(b16_worker):
     assert single.close(timeout=0)['state'] == 'HOLD'
 
 
-def test_single_b16_replay_refuses_without_second_output(b16_worker):
-    single, client, owner, process, texts, binding = b16_worker
+def test_single_b16_replay_refuses_without_second_output(stable_b16_worker):
+    single, client, owner, process, texts, binding, _ = stable_b16_worker
     assert len(single.passage(tuple(texts))) == 16 * 1536
     before = bytes(process.written)
     with pytest.raises(ValueError):
@@ -542,9 +570,8 @@ def test_single_b16_checks_again_before_next_frame(b16_worker, monkeypatch):
     assert client.owner is owner and owner.status()['owned'] is True
 
 
-def test_single_b16_last_frame_check_timeout_keeps_owner(b16_worker, monkeypatch):
-    import time
-    single, client, owner, _, texts, _ = b16_worker
+def test_single_b16_last_frame_check_timeout_keeps_owner(stable_b16_worker, monkeypatch):
+    single, client, owner, _, texts, _, clock = stable_b16_worker
     client._timeout = 0.5
     original = type(single)._check
     checks = []
@@ -553,7 +580,7 @@ def test_single_b16_last_frame_check_timeout_keeps_owner(b16_worker, monkeypatch
         checks.append(1)
         # Outer pre-check followed by four frame pre/post checks.
         if len(checks) == 9:
-            time.sleep(0.65)
+            clock[0] += 0.65
     monkeypatch.setattr(type(single), '_check', slow_last_check)
     with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
         single.passage(tuple(texts))
@@ -561,10 +588,9 @@ def test_single_b16_last_frame_check_timeout_keeps_owner(b16_worker, monkeypatch
 
 
 @pytest.mark.parametrize('phase', ['precheck', 'postcheck', 'vector_validation'])
-def test_single_b16_total_deadline_covers_adapter_checks_and_vectors(b16_worker, monkeypatch, phase):
-    import time
+def test_single_b16_total_deadline_covers_adapter_checks_and_vectors(stable_b16_worker, monkeypatch, phase):
     from tools import wd_mind_content_query_readonly as reader
-    single, client, owner, _, texts, _ = b16_worker
+    single, client, owner, _, texts, _, clock = stable_b16_worker
     client._timeout = 0.15
     calls, checks, vectors = [], [], []
     def immediate(request, **kwargs):
@@ -576,12 +602,12 @@ def test_single_b16_total_deadline_covers_adapter_checks_and_vectors(b16_worker,
         original_check(adapter)
         checks.append(1)
         if (phase == 'precheck' and len(checks) == 1) or (phase == 'postcheck' and len(checks) == 2):
-            time.sleep(0.25)
+            clock[0] += 0.25
     original_vector = reader._q4_vector
     def delayed_vector(row):
         vectors.append(1)
         if phase == 'vector_validation' and len(vectors) == 1:
-            time.sleep(0.25)
+            clock[0] += 0.25
         return original_vector(row)
     monkeypatch.setattr(client, 'encode_supervised', immediate)
     monkeypatch.setattr(type(single), '_check', delayed_check)

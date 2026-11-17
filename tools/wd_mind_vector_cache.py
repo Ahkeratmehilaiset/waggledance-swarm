@@ -29,6 +29,7 @@ _MAX_ROWS = 250000
 _MAX_HEADER = 8192
 _MAGIC = b"WDMVC1\n"
 _CACHE_ROOT = Path(r"C:\Python\wd-mind-vector-cache")
+_CACHE_NAME = "vectors.bin"
 
 
 class CacheRefused(ValueError):
@@ -138,6 +139,9 @@ class _Native:
             ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_void_p)]
         self.advapi.GetSecurityInfo.restype = wintypes.DWORD
+        self.advapi.SetSecurityInfo.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                                 ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        self.advapi.SetSecurityInfo.restype = wintypes.DWORD
         self.advapi.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
         self.advapi.GetAce.restype = wintypes.BOOL
         self.advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
@@ -171,10 +175,11 @@ class _Native:
             raise
 
     def user_acl(self, handle):
-        acl, security, token, system = ctypes.c_void_p(), ctypes.c_void_p(), wintypes.HANDLE(), ctypes.c_void_p()
+        owner, acl, security, token, system = (ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p(),
+                                                wintypes.HANDLE(), ctypes.c_void_p())
         try:
-            if self.advapi.GetSecurityInfo(handle, 1, 4, None, None, ctypes.byref(acl), None,
-                                            ctypes.byref(security)) or not acl:
+            if self.advapi.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None, ctypes.byref(acl), None,
+                                            ctypes.byref(security)) or not acl or not owner:
                 raise CacheRefused("acl_unknown")
             if not self.advapi.OpenProcessToken(self.kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
                 raise CacheRefused("acl_unknown")
@@ -188,6 +193,8 @@ class _Native:
             user = ctypes.cast(data, ctypes.POINTER(ctypes.c_void_p))[0]
             if not user or not self.advapi.ConvertStringSidToSidW("S-1-5-18", ctypes.byref(system)):
                 raise CacheRefused("acl_unknown")
+            if not (self.advapi.EqualSid(owner, user) or self.advapi.EqualSid(owner, system)):
+                raise CacheRefused("owner_not_trusted")
             entries = ctypes.cast(acl, ctypes.POINTER(_Acl)).contents
             if not entries.count or entries.count > 4096:
                 raise CacheRefused("acl_unknown")
@@ -197,6 +204,7 @@ class _Native:
                 if not self.advapi.GetAce(acl, index, ctypes.byref(ace)) or not ace:
                     raise CacheRefused("acl_unknown")
                 ace_type = ctypes.c_ubyte.from_address(ace.value).value
+                ace_flags = ctypes.c_ubyte.from_address(ace.value + 1).value
                 ace_size = ctypes.c_ushort.from_address(ace.value + 2).value
                 if ace_size < 16 or ace_type not in (0, 1):
                     raise CacheRefused("acl_unknown")
@@ -205,7 +213,9 @@ class _Native:
                     is_user = bool(self.advapi.EqualSid(sid, user))
                     if not is_user and not self.advapi.EqualSid(sid, system):
                         raise CacheRefused("acl_not_user_only")
-                    user_allowed |= is_user
+                    # INHERIT_ONLY grants rights only to child objects, not
+                    # the directory/file currently being authorized.
+                    user_allowed |= is_user and not (ace_flags & 0x08)
             if not user_allowed:
                 raise CacheRefused("acl_unknown")
         finally:
@@ -215,6 +225,26 @@ class _Native:
                 self.kernel.LocalFree(system)
             if security:
                 self.kernel.LocalFree(security)
+
+    def set_created_user_owner(self, handle):
+        """Assign only a file created by this call, never an existing object."""
+        token = wintypes.HANDLE()
+        try:
+            if not self.advapi.OpenProcessToken(self.kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+                raise CacheRefused("owner_unknown")
+            size = wintypes.DWORD()
+            self.advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            if not 0 < size.value <= 65536:
+                raise CacheRefused("owner_unknown")
+            data = ctypes.create_string_buffer(size.value)
+            if not self.advapi.GetTokenInformation(token, 1, data, size.value, ctypes.byref(size)):
+                raise CacheRefused("owner_unknown")
+            user = ctypes.cast(data, ctypes.POINTER(ctypes.c_void_p))[0]
+            if not user or self.advapi.SetSecurityInfo(handle, 1, 1, user, None, None, None):
+                raise CacheRefused("owner_unknown")
+        finally:
+            if token:
+                self.kernel.CloseHandle(token)
 
 
 class _Directory:
@@ -249,7 +279,7 @@ def _plain_path(path):
     if not isinstance(path, (str, Path)):
         raise CacheRefused("path")
     result = Path(path)
-    if (not result.is_absolute() or ".." in result.parts or result.name in ("", ".", "..")
+    if (not result.is_absolute() or ".." in result.parts or result.name != _CACHE_NAME
             or ":" in result.name or result.name.endswith((" ", "."))):
         raise CacheRefused("path")
     return result
@@ -257,8 +287,11 @@ def _plain_path(path):
 
 def _fd(native, path, disposition, access, share, flags):
     import msvcrt
-    handle = native.open(path, disposition, access, share)
+    created = disposition == 1  # CREATE_NEW; caller never changes existing owners
+    handle = native.open(path, disposition, access | (0x80000 if created else 0), share)
     try:
+        if created:
+            native.set_created_user_owner(handle)
         native.user_acl(handle)
         return msvcrt.open_osfhandle(handle, flags | os.O_BINARY)
     except BaseException:
@@ -272,7 +305,10 @@ class _WriterLock:
 
     def __enter__(self):
         import msvcrt
-        self.fd = _fd(self.directory.native, self.path, 4, 0xC0000000, 3, os.O_RDWR)
+        # The lock object is fixed for the one allowed cache name. A failed
+        # racing CREATE_NEW refuses; it never adopts or changes an unknown file.
+        disposition = 3 if os.path.lexists(self.path) else 1
+        self.fd = _fd(self.directory.native, self.path, disposition, 0xC0000000, 3, os.O_RDWR)
         try:
             os.lseek(self.fd, 0, os.SEEK_SET)
             msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)

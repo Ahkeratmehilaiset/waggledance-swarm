@@ -2065,6 +2065,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                                           require_spawn_attempt=True)
             else:
                 owner = lifecycle.reserve(enabled=True, require_spawn_attempt=True)
+            owner.mark_job_attempt()
             if owner_sink is not None:
                 owner_sink(owner)
             owner.resources.job = job = _Job(kill_on_close=False, _owner=owner)

@@ -169,3 +169,66 @@ def test_stop_expiration_discards_ready_but_unconsumed_result():
     assert exchange.complete({'schema':'synthetic'})
     assert exchange.expire()
     assert exchange.read()=={'state':'WITHOUT_MIND','reason':'EXPIRED'}
+
+
+def _unconsumed_ready(host,client):
+    exchange,reason=client.submit(request(),1)
+    assert reason=='PENDING' and exchange.event.wait(3)
+    assert exchange._state=='READY'
+    assert eventually(lambda:host.status()['state']=='READY')
+    return exchange
+
+
+def test_detach_invalidates_a_ready_result_even_after_slot_release():
+    host,client,_=setup(lambda resources,ticket:result(ticket))
+    try:
+        exchange=_unconsumed_ready(host,client)
+        assert host.detach(lane=LANE,session=SESSION)
+        assert exchange.read()['state']=='WITHOUT_MIND'
+    finally:stop(host)
+
+
+def test_session_replacement_invalidates_old_ready_result():
+    host,client,_=setup(lambda resources,ticket:result(ticket))
+    try:
+        exchange=_unconsumed_ready(host,client)
+        assert host.attach(lane=LANE,session='f'*64)
+        assert exchange.read()['state']=='WITHOUT_MIND'
+    finally:stop(host)
+
+
+def test_stop_invalidates_ready_result_after_active_slot_released():
+    host,client,_=setup(lambda resources,ticket:result(ticket))
+    try:
+        exchange=_unconsumed_ready(host,client)
+        host.request_stop()
+        assert exchange.read()['state']=='WITHOUT_MIND'
+    finally:stop(host)
+
+
+@pytest.mark.parametrize('action',['stop','detach','replace'])
+def test_invalidation_survives_exchange_lock_contention(action):
+    host,client,_=setup(lambda resources,ticket:result(ticket))
+    try:
+        exchange=_unconsumed_ready(host,client)
+        assert exchange._lock.acquire(False)
+        try:
+            if action=='stop':
+                assert host.request_stop()=='HOLD'
+            elif action=='detach':
+                assert host.detach(lane=LANE,session=SESSION)
+            else:
+                assert host.attach(lane=LANE,session='f'*64)
+        finally:exchange._lock.release()
+        assert exchange.read()['state']=='WITHOUT_MIND'
+    finally:stop(host)
+
+
+def test_host_lock_contention_fails_closed_without_waiting():
+    host,client,_=setup(lambda resources,ticket:result(ticket))
+    try:
+        exchange=_unconsumed_ready(host,client)
+        assert host._lock.acquire(False)
+        try:assert exchange.read()['state']=='WITHOUT_MIND'
+        finally:host._lock.release()
+    finally:stop(host)

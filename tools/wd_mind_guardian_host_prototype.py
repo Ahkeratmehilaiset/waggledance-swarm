@@ -32,8 +32,9 @@ def _valid(request):
 
 class _Exchange:
     """One single-use bounded response; EXPIRED cannot become READY."""
-    def __init__(self,request,deadline,clock):
+    def __init__(self,request,deadline,clock,permitted=None):
         self.request,self.deadline,self._clock=request,deadline,clock
+        self._permitted=permitted if permitted is not None else (lambda exchange:True)
         self._lock=threading.Lock();self._state='PENDING';self._result=None
         self.event=threading.Event()
 
@@ -49,7 +50,8 @@ class _Exchange:
     def complete(self,result):
         if not self._lock.acquire(False): return False
         try:
-            accepted=self._state=='PENDING' and self._clock()<self.deadline
+            accepted=(self._state=='PENDING' and self._clock()<self.deadline
+                      and self._permitted(self))
             if accepted:
                 self._result=result;self._state='READY'
             else:
@@ -62,6 +64,8 @@ class _Exchange:
     def read(self):
         if not self._lock.acquire(False): return {'state':'WITHOUT_MIND','reason':'CONTENDED'}
         try:
+            if self._state in ('PENDING','READY') and not self._permitted(self):
+                self._state='EXPIRED';self._result=None
             if self._state=='PENDING' and self._clock()>=self.deadline:
                 self._state='EXPIRED';self._result=None
             if self._state=='READY' and self._clock()>=self.deadline:
@@ -81,6 +85,7 @@ class SyntheticHost:
         self.enabled,self.guardian,self.clock=enabled,guardian,clock
         self._lock=threading.Lock();self._wake=threading.Event();self._stop=threading.Event()
         self._active=None;self._thread=None;self._state='OFF' if not enabled else 'NEW'
+        self._sessions={};self._latest={}
 
     def start(self):
         # Start is deliberately outside the client's deadline/launcher path.
@@ -103,9 +108,49 @@ class SyntheticHost:
         if self.clock()>=deadline:return None,'EXPIRED'
         if not self._lock.acquire(False):return None,'BUSY'
         try:
-            if self._state!='READY' or self._active is not None or self._stop.is_set():return None,'BUSY'
-            exchange=_Exchange(request,deadline,self.clock)
+            if self._stop.is_set():return None,'BUSY'
+            previous=self._latest.get(request.lane)
+            if self._sessions.get(request.lane)!=request.session:
+                self._sessions[request.lane]=request.session
+                if previous is not None:previous.expire()
+            if self._state!='READY' or self._active is not None:return None,'BUSY'
+            if previous is not None:previous.expire()
+            exchange=_Exchange(request,deadline,self.clock,self._permitted)
+            self._latest[request.lane]=exchange
             self._active=exchange;self._wake.set();return exchange,'PENDING'
+        finally:self._lock.release()
+
+    def _permitted(self,exchange):
+        if self._stop.is_set() or not self._lock.acquire(False):return False
+        try:
+            request=exchange.request
+            return (not self._stop.is_set() and self._sessions.get(request.lane)==request.session
+                    and self._latest.get(request.lane) is exchange)
+        finally:self._lock.release()
+
+    def attach(self,*,lane,session):
+        if (type(lane) is not str or lane not in _LANES or type(session) is not str
+                or len(session)!=64 or _HEX.fullmatch(session) is None):return False
+        if not self.enabled or self._stop.is_set() or not self._lock.acquire(False):return False
+        try:
+            if self._stop.is_set():return False
+            if self._sessions.get(lane)!=session:
+                self._sessions[lane]=session
+                previous=self._latest.get(lane)
+                if previous is not None:previous.expire()
+            return True
+        finally:self._lock.release()
+
+    def detach(self,*,lane,session):
+        if (type(lane) is not str or lane not in _LANES or type(session) is not str
+                or len(session)!=64 or _HEX.fullmatch(session) is None):return False
+        if not self._lock.acquire(False):return False
+        try:
+            if self._sessions.get(lane)!=session:return False
+            del self._sessions[lane]
+            previous=self._latest.get(lane)
+            if previous is not None:previous.expire()
+            return True
         finally:self._lock.release()
 
     def request_stop(self):

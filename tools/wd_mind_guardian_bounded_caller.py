@@ -93,8 +93,8 @@ class _BoundedCaller:
 
     def submit(self, *, lane, session, nonce, budget_seconds):
         if (not _binding(lane, session) or type(nonce) is not str or not _HEX.fullmatch(nonce)
-                or type(budget_seconds) not in (int, float) or not math.isfinite(budget_seconds)
-                or not 0 < budget_seconds <= 30):
+                or type(budget_seconds) not in (int, float) or not 0 < budget_seconds <= 30
+                or not math.isfinite(budget_seconds)):
             return {'state':'REFUSED'}
         started = time.monotonic()
         if not self._lock.acquire(blocking=False):

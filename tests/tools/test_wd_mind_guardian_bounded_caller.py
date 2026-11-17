@@ -68,8 +68,10 @@ def test_invalid_and_blocked_submits_do_not_consume_nonce():
     caller = module._BoundedCaller(True, MANIFEST)
     caller._state = 'READY'
     assert caller.attach(lane=LANE, session=SESSION)
-    assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=0)['state'] == 'REFUSED'
-    assert NONCE not in caller._used_nonces
+    for invalid_budget in (0, 10**1000, -(10**1000), float('nan'), float('inf'), True, '1'):
+        assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE,
+                             budget_seconds=invalid_budget)['state'] == 'REFUSED'
+        assert NONCE not in caller._used_nonces
     assert caller._lock.acquire(blocking=False)
     try:
         assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=1)['state'] == 'WITHOUT_MIND'

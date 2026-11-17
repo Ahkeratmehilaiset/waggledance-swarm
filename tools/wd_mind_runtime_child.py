@@ -94,6 +94,12 @@ class _LocalOwnerReservation:
         os.lseek(self.fd, 0, os.SEEK_SET)
         return os.read(self.fd, len(_OWNER_RESERVATION_MAGIC) + 2)
 
+    def abandon(self):
+        """Leave RESERVED on disk; release only this process's kernel handle."""
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
     def release_clean(self, *, service_stopped, owner_stopped, owner_owned, control_stopped):
         if not (service_stopped is True and owner_stopped is True
                 and owner_owned is False and control_stopped is True):
@@ -2131,7 +2137,7 @@ def _read_local_policy_frame(stream, *, require_eof=True):
 
 
 def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
-                       lane, policy_sha256, approval_reference_sha256):
+                       lane, policy_sha256, approval_reference_sha256, _cleanup_evidence=None):
     """Run one local query; retain uncertain work and write only after STOPPED."""
     adapter = policy = result = None
     try:
@@ -2168,6 +2174,8 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
                     time.sleep(0.25)
                 except BaseException:
                     pass  # Keep the process holding uncertain ownership.
+        if _cleanup_evidence is not None:
+            _cleanup_evidence['clean'] = True
     if result is None:
         return 2
     try:
@@ -2187,7 +2195,7 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
 
 
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
-                                 policy_sha256, approval_reference_sha256, policy_path=None):
+                                 policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2324,6 +2332,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 except BaseException: failed = True
                 try: control_thread.join(timeout=0.25)
                 except BaseException: pass
+        if _cleanup_evidence is not None:
+            _cleanup_evidence['clean'] = True
         try: emit('STOPPED')
         except BaseException: failed = True
     return 2 if failed or control_error else 0
@@ -2387,6 +2397,22 @@ def _parent_control_entry(*, control_stream, output_stream, bundle_root, expecte
             _PARENT_ACTIVE = None
 
 
+def _guarded_local_entry(entry, **kwargs):
+    """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
+    guard = _reserve_local_owner(_AUDIT_ROOT)
+    cleanup_evidence = {'clean': False}
+    try:
+        result = entry(_cleanup_evidence=cleanup_evidence, **kwargs)
+        if cleanup_evidence['clean'] is True:
+            guard.release_clean(service_stopped=True, owner_stopped=True,
+                                owner_owned=False, control_stopped=True)
+        if type(result) is not int or result != 0 or cleanup_evidence['clean'] is not True:
+            return 2
+        return result
+    finally:
+        guard.abandon()
+
+
 def _fixed_child_main(argv):
     """Route fixed parent, owner and local-query flags; all other inputs refuse."""
     local = (len(argv) == 7 and argv[0] == '--mind-local-query'
@@ -2407,16 +2433,16 @@ def _fixed_child_main(argv):
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
         if local_owner_path:
-            return _local_candidate_owner_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
+            return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],
                 policy_sha256=argv[4], approval_reference_sha256=argv[6])
         if local_owner:
-            return _local_candidate_owner_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
+            return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_sha256=argv[2],
                 approval_reference_sha256=argv[4])
         if local:
             _startup_scope_for_lane(argv[6])
-            return _local_query_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
+            return _guarded_local_entry(_local_query_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, lane=argv[6],
                 policy_sha256=argv[2], approval_reference_sha256=argv[4])
         if argv == ['--parent-control']:

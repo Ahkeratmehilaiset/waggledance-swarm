@@ -501,7 +501,7 @@ class _PrivateBinding:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result
 
-    def _immutable_checkpoint(self, frozen):
+    def _immutable_checkpoint(self, frozen, *, source_budget=None):
         """Check controls and source identity without rehashing the prefix."""
         if self.__snapshot != frozen or _bundle_inputs(self.__bundle, self.__manifest) != self.__controls:
             raise ValueError('binding_changed')
@@ -530,7 +530,7 @@ class _PrivateBinding:
         with bridge._open_log(source) as stream:
             length = prefix._fence(stream, source, sidecar, cursor.file_identity, cursor.offset)
             stream.seek(cursor.offset - 1)
-            if stream.read(1) != b'\n':
+            if prefix._budgeted_read(stream, 1, source_budget) != b'\n':
                 raise ValueError('incomplete_cursor')
             prefix._fence(stream, source, sidecar, cursor.file_identity, length)
         if _bundle_inputs(self.__bundle, self.__manifest) != self.__controls:
@@ -1796,12 +1796,34 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
     return result
 
 
+_STARTUP_OWNER_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
+_STARTUP_PREWARM_SOURCE_READ_LIMIT = 2 * 1024 * 1024 * 1024
+_STARTUP_OWNER_SOURCE_BUDGET_ENABLED = False  # WIP: integrated accounting not yet verified.
+
+
+class _StartupSourceBudgetRefused(ValueError):
+    pass
+
+
+def _startup_owner_source_budget(snapshot):
+    """Preflight known worst-case reads without touching the shared owner."""
+    cursor = snapshot['messages']['end_cursor']
+    offset = cursor.offset
+    # Three prefix hashes, three maximum-sized selected rows with their
+    # boundary bytes, and three rotation source-check bytes.
+    if type(offset) is not int or offset <= 0:
+        raise ValueError('source_budget')
+    if 3 * offset + 3 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
+        raise _StartupSourceBudgetRefused('source_budget')
+    return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
+
+
 class _RetainedFlatQueryState:
     """One owner's verified flat rows and selected-row gate, retained in memory."""
     __slots__ = ('_owner', '_generation', '_handler', '_memory', '_flat', '_snapshot',
                  '_source_owner', '_records', '_policy_pin', '_binding_pin', '_pid')
 
-    def __init__(self, owner):
+    def __init__(self, owner, *, source_budget=None):
         from tools import wd_mind_content_snapshot_package as package
         generation = owner._generation
         binding, snapshot, handler = generation
@@ -1814,11 +1836,13 @@ class _RetainedFlatQueryState:
         owner._check_factory()
         owner._check_policy_anchor()
         policy_pin = _local_generation_policy_pin(owner)
-        source_owner = package.create_consumer_flat_source_owner(enabled=True,
-            bundle_root=str(binding._PrivateBinding__bundle),
+        source_args = dict(enabled=True, bundle_root=str(binding._PrivateBinding__bundle),
             expected_manifest_sha256=binding._PrivateBinding__manifest, snapshot=snapshot,
             flat_manifest_bytes=memory.manifest, flat_manifest_sha256=reader._sha(memory.manifest),
             ids=memory.ids, vectors=memory.vectors, encoder_binding_bytes=memory.encoder_binding)
+        if source_budget is not None:
+            source_args['source_budget'] = source_budget
+        source_owner = package.create_consumer_flat_source_owner(**source_args)
         projection, _, _ = source_owner._gate.verify_snapshot(source_owner._snapshot)
         records = {row['record_id']:row for row in projection['messages']['records']}
         if tuple(sorted(records)) != memory.ids or len(records) != len(projection['messages']['records']):
@@ -1861,7 +1885,7 @@ class _RetainedFlatQueryState:
         _, context, _ = consumer._gate.verify_snapshot(self._snapshot)
         return context
 
-    def _prefix(self, context):
+    def _prefix(self, context, *, source_budget=None):
         source = Path(context['messages']['source_path'])
         sidecar = Path(context['messages']['generation_path'])
         cursor = context['messages']['end_cursor']
@@ -1873,7 +1897,7 @@ class _RetainedFlatQueryState:
             digest = hashlib.sha256()
             remaining = cursor.offset
             while remaining:
-                block = stream.read(min(1024 * 1024, remaining))
+                block = absent._budgeted_read(stream, min(1024 * 1024, remaining), source_budget)
                 if not block:
                     raise ValueError('short_prefix')
                 digest.update(block)
@@ -1890,7 +1914,9 @@ class _RetainedFlatQueryState:
         if self._handler._retained is not self:
             raise ValueError('retained_owner_changed')
         context = self._controls()
-        before = self._prefix(context)
+        source_budget = getattr(self._owner, '_source_budget', None)
+        before = (self._prefix(context) if source_budget is None else
+                  self._prefix(context, source_budget=source_budget))
         when = reader.dt.datetime.now(reader.dt.timezone.utc)
         memory, records = self._memory, self._records
         eligible = []
@@ -1924,8 +1950,13 @@ class _RetainedFlatQueryState:
                       'doc_id_sha256':reader._sha(key.encode()),
                       'source_event_sha256':records[key]['provenance']['source_event_ref']}
                      for key, _, _, _ in selected]
-        resolved = (self._source_owner.resolve(proposals=proposals, lane=lane, scope=scope)['results']
-                    if proposals else [])
+        if proposals:
+            resolve_args = dict(proposals=proposals, lane=lane, scope=scope)
+            if source_budget is not None:
+                resolve_args['source_budget'] = source_budget
+            resolved = self._source_owner.resolve(**resolve_args)['results']
+        else:
+            resolved = []
         if len(resolved) != len(selected):
             raise ValueError('retained_resolution')
         hits = []
@@ -1944,7 +1975,8 @@ class _RetainedFlatQueryState:
                 'source_offset':entry['offset'], 'source_length':entry['length'],
                 'chunk_index':record['provenance']['chunk_index']})
         context = self._controls()
-        after = self._prefix(context)
+        after = (self._prefix(context) if source_budget is None else
+                 self._prefix(context, source_budget=source_budget))
         if (before[0] != after[0] or after[1] < before[1]
                 or (after[1] == before[1] and after[2] != before[2])):
             raise ValueError('source_changed_during_query')
@@ -2617,7 +2649,8 @@ class _SingleManifestOwner:
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
-                 '_rotation_type', '_vector_cache_enabled', '_cache_status')
+                 '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget',
+                 '_prewarm_generation')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
                  vector_cache_enabled=False):
@@ -2640,6 +2673,8 @@ class _SingleManifestOwner:
         self._rotation_type = None
         self._vector_cache_enabled = vector_cache_enabled
         self._cache_status = 'NOT_STARTED' if vector_cache_enabled else 'DISABLED'
+        self._source_budget = None
+        self._prewarm_generation = None
 
     @property
     def _binding(self):
@@ -2706,7 +2741,10 @@ class _SingleManifestOwner:
         self._check_factory()
         self._check_policy_anchor()
         snapshot = self._snapshot
-        self._binding._immutable_checkpoint(snapshot)
+        if self._source_budget is None:
+            self._binding._immutable_checkpoint(snapshot)
+        else:
+            self._binding._immutable_checkpoint(snapshot, source_budget=self._source_budget)
         self._check_factory()
         return snapshot['projection_sha256']
 
@@ -2809,9 +2847,10 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return {'schema':'wd.mind-flat-owner-refresh.v1', 'status':'REFRESHED', 'authority':'none'}
 
-    def _ensure_retained_locked(self):
+    def _ensure_retained_locked(self, *, source_budget=None):
         if self._retained is None:
-            retained = _RetainedFlatQueryState(self)
+            retained = (_RetainedFlatQueryState(self) if source_budget is None else
+                        _RetainedFlatQueryState(self, source_budget=source_budget))
             self._handler._retained = retained
             self._retained = retained
         if (type(self._retained) is not _RetainedFlatQueryState
@@ -3209,6 +3248,11 @@ class _SingleManifestOwner:
                 if self._vector_cache_enabled:
                     self._cache_status = self._handler._memory.cache_status
                 self._check_factory()
+                if _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+                    self._source_budget = prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
+                    self._ensure_retained_locked(source_budget=self._source_budget)
+                    self._prewarm_generation = self._generation
+                    self._source_budget = None
                 self._state = 'READY'
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
                 self._launch_cancel.set()
@@ -3326,12 +3370,16 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result
 
-    def _check_candidate_delivery(self):
+    def _check_candidate_delivery(self, *, source_budget=None):
         retained = self._retained
         if (type(retained) is not _RetainedFlatQueryState or self._handler is None
                 or self._handler._retained is not retained):
             raise ValueError('retained_binding')
-        retained._prefix(retained._controls())
+        context = retained._controls()
+        if source_budget is None:
+            retained._prefix(context)
+        else:
+            retained._prefix(context, source_budget=source_budget)
 
     def _candidate_request(self, request, *, located):
         expected = 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1'
@@ -3341,6 +3389,10 @@ class _SingleManifestOwner:
                 or not reader._hex(request['nonce']) or request['lane'] not in self._lanes
                 or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        # Both candidate protocols stay unavailable until accounting across
+        # the owner and rotation callback has been verified end to end.
+        if not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
         frozen = dict(request, schema='wd.mind-pipe-request.v1')
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
@@ -3348,17 +3400,27 @@ class _SingleManifestOwner:
         try:
             if self._state != 'READY' or self._handler is None:
                 raise ValueError('owner_not_ready')
+            if self._prewarm_generation is not self._generation:
+                raise ValueError('prewarm_unavailable')
             checking = True
+            try:
+                self._source_budget = _startup_owner_source_budget(self._snapshot)
+            except _StartupSourceBudgetRefused:
+                checking = False
+                raise
             self._check_factory_or_hold()
             self._check_policy_anchor()
-            self._ensure_retained_locked()
+            # This path may never lazily rebuild retained state: prewarm has a
+            # separate allowance and finished before this generation was ready.
+            if self._retained is None or self._handler._retained is not self._retained:
+                raise ValueError('prewarm_changed')
             response = map_pipe_candidates(enabled=True, handler=self._handler, request=frozen,
                                            _include_locations=located)
             self._check_factory_or_hold()
             self._check_policy_anchor()
             # The caller can mutate its original dict during the query. Complete
             # all source/control checks before refusing that caller-only error.
-            self._check_candidate_delivery()
+            self._check_candidate_delivery(source_budget=self._source_budget)
             self._check_factory_or_hold()
             self._check_policy_anchor()
             try:
@@ -3379,6 +3441,8 @@ class _SingleManifestOwner:
                 if self._handler is not None:
                     self._handler._retained = None
         finally:
+            if self._state == 'READY':
+                self._source_budget = None
             self._lock.release()
         if pending is not None:
             raise pending from None

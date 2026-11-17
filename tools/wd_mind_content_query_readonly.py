@@ -653,7 +653,7 @@ _REQUIRED_CODE = {
     "tools/wd_bridge_mind.py": "8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211",
     "waggledance/core/bridge_log_reader.py": "1949e26526153363d8c19f5051f636a646bb6839758d779c904f1eab72c5f49e",
     "tools/wd_mind_content_prefix_readonly.py": "264696c1c315e0a87304330fd83829f3bf102ca2c538a69656e193aa127a4dd3",
-    "tools/wd_mind_absent_generation_prefix_readonly.py": "1eba6403ac12765110c22cd06d2cf3cb1b9bb97e73474d35d9d899d1d4ecb5e9",
+    "tools/wd_mind_absent_generation_prefix_readonly.py": "638c2ac1468e2d7b6f1b96dec4e0c2ef8fb7306a2a969c02ee857cf8b1c46056",
     "tools/bridge_compact_view.py": "c808da1b1dd8f4e0220f8ffce730963455d0a706c2b4f1dd6387e450d5c84c83",
     "waggledance/__init__.py": "a48c64790f6d239f53960e5011fe87129555d7978197e9f0d0b43ef3b93d5e82",
     "waggledance/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -1041,7 +1041,7 @@ def _record(source_ref, fields, chunks, index):
                            "tier": {"source_type": "bridge_event"}, "available_utc": fields["available"]}}
 
 
-def _projection(context, *, complete_records=False):
+def _projection(context, *, complete_records=False, source_budget=None):
     prefix = _pinned_dependency("tools.wd_mind_content_prefix_readonly", "tools/wd_mind_content_prefix_readonly.py",
                                 ("read_prefix_rows", "read_complete_prefix_rows"))
     source, policy = context["messages"], context["policy"]
@@ -1050,13 +1050,18 @@ def _projection(context, *, complete_records=False):
         absent = _pinned_dependency("tools.wd_mind_absent_generation_prefix_readonly",
                                     "tools/wd_mind_absent_generation_prefix_readonly.py",
                                     ("read_complete_generationless_prefix_rows",))
-        rows = absent.read_complete_generationless_prefix_rows(
-            source["source_path"], source["generation_path"], source["end_cursor"],
-            context["decision"]["source_prefix"]["sha256"])
+        args = (source["source_path"], source["generation_path"], source["end_cursor"],
+                context["decision"]["source_prefix"]["sha256"])
+        rows = (absent.read_complete_generationless_prefix_rows(*args) if source_budget is None else
+                absent.read_complete_generationless_prefix_rows(*args, source_budget=source_budget))
     elif all_tasks:
+        if source_budget is not None:
+            raise ValueError('source_budget_unsupported')
         rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
                                       context["decision"]["source_prefix"]["sha256"], None, scope="all_tasks_v1")
     else:
+        if source_budget is not None:
+            raise ValueError('source_budget_unsupported')
         rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
                                       context["decision"]["source_prefix"]["sha256"], set(policy["approved_tasks"]))
     records, refused, record_bytes = [], {}, 0
@@ -1126,7 +1131,7 @@ def _verified(snapshot):
     return projection, context, report
 
 
-def _verified_complete(snapshot):
+def _verified_complete(snapshot, *, source_budget=None):
     """Re-derive and compare an explicit all-tasks snapshot without count caps.
 
     This is an in-memory consistency check, not sender authentication. A
@@ -1142,7 +1147,8 @@ def _verified_complete(snapshot):
     if type(raw) is not bytes or not raw or not _hex(digest) or not hmac.compare_digest(_sha(raw), digest):
         raise ValueError("invalid_projection_pin")
     context = _inputs(inputs, complete_source=True)
-    projection = _projection(context, complete_records=True)
+    projection = (_projection(context, complete_records=True) if source_budget is None else
+                  _projection(context, complete_records=True, source_budget=source_budget))
     if not hmac.compare_digest(_serialized(projection), raw):
         raise ValueError("snapshot_mismatch")
     report = {"status": "MATCH", "projection_sha256": digest,
@@ -2470,7 +2476,7 @@ def _narrow_fence(stream, source, sidecar, cursor, bridge, absent):
         raise ValueError('generation_changed')
 
 
-def _narrow_row_index(context, references):
+def _narrow_row_index(context, references, *, source_budget=None):
     """Scan and hash the entire prefix during build; retain only row locations."""
     bridge, absent = _narrow_dependencies()
     source = Path(context['messages']['source_path'])
@@ -2482,7 +2488,8 @@ def _narrow_row_index(context, references):
         _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
         while offset < cursor.offset:
             remaining = cursor.offset - offset
-            line = stream.readline(min(remaining, 4 * 1024 * 1024) + 1)
+            line = absent._budgeted_read(stream, min(remaining, 4 * 1024 * 1024) + 1,
+                                         source_budget, line=True)
             if (not line or len(line) > remaining or len(line) > 4 * 1024 * 1024
                     or not line.endswith(b'\n')):
                 raise ValueError('row_bounds')
@@ -2615,7 +2622,7 @@ class _NarrowReadGate:
                   'operator_scope_authorization': 'UNKNOWN', 'required_release_task_list_sha256': None}
         return (_thaw_json(projection) if _return_projection else projection), context, report
 
-    def _resolve(self, results, query_utc, snapshot):
+    def _resolve(self, results, query_utc, snapshot, *, source_budget=None):
         when = _utc(query_utc) - dt.timedelta(seconds=1)
         if type(results) is not list or len(results) > 100:
             raise ValueError('results')
@@ -2647,10 +2654,10 @@ class _NarrowReadGate:
                 entry = manifest['entries'][ref]
                 if entry['offset']:
                     stream.seek(entry['offset'] - 1)
-                    if stream.read(1) != b'\n':
+                    if absent._budgeted_read(stream, 1, source_budget) != b'\n':
                         raise ValueError('line_start')
                 stream.seek(entry['offset'])
-                line = stream.read(entry['length'])
+                line = absent._budgeted_read(stream, entry['length'], source_budget)
                 if (len(line) != entry['length'] or not line.endswith(b'\n') or b'\n' in line[:-1]
                         or not hmac.compare_digest(_sha(line), entry['raw_sha256'])):
                     raise ValueError('row_changed')

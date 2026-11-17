@@ -2417,6 +2417,79 @@ def _guarded_local_entry(entry, **kwargs):
         guard.abandon()
 
 
+def _load_pinned_canonical_child(bundle, expected_manifest_sha256):
+    """Load verified bytes under one package identity before owner admission.
+
+    The caller independently pins the manifest. Same-user path races and
+    caller authentication remain UNKNOWN; this is not a sandbox.
+    """
+    names = ('tools', 'tools.wd_mind_runtime_child')
+    inserted = []
+    try:
+        if (not isinstance(bundle, Path) or not bundle.is_absolute()
+                or type(expected_manifest_sha256) is not str
+                or not _HEX.fullmatch(expected_manifest_sha256)
+                or any(name in sys.modules for name in names)):
+            raise ValueError('canonical_input')
+
+        def read_regular(path, limit):
+            before = os.lstat(path)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or getattr(before, 'st_file_attributes', 0) & 0x400):
+                raise ValueError('canonical_file')
+            with path.open('rb') as stream:
+                opened = os.fstat(stream.fileno())
+                if ((opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                        or opened.st_nlink != 1):
+                    raise ValueError('canonical_identity')
+                raw = stream.read(limit + 1)
+                after = os.fstat(stream.fileno())
+            if (len(raw) > limit or (after.st_dev, after.st_ino, after.st_size)
+                    != (opened.st_dev, opened.st_ino, opened.st_size)
+                    or len(raw) != opened.st_size):
+                raise ValueError('canonical_changed')
+            return raw
+
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('canonical_duplicate')
+                result[key] = value
+            return result
+
+        manifest_raw = read_regular(bundle / 'deployment-manifest.json', 4 * 1024 * 1024)
+        if not hmac.compare_digest(hashlib.sha256(manifest_raw).hexdigest(), expected_manifest_sha256):
+            raise ValueError('canonical_manifest')
+        manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=unique)
+        paths = ('tools-bootstrap/tools/__init__.py', 'tools-bootstrap/tools/wd_mind_runtime_child.py')
+        source_paths = tuple(bundle.joinpath(*name.split('/')) for name in paths)
+        if not os.path.samefile(source_paths[1], Path(__file__)):
+            raise ValueError('canonical_script')
+        raw_files = tuple(read_regular(path, 8 * 1024 * 1024) for path in source_paths)
+        for name, raw in zip(paths, raw_files):
+            digest = manifest['files'][name]
+            if (type(digest) is not str or not _HEX.fullmatch(digest.lower())
+                    or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), digest.lower())):
+                raise ValueError('canonical_pin')
+
+        for name, path, raw in zip(names, source_paths, raw_files):
+            spec = importlib.util.spec_from_file_location(name, path,
+                submodule_search_locations=[str(path.parent)] if name == 'tools' else None)
+            if spec is None or spec.loader is None:
+                raise ValueError('canonical_spec')
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            inserted.append(name)
+            exec(compile(raw, str(path), 'exec'), module.__dict__)
+        setattr(sys.modules['tools'], 'wd_mind_runtime_child', sys.modules[names[1]])
+        return sys.modules[names[1]]
+    except BaseException:
+        for name in reversed(inserted):
+            sys.modules.pop(name, None)
+        raise LaunchRefused('canonical_child_refused') from None
+
+
 def _fixed_child_main(argv):
     """Route fixed parent, owner and local-query flags; all other inputs refuse."""
     local = (len(argv) == 7 and argv[0] == '--mind-local-query'
@@ -2436,6 +2509,9 @@ def _fixed_child_main(argv):
         if not _HEX.fullmatch(expected):
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
+        if __name__ == '__main__':
+            canonical = _load_pinned_canonical_child(Path(bundle), expected)
+            return canonical._fixed_child_main(argv)
         if local_owner_path:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],

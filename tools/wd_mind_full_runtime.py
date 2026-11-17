@@ -2377,20 +2377,20 @@ class _SingleManifestOwner:
         if enabled is not True or not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         previous, staged, generation, accepted, pending = self._generation, None, None, False, None
-        old_handler, handler_locked, rotator_locked = None, False, False
+        old_handler = self._handler if self._state == 'READY' else None
+        handler_locked, rotator_locked = False, False
         old_rotation_snapshot = old_adapter_snapshot = None
+        if type(old_handler) is _FlatRequestHandler:
+            if not old_handler._lock.acquire(blocking=False):
+                # Contention is refused before changing generation or state.
+                self._lock.release()
+                raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            handler_locked = True
         try:
             if self._state != 'READY':
                 raise ValueError('owner_not_ready')
-            old_handler = self._handler
-            if type(old_handler) is not _FlatRequestHandler:
+            if type(old_handler) is not _FlatRequestHandler or not handler_locked:
                 raise ValueError('refresh_handler')
-            if not old_handler._lock.acquire(blocking=False):
-                # A previously issued lane view may still hold this lock.
-                # Treat that normal contention as a caller-only refusal.
-                old_handler = None
-                raise _GenerationInputRefused('mind_full_runtime_refused')
-            handler_locked = True
             if old_handler._pending_rotator is not None or old_handler._refresh_controller is not None:
                 raise ValueError('refresh_handler_busy')
             self._state = 'HOLD'
@@ -2427,10 +2427,6 @@ class _SingleManifestOwner:
             self._retained = None
             self._state = 'READY'
             accepted = True
-        except _GenerationInputRefused:
-            # The old handler remains intact when another caller merely owns
-            # its lock; no new snapshot or worker has been touched.
-            pass
         except BaseException as exc:
             self._generation = previous
             if rotator_locked:

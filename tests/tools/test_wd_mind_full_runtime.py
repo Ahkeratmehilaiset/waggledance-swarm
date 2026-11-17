@@ -2120,6 +2120,10 @@ def test_single_manifest_owner_retains_worker_when_adapter_is_cancelled(tmp_path
     with pytest.raises(signal):
         owner.start()
     assert owner.status() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    # A signalled launch thread can still be completing its finally block.
+    # STOPPED is valid only after that owned thread is proven to have exited.
+    owner._launch_thread.join(timeout=5)
+    assert not owner._launch_thread.is_alive()
     assert owner.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
     assert calls == [True]
 

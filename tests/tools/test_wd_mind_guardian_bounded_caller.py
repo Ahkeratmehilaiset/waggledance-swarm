@@ -86,6 +86,40 @@ def test_invalid_and_blocked_submits_do_not_consume_nonce():
     assert NONCE in caller._used_nonces
 
 
+def test_unpolled_expired_result_does_not_block_next_query(monkeypatch):
+    caller = module._BoundedCaller(True, MANIFEST)
+    caller._state = 'READY'
+    assert caller.attach(lane=LANE, session=SESSION)
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 10.0)
+    assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=1)['state'] == 'PENDING'
+    # Simulate an already-completed, unconsumed result without a thread or pipe.
+    with caller._lock:
+        caller._ticket['result'] = {'state': 'ABSTAIN'}
+        caller._state = 'READY'
+        caller._query = None
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 11.0)
+    assert caller.submit(lane=LANE, session=SESSION, nonce='1' * 64, budget_seconds=1)['state'] == 'PENDING'
+
+
+def test_submit_does_not_discard_live_or_unexpired_ticket(monkeypatch):
+    caller = module._BoundedCaller(True, MANIFEST)
+    caller._state = 'READY'
+    assert caller.attach(lane=LANE, session=SESSION)
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 10.0)
+    assert caller.submit(lane=LANE, session=SESSION, nonce=NONCE, budget_seconds=1)['state'] == 'PENDING'
+    with caller._lock:
+        original = caller._ticket
+        caller._ticket['result'] = {'state': 'ABSTAIN'}
+        caller._state = 'READY'
+    assert caller.submit(lane=LANE, session=SESSION, nonce='1' * 64, budget_seconds=1)['state'] == 'WITHOUT_MIND'
+    assert caller._ticket is original and not original['expired']
+    with caller._lock:
+        caller._query = object()
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 11.0)
+    assert caller.submit(lane=LANE, session=SESSION, nonce='1' * 64, budget_seconds=1)['state'] == 'WITHOUT_MIND'
+    assert caller._ticket is original and not original['expired']
+
+
 @pytest.fixture
 def transport(monkeypatch):
     import multiprocessing.connection as connection

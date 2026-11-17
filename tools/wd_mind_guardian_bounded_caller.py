@@ -101,8 +101,13 @@ class _BoundedCaller:
             return {'state':'WITHOUT_MIND'}
         try:
             if (not self._enabled or self._stop.is_set() or self._state != 'READY'
-                    or self._ticket is not None or (lane, session) != (self._lane, self._session)):
+                    or (lane, session) != (self._lane, self._session)):
                 return {'state':'WITHOUT_MIND'}
+            if self._ticket is not None:
+                if self._query is not None or started < self._ticket['deadline']:
+                    return {'state':'WITHOUT_MIND'}
+                self._ticket['expired'], self._ticket['result'] = True, None
+                self._ticket = None
             if nonce in self._used_nonces or len(self._used_nonces) >= 1024:
                 return {'state':'REFUSED'}
             scope = 'shared' if lane in ('claude-rco-1', 'claude-rco-2') else 'own'

@@ -82,6 +82,32 @@ def test_cache_runtime_content_ignores_generation_but_not_tokenizer():
     assert fingerprint(manifest) != original
 
 
+def test_cache_requires_complete_screened_old_prefix_set(monkeypatch):
+    import struct
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(reader, 'decode_text', lambda value: value)
+    old = {'record_id': 'old', 'stored_text': 'synthetic old'}
+    new = {'record_id': 'new', 'stored_text': 'synthetic new'}
+    previous = {'messages': {'records': [old]}}
+    current = {'messages': {'records': [old, new]}}
+    monkeypatch.setattr(runtime, '_cache_old_projection', lambda snapshot, offset, sha: previous)
+    snapshot = {'messages': {'end_cursor': SimpleNamespace(offset=20)}}
+    key, passage = runtime._cache_record_keys(old)
+    vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+    binding = {'prefix_offset': 10, 'prefix_sha256': 'a' * 64,
+               'projection_sha256': runtime._cache_projection_sha256(previous)}
+    result = SimpleNamespace(binding=binding, rows=((key, passage, vector),))
+    assert runtime._cache_verified_reusable(snapshot, current, {'old': old, 'new': new}, result) == {'old': vector}
+    result.rows = ()
+    with pytest.raises(ValueError, match='cache_record_set_changed'):
+        runtime._cache_verified_reusable(snapshot, current, {'old': old, 'new': new}, result)
+    result.rows = ((key, passage, vector),)
+    binding['projection_sha256'] = '0' * 64
+    with pytest.raises(ValueError, match='cache_projection_changed'):
+        runtime._cache_verified_reusable(snapshot, current, {'old': old, 'new': new}, result)
+
+
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     """Constructing a disabled/default owner must not start a worker."""
     from tools import wd_mind_full_runtime as runtime

@@ -1210,6 +1210,41 @@ def _cache_vectors_from_rows(by_id, rows):
     return reusable
 
 
+def _cache_old_projection(snapshot, offset, prefix_sha256):
+    """Re-screen the old prefix with the current, independently pinned policies."""
+    if (type(snapshot) is not dict or type(offset) is not int or offset < 0
+            or not reader._hex(prefix_sha256)):
+        raise ValueError('cache_old_prefix')
+    inputs = dict(snapshot)
+    inputs.pop('projection_bytes')
+    inputs.pop('projection_sha256')
+    inputs['messages'] = dict(inputs['messages'])
+    cursor = inputs['messages']['end_cursor']
+    if offset > cursor.offset:
+        raise ValueError('cache_old_prefix')
+    inputs['messages']['end_cursor'] = type(cursor)(offset, cursor.file_identity, cursor.generation)
+    decision = reader._pinned(inputs['decision_bytes'], inputs['decision_sha256'])
+    decision['source_prefix'] = {'offset': offset, 'sha256': prefix_sha256, 'generation': cursor.generation}
+    inputs['decision_bytes'] = reader._canonical(decision)
+    inputs['decision_sha256'] = reader._sha(inputs['decision_bytes'])
+    return reader.rederive_complete_message_projection(**inputs)
+
+
+def _cache_verified_reusable(snapshot, projection, by_id, cache_result):
+    """Require the complete old screened record set before using any vector."""
+    stored, rows = cache_result.binding, cache_result.rows
+    offset, old_sha = stored['prefix_offset'], stored['prefix_sha256']
+    cursor = snapshot['messages']['end_cursor']
+    old_projection = projection if offset == cursor.offset else _cache_old_projection(snapshot, offset, old_sha)
+    if not hmac.compare_digest(_cache_projection_sha256(old_projection), stored['projection_sha256']):
+        raise ValueError('cache_projection_changed')
+    old_records = old_projection['messages']['records']
+    old_keys = sorted(_cache_record_keys(record)[0] for record in old_records)
+    if (len(set(old_keys)) != len(old_keys) or tuple(old_keys) != tuple(row[0] for row in rows)):
+        raise ValueError('cache_record_set_changed')
+    return _cache_vectors_from_rows(by_id, rows)
+
+
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
                                  prior_memory=None):

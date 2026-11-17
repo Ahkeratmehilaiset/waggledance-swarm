@@ -1286,6 +1286,14 @@ class _PrivateVectorCache:
         self._verify()
         return value
 
+    def preflight(self):
+        self._verify()
+        status = self._module.preflight(self._path)
+        self._verify()
+        if status not in ('MISSING', 'PRESENT'):
+            raise ValueError('cache_preflight')
+        return status
+
     def write(self, binding, rows):
         self._verify()
         self._module.write_cache(self._path, binding, rows)
@@ -2582,7 +2590,7 @@ class _SingleManifestOwner:
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
-                 '_rotation_type', '_vector_cache_enabled')
+                 '_rotation_type', '_vector_cache_enabled', '_cache_status')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
                  vector_cache_enabled=False):
@@ -2604,6 +2612,7 @@ class _SingleManifestOwner:
         self._rotation_anchor = None
         self._rotation_type = None
         self._vector_cache_enabled = vector_cache_enabled
+        self._cache_status = 'NOT_STARTED' if vector_cache_enabled else 'DISABLED'
 
     @property
     def _binding(self):
@@ -3072,9 +3081,8 @@ class _SingleManifestOwner:
             self._state = 'HOLD'
             owned = True if owned is True else None
         result = {'state': self._state, 'owned': owned, 'authority': 'none'}
-        if (self._vector_cache_enabled and self._state == 'READY' and self._handler is not None
-                and type(self._handler._memory) is _PrivateFlatMemory):
-            result['cache_status'] = self._handler._memory.cache_status
+        if self._vector_cache_enabled:
+            result['cache_status'] = self._cache_status
         return result
 
     def invalidate_external_policy(self):
@@ -3109,6 +3117,15 @@ class _SingleManifestOwner:
             try:
                 self._check_factory()
                 _flat_snapshot(self._binding, self._snapshot)
+                vector_cache = None
+                if self._vector_cache_enabled:
+                    try:
+                        vector_cache = _load_pinned_vector_cache(self._binding)
+                        vector_cache.preflight()
+                        self._cache_status = 'BUILDING'
+                    except BaseException:
+                        self._cache_status = 'PREFLIGHT_REFUSED'
+                        raise
                 from tools import wd_mind_e5_snapshot_adapter as adapter_module
                 bundle, manifest = self._binding._PrivateBinding__bundle, self._binding._PrivateBinding__manifest
                 if self._rotation_enabled:
@@ -3153,15 +3170,17 @@ class _SingleManifestOwner:
                         expected_manifest_sha256=manifest, client=self._client)
                 self._handler = _FlatRequestHandler(self._binding, self._snapshot, self._lane, self._lanes,
                     self._client, self._adapter, self._factory, self._timeout, self._factory._bulk,
-                    self._watcher_lease,
-                    _load_pinned_vector_cache(self._binding) if self._vector_cache_enabled else None)
+                    self._watcher_lease, vector_cache)
                 result = self._handler.build()
                 if result != {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}:
                     raise ValueError('build')
                 if (self._vector_cache_enabled and
                         (type(self._handler._memory) is not _PrivateFlatMemory
                          or self._handler._memory.cache_status not in ('HIT_STORED', 'MISS_STORED'))):
+                    self._cache_status = 'NOT_STORED'
                     raise ValueError('cache_not_stored')
+                if self._vector_cache_enabled:
+                    self._cache_status = self._handler._memory.cache_status
                 self._check_factory()
                 self._state = 'READY'
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):

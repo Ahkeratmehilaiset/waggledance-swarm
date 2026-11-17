@@ -127,11 +127,13 @@ def test_private_cache_provider_checks_module_before_and_after_io():
     from tools import wd_mind_full_runtime as runtime
     calls = []
     module = SimpleNamespace(load_cache=lambda path, binding, check: calls.append('load') or 'result',
-                             write_cache=lambda path, binding, rows: calls.append('write'))
+                             write_cache=lambda path, binding, rows: calls.append('write'),
+                             preflight=lambda path: calls.append('preflight') or 'MISSING')
     provider = runtime._PrivateVectorCache(module, 'synthetic-path', lambda: calls.append('verify'))
+    assert provider.preflight() == 'MISSING'
     assert provider.load({}, lambda *_: True) == 'result'
     provider.write({}, ())
-    assert calls == ['verify', 'load', 'verify', 'verify', 'write', 'verify']
+    assert calls == ['verify', 'preflight', 'verify', 'verify', 'load', 'verify', 'verify', 'write', 'verify']
     with pytest.raises(ValueError, match='cache_provider'):
         runtime._PrivateVectorCache(module, 'synthetic-path', None)
 
@@ -1009,6 +1011,36 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', start)
     monkeypatch.setattr(adapter_module, 'create_single_flat_adapter', lambda **kwargs: Adapter(), raising=False)
     return runtime, adapter_module, binding, factory, calls
+
+
+def test_cache_preflight_refusal_precedes_worker_launch(monkeypatch, tmp_path):
+    runtime, _, binding, factory, launches = _single_owner_synthetic(monkeypatch, tmp_path)
+    class Cache:
+        def preflight(self):
+            raise ValueError('synthetic cache root refused')
+    monkeypatch.setattr(runtime, '_load_pinned_vector_cache', lambda _: Cache())
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
+        worker_factory=factory, shutdown_timeout=0, vector_cache_enabled=True)
+    result = owner.start()
+    assert result['state'] == 'HOLD'
+    assert result['cache_status'] == 'PREFLIGHT_REFUSED'
+    assert launches == []
+
+
+def test_cache_write_failure_prevents_owner_ready(monkeypatch, tmp_path):
+    runtime, _, binding, factory, launches = _single_owner_synthetic(monkeypatch, tmp_path)
+    class Cache:
+        def preflight(self): return 'MISSING'
+    monkeypatch.setattr(runtime, '_load_pinned_vector_cache', lambda _: Cache())
+    def build(handler):
+        handler._memory = runtime._PrivateFlatMemory(binding, {}, b'', (), b'', b'', 'MISS_NOT_STORED')
+        return {'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'}
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', build)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
+        worker_factory=factory, shutdown_timeout=0, vector_cache_enabled=True)
+    result = owner.start()
+    assert result['state'] == 'HOLD' and result['cache_status'] == 'NOT_STORED'
+    assert launches == [True]
 
 
 @pytest.mark.parametrize('scenario', ['ready', 'held', 'interrupt', 'nonzero', 'client_swapped',

@@ -1078,6 +1078,66 @@ def _cache_record_keys(record):
     return reader._sha(reader._canonical(record)), reader._sha(passage.encode('utf-8'))
 
 
+_CACHE_CONTENT_PATHS = (
+    'wd-mind-runtime-manifest.json',
+    'wd-mind-interpreter-identity.json',
+    'tools-bootstrap/tools/wd_mind_e5_worker.py',
+    'tools-bootstrap/tools/wd_mind_e5_client.py',
+    'tools-bootstrap/tools/wd_mind_e5_rotating_client.py',
+    'tools-bootstrap/tools/wd_mind_e5_snapshot_adapter.py',
+    'tools-bootstrap/tools/wd_mind_runtime_bootstrap.py',
+    'tools-bootstrap/tools/wd_mind_runtime_manifest.py',
+    'tools-bootstrap/tools/wd_mind_full_runtime.py',
+)
+
+
+def _cache_content_pins(binding):
+    """Read a closed set of content-affecting pins from the verified bundle."""
+    bundle, manifest_pin = binding._PrivateBinding__bundle, binding._PrivateBinding__manifest
+    manifest_bytes = prefix._read_pinned(bundle / 'deployment-manifest.json', manifest_pin,
+                                         prefix.MAX_CONTROL_BYTES)
+    document = json.loads(manifest_bytes.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
+                          parse_constant=reader._bad_constant)
+    if type(document) is not dict or type(document.get('files')) is not dict:
+        raise ValueError('cache_manifest')
+    pins = {}
+    for relative in _CACHE_CONTENT_PATHS:
+        pin = document['files'].get(relative)
+        if not reader._hex(pin):
+            raise ValueError('cache_content_pin')
+        path = bundle.joinpath(*relative.split('/'))
+        raw = prefix._read_pinned(path, pin, 8 * 1024 * 1024)
+        if relative in ('wd-mind-runtime-manifest.json', 'wd-mind-interpreter-identity.json'):
+            pins[relative] = _cache_descriptor_content_sha(raw, relative)
+        else:
+            pins[relative] = pin
+    return pins
+
+
+def _cache_descriptor_content_sha(raw, relative):
+    """Hash descriptor file identities without binding runtime generation."""
+    document = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
+                          parse_constant=reader._bad_constant)
+    runtime = relative == 'wd-mind-runtime-manifest.json'
+    expected_keys = {'schema', 'generation', 'revision', 'files'} if runtime else {'schema', 'files'}
+    schema = 'wd.q4-runtime-manifest.v1' if runtime else 'wd.q4-interpreter-identity.v1'
+    if (type(document) is not dict or set(document) != expected_keys or document['schema'] != schema
+            or type(document['files']) is not list or not document['files']):
+        raise ValueError('cache_descriptor')
+    expected_row_keys = {'path', 'size', 'sha256'} if runtime else {'path', 'size', 'sha256', 'role'}
+    seen, rows = set(), []
+    for row in document['files']:
+        if (type(row) is not dict or set(row) != expected_row_keys or type(row['path']) is not str
+                or not row['path'] or type(row['size']) is not int or row['size'] < 0
+                or not reader._hex(row['sha256']) or row['path'].casefold() in seen
+                or (not runtime and row['role'] not in ('interpreter', 'stdlib', 'dll'))):
+            raise ValueError('cache_descriptor')
+        seen.add(row['path'].casefold())
+        rows.append(row)
+    rows.sort(key=lambda row: row['path'])
+    return reader._sha(reader._canonical({'schema': schema, 'files': rows}))
+
+
 def _cache_snapshot_binding(binding, snapshot, encoder_binding_bytes, encoder_binding_sha256):
     """Pin inputs that affect screened passages or vectors, independently of bundle ID."""
     if type(binding) is not _PrivateBinding or type(snapshot) is not dict:
@@ -1092,19 +1152,24 @@ def _cache_snapshot_binding(binding, snapshot, encoder_binding_bytes, encoder_bi
             or not all(type(item) is bytes for item in controls)
             or not reader._hex(binding._PrivateBinding__policy_pin)
             or not reader._hex(args['expected_prefix_sha256'])
+            or not reader._hex(snapshot.get('projection_sha256'))
             or snapshot['messages']['end_cursor'] != cursor):
         raise ValueError('cache_binding')
     policy = {'roster_sha256': reader._sha(controls[1]),
               'message_policy_sha256': reader._sha(controls[2]),
               'identifier_policy_sha256': binding._PrivateBinding__policy_pin,
               'scope_sha256': reader._sha(snapshot['approved_tasks_bytes'])}
-    projection_code = {'modules': reader.module_sha256s(),
+    content_pins = _cache_content_pins(binding)
+    projection_code = {'modules': reader.module_sha256s(), 'content_pins': content_pins,
                        'dependencies': reader._REQUIRED_CODE,
                        'passage_algorithm': 'passage-prefix-utf8-truncate-2000-v1'}
     return {'source_identity_sha256': reader._sha(reader._canonical(cursor.file_identity)),
             'source_generation_sha256': reader._sha(reader._canonical(cursor.generation)),
             'prefix_offset': cursor.offset, 'prefix_sha256': args['expected_prefix_sha256'],
-            'model_sha256': encoder_binding_sha256, 'policy_sha256': reader._sha(reader._canonical(policy)),
+            'projection_sha256': snapshot['projection_sha256'],
+            'model_sha256': reader._sha(reader._canonical({'encoder_binding_sha256': encoder_binding_sha256,
+                                                           'content_pins': content_pins})),
+            'policy_sha256': reader._sha(reader._canonical(policy)),
             'projection_code_sha256': reader._sha(reader._canonical(projection_code))}
 
 
@@ -1114,7 +1179,8 @@ def _cache_vectors_from_rows(by_id, rows):
         raise ValueError('cache_rows')
     current = {}
     for record_id, record in by_id.items():
-        if type(record_id) is not str or record.get('record_id') != record_id:
+        if (type(record_id) is not str or type(record) is not dict
+                or record.get('record_id') != record_id):
             raise ValueError('cache_record')
         keys = _cache_record_keys(record)
         if keys[0] in current:

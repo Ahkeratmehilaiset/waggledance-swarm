@@ -1434,7 +1434,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     cached = vector_cache.load(cache_binding, verify_old_prefix)
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
                     cache_status = 'HIT'
-                except (vector_cache._module.CacheRefused, _CacheProjectionMismatch):
+                except (vector_cache._module.CacheMiss, _CacheProjectionMismatch):
                     reusable, cache_status = {}, 'MISS'
             if prior_memory is not None:
                 # The old content is reused only after both complete source
@@ -1496,12 +1496,9 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             output = _PrivateFlatMemory(binding, frozen, reader._canonical(manifest), ids, vectors,
                                         encoder_binding_bytes, cache_status)
             if vector_cache is not None and prior_memory is None and cache_binding is not None:
-                try:
-                    cache_rows = _cache_rows_from_screened_projection(projection, ids, vectors)
-                    vector_cache.write(cache_binding, cache_rows)
-                    output.cache_status = cache_status + '_STORED'
-                except vector_cache._module.CacheRefused:
-                    output.cache_status = cache_status + '_NOT_STORED'
+                cache_rows = _cache_rows_from_screened_projection(projection, ids, vectors)
+                vector_cache.write(cache_binding, cache_rows)
+                output.cache_status = cache_status + '_STORED'
                 package._unchanged(snapshot, frozen, report, complete=True)
                 _flat_snapshot(binding, frozen)
     except BaseException as exc:

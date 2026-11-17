@@ -44,6 +44,10 @@ class CacheRefused(ValueError):
     """The whole cache is unusable; never return partial data."""
 
 
+class CacheMiss(CacheRefused):
+    """A verified missing or stale cache may be rebuilt from the source."""
+
+
 class CacheResult(NamedTuple):
     binding: object
     rows: tuple
@@ -169,8 +173,10 @@ class _Native:
         flags = 0x00200000 | (0x02000000 if directory else 0x80)
         handle = self.kernel.CreateFileW(str(path), access | 0x20000, share, None, disposition, flags, None)
         if handle == wintypes.HANDLE(-1).value:
-            if missing_ok and disposition == 3 and ctypes.get_last_error() == 2:  # ERROR_FILE_NOT_FOUND
-                return None
+            if not directory and disposition == 3 and ctypes.get_last_error() == 2:  # ERROR_FILE_NOT_FOUND
+                if missing_ok:
+                    return None
+                raise CacheMiss("missing")
             raise CacheRefused("open")
         try:
             info = _HandleInfo()
@@ -423,7 +429,12 @@ def load_cache(path, expected_binding, verify_prefix):
         with _Directory(path.parent) as directory:
             # Do not share write/delete while parsing: a concurrent writer must
             # either publish before this open or wait until this read closes.
-            fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
+            try:
+                fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
+            except FileNotFoundError:
+                # A synthetic file opener can surface the OS exception rather
+                # than the native wrapper's typed missing-cache result.
+                raise CacheMiss("missing") from None
             with os.fdopen(fd, "rb") as source:
                 initial = source.read(len(_MAGIC) + 4)
                 if len(initial) != len(_MAGIC) + 4 or not initial.startswith(_MAGIC):
@@ -444,13 +455,13 @@ def load_cache(path, expected_binding, verify_prefix):
                 stored = _binding(header["binding"])
                 for key in _FIELDS - {"prefix_offset", "prefix_sha256", "projection_sha256"}:
                     if stored[key] != expected[key]:
-                        raise CacheRefused("binding_changed")
+                        raise CacheMiss("binding_changed")
                 if (stored["prefix_offset"] > expected["prefix_offset"]
                         or (stored["prefix_offset"] == expected["prefix_offset"]
                             and (stored["prefix_sha256"] != expected["prefix_sha256"]
                                  or stored["projection_sha256"] != expected["projection_sha256"]))
                         or verify_prefix(stored["prefix_offset"], stored["prefix_sha256"]) is not True):
-                    raise CacheRefused("prefix_changed")
+                    raise CacheMiss("prefix_changed")
                 rows, payload_hash, vector_hash, record_set = [], hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
                 for _ in range(header["count"]):
                     block = source.read(_ROW_SIZE)
@@ -463,9 +474,9 @@ def load_cache(path, expected_binding, verify_prefix):
                 if (source.read(1) or payload_hash.hexdigest() != header["payload_sha256"]
                         or vector_hash.hexdigest() != header["vectors_sha256"]
                         or record_set.hexdigest() != header["record_set_sha256"]):
-                    raise CacheRefused("payload")
+                    raise CacheMiss("payload")
                 if verify_prefix(stored["prefix_offset"], stored["prefix_sha256"]) is not True:
-                    raise CacheRefused("prefix_changed")
+                    raise CacheMiss("prefix_changed")
                 return CacheResult(MappingProxyType(stored), _rows(tuple(rows)), record_set.hexdigest())
     except CacheRefused:
         raise

@@ -222,6 +222,66 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
         runtime._CACHE_MODULE_ATTESTATION = previous_attestation
 
 
+@pytest.mark.parametrize('operation', ['load_cache', 'write_cache'])
+def test_cache_security_refusal_does_not_become_miss_or_memory(monkeypatch, tmp_path, operation):
+    from tools import wd_mind_vector_cache as vector_cache
+    from test_wd_mind_cache_builder_integration import _synthetic_case
+    # The Windows checkout may use different line endings from the declared
+    # repository dependency pins. This synthetic cache test binds its fixture
+    # to actual local bytes; it is not a test of installed code provenance.
+    root = Path(reader.__file__).resolve().parents[1]
+    monkeypatch.setattr(reader, '_REQUIRED_CODE', {
+        relative: reader._sha((root / relative).read_bytes()) for relative in reader._REQUIRED_CODE
+    })
+    case = _synthetic_case(tmp_path, monkeypatch)
+    binding, _ = case.snapshot()
+    def refuse(*args, **kwargs):
+        raise vector_cache.CacheRefused('acl_not_user_only')
+    monkeypatch.setattr(vector_cache, operation, refuse)
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        case.build(binding)
+    if operation == 'load_cache':
+        assert case.passages == []
+    assert not case.cache_path.exists()
+
+
+@pytest.mark.parametrize('reason', ['missing', 'binding_changed', 'prefix_changed'])
+def test_verified_cache_miss_rebuilds_without_relaxing_refusal(monkeypatch, tmp_path, reason):
+    from tools import wd_mind_vector_cache as vector_cache
+    from test_wd_mind_cache_builder_integration import _synthetic_case
+    root = Path(reader.__file__).resolve().parents[1]
+    monkeypatch.setattr(reader, '_REQUIRED_CODE', {
+        relative: reader._sha((root / relative).read_bytes()) for relative in reader._REQUIRED_CODE
+    })
+    case = _synthetic_case(tmp_path, monkeypatch)
+    binding, _ = case.snapshot()
+    if reason != 'missing':
+        def stale(*args, **kwargs):
+            raise vector_cache.CacheMiss(reason)
+        monkeypatch.setattr(vector_cache, 'load_cache', stale)
+    memory = case.build(binding)
+    assert memory.cache_status == 'MISS_STORED'
+    assert len(case.passages) == 2 and case.cache_path.exists()
+
+
+def test_corrupt_cache_payload_rebuilds_only_after_source_verification(monkeypatch, tmp_path):
+    from test_wd_mind_cache_builder_integration import _synthetic_case
+    root = Path(reader.__file__).resolve().parents[1]
+    monkeypatch.setattr(reader, '_REQUIRED_CODE', {
+        relative: reader._sha((root / relative).read_bytes()) for relative in reader._REQUIRED_CODE
+    })
+    case = _synthetic_case(tmp_path, monkeypatch)
+    binding, _ = case.snapshot()
+    assert case.build(binding).cache_status == 'MISS_STORED'
+    raw = bytearray(case.cache_path.read_bytes())
+    raw[-1] ^= 1
+    case.cache_path.write_bytes(raw)
+    case.passages.clear()
+    binding, _ = case.snapshot()
+    assert case.build(binding).cache_status == 'MISS_STORED'
+    assert len(case.passages) == 2
+
+
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     """Constructing a disabled/default owner must not start a worker."""
     from tools import wd_mind_full_runtime as runtime

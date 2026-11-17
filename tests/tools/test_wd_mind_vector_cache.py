@@ -72,6 +72,18 @@ def test_preflight_missing_only_inside_valid_private_root_and_then_present(priva
     assert cache.preflight(path) == "PRESENT"
 
 
+def test_missing_and_stale_cache_are_typed_misses(private_dir):
+    path = private_dir / "vectors.bin"
+    with pytest.raises(cache.CacheMiss, match="missing"):
+        cache.load_cache(path, binding(), lambda *_: True)
+    cache.write_cache(path, binding(), rows())
+    changed = dict(binding(), policy_sha256="a" * 64)
+    with pytest.raises(cache.CacheMiss, match="binding_changed"):
+        cache.load_cache(path, changed, lambda *_: True)
+    with pytest.raises(cache.CacheMiss, match="prefix_changed"):
+        cache.load_cache(path, binding(), lambda *_: False)
+
+
 def test_preflight_missing_root_is_not_cache_miss(private_dir, monkeypatch):
     absent = private_dir / "unprovisioned"
     monkeypatch.setattr(cache, "_CACHE_ROOT", absent)

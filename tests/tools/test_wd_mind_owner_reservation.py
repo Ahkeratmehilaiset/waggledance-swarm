@@ -40,9 +40,27 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
     if before is not None:
         marker.write_bytes(before)
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    reads = []
     if condition == 'locked':
         import msvcrt
+        original_open, original_read = child.os.open, child.os.read
+        marker_fds = []
+        def tracked_open(path, *args, **kwargs):
+            fd = original_open(path, *args, **kwargs)
+            if Path(path) == marker: marker_fds.append(fd)
+            return fd
+        def tracked_read(fd, size):
+            if fd in marker_fds:
+                reads.append(True)
+                raise AssertionError('marker bytes must not be read without lock')
+            return original_read(fd, size)
+        monkeypatch.setattr(child.os, 'open', tracked_open)
+        monkeypatch.setattr(child.os, 'read', tracked_read)
         monkeypatch.setattr(msvcrt, 'locking', lambda *args: (_ for _ in ()).throw(OSError('private-lock-marker')))
+        def forbidden_read(self):
+            reads.append(True)
+            raise AssertionError('marker must not be read without lock')
+        monkeypatch.setattr(child._LocalOwnerReservation, '_read', forbidden_read)
     if condition == 'unreadable':
         monkeypatch.setattr(child.os, 'open', lambda *args, **kw: (_ for _ in ()).throw(PermissionError('private-open-marker')))
     output = io.BytesIO()
@@ -50,6 +68,9 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
         expected_manifest_sha256='a' * 64, include_start_diagnostics=diagnostics == 'v1',
         include_worker_stage_diagnostics=diagnostics == 'v2')
     assert result == 2
+    assert not reads
+    if condition == 'locked':
+        assert len(marker_fds) == 1
     assert (marker.read_bytes() if marker.exists() else None) == before
     assert b'private-' not in output.getvalue() and b'READY' not in output.getvalue()
     if diagnostics == 'off':
@@ -59,7 +80,8 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
             b'"index_refresh":"NOT_SCHEDULED","manifest_sha256":"' + b'a' * 64 +
             b'","schema":"wd.mind-local-owner-status.v1",'
             b'"source_authentication":"UNKNOWN","state":"HOLD"}\n')
-        reason = {'missing': 'ADMISSION_MISSING', 'reserved': 'ADMISSION_RESERVED'}.get(condition, 'ADMISSION')
+        reason = {'missing': 'ADMISSION_MISSING', 'reserved': 'ADMISSION_RESERVED',
+                  'locked': 'ADMISSION_LOCK_UNAVAILABLE'}.get(condition, 'ADMISSION')
         diagnostic_wire = (b'{"authority":"none","exception_type":"LaunchRefused",'
             b'"reason":"' + reason.encode('ascii') + b'","schema":"wd.mind-local-owner-start-diagnostic.' +
             diagnostics.encode('ascii') + b'"')

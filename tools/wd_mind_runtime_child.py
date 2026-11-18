@@ -285,7 +285,13 @@ def _reserve_local_owner(root):
             raise LaunchRefused('owner_reservation_invalid')
         fd = os.open(path, os.O_RDWR | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0))
         os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, len(_OWNER_RESERVATION_MAGIC) + 1)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, len(_OWNER_RESERVATION_MAGIC) + 1)
+        except OSError:
+            # An unavailable byte lock may have several causes; it is not
+            # proof that a live owner holds it. Never read an unlocked marker.
+            refusal = 'owner_reservation_lock_unavailable'
+            raise
         guard = _LocalOwnerReservation(root, path, fd,
             (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
         guard._check()
@@ -2773,7 +2779,8 @@ def _guarded_local_entry(entry, **kwargs):
                 and type(manifest) is str and _HEX.fullmatch(manifest)):
             try:
                 reason = {'owner_reservation_missing':'ADMISSION_MISSING',
-                          'owner_reservation_reserved':'ADMISSION_RESERVED'}.get(str(exc), 'ADMISSION')
+                          'owner_reservation_reserved':'ADMISSION_RESERVED',
+                          'owner_reservation_lock_unavailable':'ADMISSION_LOCK_UNAVAILABLE'}.get(str(exc), 'ADMISSION')
                 _emit_preowner_diagnostic(kwargs['output_stream'], manifest, reason, 'LaunchRefused', v2)
             except Exception:
                 pass  # Output uncertainty remains a refusal, never READY.

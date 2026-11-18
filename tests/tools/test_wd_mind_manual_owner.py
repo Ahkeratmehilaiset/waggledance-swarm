@@ -13,7 +13,8 @@ import pytest
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
 @pytest.mark.parametrize(('reason', 'accepted'), [
-    ('ADMISSION_MISSING', True), ('ADMISSION_RESERVED', True), ('ADMISSION_OTHER', False),
+    ('ADMISSION_MISSING', True), ('ADMISSION_RESERVED', True),
+    ('ADMISSION_LOCK_UNAVAILABLE', True), ('ADMISSION_OTHER', False),
 ])
 @pytest.mark.parametrize('version', [1, 2])
 def test_manual_owner_accepts_reservation_diagnostic(reason, accepted, version):

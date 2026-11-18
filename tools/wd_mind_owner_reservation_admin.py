@@ -7,6 +7,8 @@ another process using the same account.
 This is a cooperating-owner guard, not an authentication boundary.  Process
 enumeration is a point-in-time observation: a legacy or same-user process may
 start after it, and a legacy interpreter at a different root is not identified.
+Hardlinks outside the runtime root to other runtime files are not exhaustively
+identified; the explicitly pinned interpreter itself is compared by file ID.
 Those risks and same-user changes remain UNKNOWN.  An uncertain observation
 always refuses.  The CLI has no synthetic-path or proof overrides.
 """

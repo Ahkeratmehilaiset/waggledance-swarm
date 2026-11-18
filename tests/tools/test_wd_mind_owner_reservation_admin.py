@@ -958,8 +958,9 @@ def test_observer_refuses_inaccessible_process_image(monkeypatch):
         admin._observe_windows()
 
 
-def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch):
-    """The vanished PID is absent later, but both snapshots contain the observer."""
+@pytest.mark.parametrize('second_has_observer', [True, False])
+def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch, second_has_observer):
+    """A vanished PID is safe to skip only after a complete second snapshot."""
     own = 91919
     monkeypatch.setattr(admin.os, 'getpid', lambda: own)
     class Function:
@@ -969,13 +970,14 @@ def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch
         def __init__(self):
             self.snapshots = 0
             self.index = 0
+            self.closed = []
             self.CreateToolhelp32Snapshot = Function(self.snapshot)
             self.Process32FirstW = Function(self.first)
             self.Process32NextW = Function(self.next)
             self.OpenProcess = Function(self.open)
             self.QueryFullProcessImageNameW = Function(lambda *a: 0)
             self.GetExitCodeProcess = Function(lambda *a: 0)
-            self.CloseHandle = Function(lambda *a: 1)
+            self.CloseHandle = Function(lambda handle: (self.closed.append(handle), 1)[1])
         def snapshot(self, *args):
             self.snapshots += 1
             self.index = 0
@@ -983,7 +985,7 @@ def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch
         def first(self, handle, pointer):
             return self.fill(handle, pointer)
         def fill(self, handle, pointer):
-            rows = (12345, own) if handle == 1 else (own,)
+            rows = (12345, own) if handle == 1 else ((own,) if second_has_observer else ())
             if self.index < len(rows):
                 entry = ctypes.cast(pointer, ctypes.POINTER(admin._ProcessEntry)).contents
                 entry.pid, entry.parent, entry.exe = rows[self.index], 44, 'synthetic.exe'
@@ -1001,7 +1003,13 @@ def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch
     kernel = Kernel()
     monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **k: kernel)
     monkeypatch.setattr(admin, '_image_or_proven_exited', lambda *_: 'C:\\synthetic\\observer.exe')
-    assert admin._windows_process_images() == ((own, 'C:\\synthetic\\observer.exe'),)
+    if second_has_observer:
+        assert admin._windows_process_images() == ((own, 'C:\\synthetic\\observer.exe'),)
+        assert kernel.closed == [1, 2, 777]
+    else:
+        with pytest.raises(ValueError, match='process_snapshot_incomplete'):
+            admin._windows_process_images()
+        assert kernel.closed == [1, 2]
     assert kernel.snapshots == 2
 
 

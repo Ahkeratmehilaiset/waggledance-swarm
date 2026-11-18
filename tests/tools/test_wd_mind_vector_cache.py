@@ -1,4 +1,4 @@
-"""Synthetic-only cache checks; pytest basetemp must be inside .codex-audit."""
+"""Synthetic-only cache checks in a test-owned .codex-audit directory."""
 import math
 import json
 import hashlib
@@ -29,11 +29,12 @@ def rows():
 def private_dir(tmp_path, monkeypatch):
     if os.name != "nt":
         pytest.skip("native Windows ACL and directory leases")
-    assert ".codex-audit" in str(tmp_path).lower()
     user = subprocess.check_output(["whoami"], text=True).strip()
-    target = tmp_path / "synthetic-vector-cache"
+    audit_root = tmp_path / ".codex-audit"
+    audit_root.mkdir()
+    target = audit_root / "synthetic-vector-cache"
     target.mkdir()
-    for directory in (tmp_path, target):
+    for directory in (audit_root, target):
         result = subprocess.run(["icacls", str(directory), "/setowner", user], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         result = subprocess.run(["icacls", str(directory), "/inheritance:r", "/grant:r",

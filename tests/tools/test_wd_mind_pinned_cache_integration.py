@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 import pytest
+from wd_mind_owned_compat import run_owned
 import test_wd_mind_full_runtime as fixtures
 
 
@@ -158,20 +159,86 @@ def _run(bundle, pin, cache_root):
     allowed = {'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'PATH', 'PATHEXT',
                'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA'}
     env = {key:value for key,value in os.environ.items() if key.upper() in allowed}
-    proc = subprocess.Popen([sys.executable, '-I', '-B', '-c', ACTOR, str(bundle), pin, str(cache_root)],
-        cwd=bundle, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    # Resolve and constrain both inputs before any child can be spawned. This
+    # is a synthetic path guard, not proof of race-free physical isolation.
+    bundle_path, cache_path = Path(bundle).resolve(strict=True), Path(cache_root).resolve(strict=True)
+    bundle_audit = next((path for path in bundle_path.parents if path.name == '.codex-audit'), None)
+    cache_audit = next((path for path in cache_path.parents if path.name == '.codex-audit'), None)
+    if (bundle_audit is None or bundle_audit != cache_audit
+            or bundle_path == cache_path or bundle_path in cache_path.parents or cache_path in bundle_path.parents):
+        raise ValueError('synthetic_audit_paths_required')
+    # Empty input closes the owned stdin pipe; interruption or timeout retains
+    # the child through exit and both output EOFs, without killing it.
+    proc = run_owned([sys.executable, '-I', '-B', '-c', ACTOR, str(bundle_path), pin, str(cache_path)],
+        cwd=bundle_path, env=env, input='', capture_output=True, timeout=90,
         text=True, encoding='utf-8', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    try:
-        output, error = proc.communicate(timeout=90)
-    except subprocess.TimeoutExpired:
-        pytest.fail(f'synthetic builder {proc.pid} remains running; no kill attempted')
-    assert proc.returncode == 0, error
-    return json.loads(output)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+
+@pytest.mark.parametrize('deadline', [False, True], ids=['success', 'deadline_owned_drain'])
+def test_pinned_driver_owns_synthetic_child_until_eof(monkeypatch, tmp_path, deadline):
+    import wd_mind_owned_compat as owned
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    bundle, cache_root = audit_root / 'bundle', audit_root / 'cache'
+    bundle.mkdir()
+    cache_root.mkdir()
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'must-not-propagate')
+    events = []
+    class Process:
+        returncode = 0
+        def communicate(self, input=None, timeout=None):
+            events.append(('communicate', input, timeout))
+            if deadline and len(events) == 2:
+                raise subprocess.TimeoutExpired('synthetic', 90)
+            return json.dumps({'result':'synthetic'}), ''
+    def spawn(argv, **kwargs):
+        events.append(('spawn', argv, kwargs))
+        assert kwargs['stdin'] is subprocess.PIPE
+        assert kwargs['stdout'] is subprocess.PIPE and kwargs['stderr'] is subprocess.PIPE
+        assert kwargs['cwd'] == bundle.resolve()
+        assert 'WD_REBOOT_EXPECTED_MANIFEST_HASH' not in kwargs['env']
+        return Process()
+    monkeypatch.setattr(owned.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(owned.time, 'sleep', lambda _seconds: None)
+    if deadline:
+        with pytest.raises(AssertionError, match='late output discarded'):
+            _run(bundle, 'a' * 64, cache_root)
+        assert len(events) == 3 and events[2][0] == 'communicate'
+    else:
+        assert _run(bundle, 'a' * 64, cache_root) == {'result':'synthetic'}
+        assert len(events) == 2
+    assert events[1][0] == 'communicate' and events[1][1] == ''
+
+
+def test_pinned_driver_rejects_non_audit_paths_before_spawn(monkeypatch, tmp_path):
+    import wd_mind_owned_compat as owned
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    audit_cache = audit_root / 'cache'
+    audit_cache.mkdir()
+    monkeypatch.setattr(owned.subprocess, 'Popen', lambda *_a, **_kw: pytest.fail('unexpected spawn'))
+    with pytest.raises(ValueError, match='synthetic_audit_paths_required'):
+        _run(ROOT, 'a' * 64, audit_cache)
+    with pytest.raises(ValueError, match='synthetic_audit_paths_required'):
+        _run(audit_cache, 'a' * 64, audit_cache)
+    nested_cache = audit_cache / 'nested'
+    nested_cache.mkdir()
+    with pytest.raises(ValueError, match='synthetic_audit_paths_required'):
+        _run(audit_cache, 'a' * 64, nested_cache)
+    different_audit_cache = tmp_path / 'other' / '.codex-audit' / 'cache'
+    different_audit_cache.mkdir(parents=True)
+    with pytest.raises(ValueError, match='synthetic_audit_paths_required'):
+        _run(audit_cache, 'a' * 64, different_audit_cache)
 
 
 @pytest.mark.parametrize('change,expected', [('unrelated','HIT_STORED'),
                                              ('model','MISS_STORED'), ('tokenizer','MISS_STORED')])
 def test_pinned_two_process_cache_binding_and_installer_uppercase(tmp_path, change, expected):
+    tmp_path = tmp_path / '.codex-audit'
+    tmp_path.mkdir()
     assert '.codex-audit' in str(tmp_path).lower()
     base, base_pin, other, other_pin = _synthetic_pair(tmp_path, change)
     cache_root = tmp_path / 'synthetic-private-cache'

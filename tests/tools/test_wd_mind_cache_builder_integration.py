@@ -139,7 +139,9 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
 
 @pytest.fixture
 def synthetic(tmp_path, monkeypatch):
-    return _synthetic_case(tmp_path, monkeypatch)
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    return _synthetic_case(audit_root, monkeypatch)
 
 
 def test_cold_warm_and_append_use_only_screened_vectors(synthetic):
@@ -287,8 +289,8 @@ def test_synthetic_process_driver_owned_eof(monkeypatch, tmp_path, deadline):
 
 
 def test_sequential_processes_reuse_then_append_without_old_reencoding(tmp_path):
-    location = tmp_path / 'synthetic-process-case'
-    location.mkdir()
+    location = tmp_path / '.codex-audit' / 'synthetic-process-case'
+    location.mkdir(parents=True)
     cold = _run_synthetic_process(location, 'cold')
     warm = _run_synthetic_process(location, 'warm')
     assert cold['pid'] != warm['pid']

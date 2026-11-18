@@ -425,10 +425,20 @@ def test_local_candidate_cli_refuses_without_partial_output(flat_consumer_case, 
 
 @pytest.fixture
 def synthetic_session_checkout_pins(monkeypatch):
-    """Use synthetic checkout bytes, not production bundle-pin evidence."""
+    """Use verified checkout bytes for synthetic tests, not production pins."""
+    _pin_verified_synthetic_checkout(monkeypatch)
+
+
+def _pin_verified_synthetic_checkout(monkeypatch):
     root = Path(content.__file__).resolve().parents[1]
-    pins = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-            for name in content._REQUIRED_CODE}
+    pins = {}
+    for name, expected in content._REQUIRED_CODE.items():
+        raw = (root / name).read_bytes()
+        raw_digest = hashlib.sha256(raw).hexdigest()
+        lf_digest = hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest()
+        if raw_digest != expected and (b'\r\n' not in raw or lf_digest != expected):
+            raise AssertionError('synthetic checkout does not match pinned bytes: ' + name)
+        pins[name] = raw_digest
     monkeypatch.setattr(content, '_REQUIRED_CODE', pins)
 
 
@@ -796,6 +806,7 @@ def test_selected_row_resolver_refuses_change_after_first_local_read(flat_consum
 
 @pytest.fixture
 def flat_consumer_case(source_fixtures, tmp_path, monkeypatch):
+    _pin_verified_synthetic_checkout(monkeypatch)
     state = {'lock': threading.Lock(), 'used': set()}
     monkeypatch.setitem(vars(builtins), '_wd_mind_flat_export_nonce_registry_v1', state)
     monkeypatch.setattr(session, '_EXPORT_NONCE_STATE', state, raising=False)

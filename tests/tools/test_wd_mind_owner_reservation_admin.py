@@ -557,6 +557,34 @@ def test_reset_after_later_boot_and_no_runtime_process(tmp_path):
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
 
 
+def test_reset_fsync_failure_reports_uncertain_without_reverting_clear(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    _reserved(marker)
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    with monkeypatch.context() as patch:
+        patch.setattr(admin.os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError('private-fsync-error')))
+        with pytest.raises(admin.ReservationAdminRefused, match='^RESET_PUBLICATION_UNCERTAIN$') as exc:
+            admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+    assert 'private-fsync-error' not in str(exc.value)
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+    guard = child._reserve_local_owner(root)
+    assert guard._read() == child._OWNER_RESERVATION_MAGIC + b'R'
+    guard.release_clean(service_stopped=True, owner_stopped=True, owner_owned=False, control_stopped=True)
+
+
+def test_reset_release_failure_before_write_is_also_uncertain(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    _reserved(marker)
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    monkeypatch.setattr(child._LocalOwnerReservation, 'release_clean',
+        lambda *a, **kw: (_ for _ in ()).throw(child.LaunchRefused('private-before-write')))
+    with pytest.raises(admin.ReservationAdminRefused, match='^RESET_PUBLICATION_UNCERTAIN$'):
+        admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
+
+
 def test_reset_rejects_future_boot(tmp_path):
     root, runtime, marker = _paths(tmp_path)
     _reserved(marker)

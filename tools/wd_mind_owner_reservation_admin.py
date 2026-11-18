@@ -40,7 +40,7 @@ class _AdminReason(Exception):
 _REASONS = frozenset({'ROOT_UNAVAILABLE', 'PRODUCTION_ROUTE_UNAVAILABLE', 'MARKER_EXISTS',
                       'MARKER_MISSING', 'MARKER_LOCK_UNAVAILABLE', 'MARKER_NOT_RESERVED',
                       'HOST_OBSERVATION_UNAVAILABLE', 'HOST_TIME_INVALID', 'REBOOT_REQUIRED',
-                      'PUBLISH_REFUSED', 'SYNTHETIC_SCOPE_REQUIRED'})
+                      'PUBLISH_REFUSED', 'SYNTHETIC_SCOPE_REQUIRED', 'RESET_PUBLICATION_UNCERTAIN'})
 
 
 _CURRENT_POINTER = Path(r'C:\Python\WD_REBOOT_STATE_CURRENT.json')
@@ -421,7 +421,12 @@ def _checked_observe(observe):
 
 
 def _marker(root, interpreter_root, *, operation, observe, interpreter=None, verify_binding=lambda: None):
-    """Synthetic seam only; CLI supplies fixed root, native observer and binding."""
+    """Synthetic seam only; CLI supplies fixed root, native observer and binding.
+
+    RESET_PUBLICATION_UNCERTAIN means the marker may already be C or may still
+    be R. Never automatically revert it or retry; inspect current ownership and
+    marker state using an independently authorized operator procedure.
+    """
     if os.name != 'nt' or operation not in ('create', 'reset'):
         raise ReservationAdminRefused('invalid_operation')
     fd = None
@@ -489,8 +494,13 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
             guard._check()
             if os.fstat(fd).st_mtime_ns != marker_time or guard._read() != child._OWNER_RESERVATION_MAGIC + b'R':
                 raise ValueError('marker_changed')
-            guard.release_clean(service_stopped=True, owner_stopped=True,
-                                owner_owned=False, control_stopped=True)
+            try:
+                guard.release_clean(service_stopped=True, owner_stopped=True,
+                                    owner_owned=False, control_stopped=True)
+            except Exception:
+                # C can be visible before fsync or the post-write check fails.
+                # The wrapped guard error does not reveal whether write began.
+                raise _AdminReason('RESET_PUBLICATION_UNCERTAIN') from None
             fd = None
     except _AdminReason as exc:
         reason = str(exc)

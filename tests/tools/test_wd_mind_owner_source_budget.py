@@ -753,6 +753,28 @@ def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monk
         assert owner._prewarm_generation is owner._generation
 
 
+@pytest.mark.parametrize('gate_on', [False, True], ids=['off', 'preflight_over_budget'])
+def test_startup_preflight_budget_diagnostic_before_retained_prewarm(tmp_path, monkeypatch, gate_on):
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', gate_on)
+    monkeypatch.setattr(runtime, '_STARTUP_PREWARM_SOURCE_READ_LIMIT', 64)
+    _runtime, _adapter, binding, factory, launches = _full_fixtures._single_owner_synthetic(monkeypatch, tmp_path)
+    binding._PrivateBinding__snapshot['messages'] = {'end_cursor': SimpleNamespace(offset=5)}
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda _self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked',
+                        lambda *_a, **_kw: pytest.fail('prewarm must not read'))
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    state = owner.start()
+    assert launches == [True] and owner._source_budget is None
+    if gate_on:
+        assert state['state'] == 'HOLD'
+        assert owner.start_diagnostic() == {'reason':'SOURCE_BUDGET', 'exception_type':'UNKNOWN', 'authority':'none'}
+    else:
+        assert state['state'] == 'READY'
+        assert owner.start_diagnostic() == {'reason':'NONE', 'exception_type':'NONE', 'authority':'none'}
+
+
 @pytest.mark.parametrize('fault', ['none', 'budget_refusal', 'source_error'])
 @pytest.mark.parametrize('rotating', [False, True], ids=['single', 'rotating'])
 def test_refresh_prewarm_precedes_ready_and_preserves_worker(tmp_path, monkeypatch, fault, rotating):

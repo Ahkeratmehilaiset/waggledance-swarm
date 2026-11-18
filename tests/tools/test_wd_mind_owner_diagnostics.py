@@ -363,6 +363,28 @@ def test_cli_legacy_wire_stays_exact_and_diagnostic_is_optin(monkeypatch, optin)
         assert len(raw) <= 1024 and private not in raw
 
 
+@pytest.mark.parametrize('mode', ['off', 'v1', 'v2'])
+def test_cli_source_budget_preflight_reason_is_fixed_and_optin(monkeypatch, mode):
+    control, output, private = _cli_fixture(monkeypatch, delayed=False)
+    output.owner.start_diagnostic = lambda: {'reason':'SOURCE_BUDGET',
+        'exception_type':'UNKNOWN', 'authority':'none'}
+    args = dict(control_stream=control, output_stream=output, bundle_root='synthetic',
+                expected_manifest_sha256='a'*64, policy_sha256='b'*64, approval_reference_sha256='c'*64,
+                include_start_diagnostics=mode == 'v1', include_worker_stage_diagnostics=mode == 'v2')
+    assert child._local_candidate_owner_entry(**args) == 2
+    rows = [json.loads(raw) for raw in output.lines]
+    diagnostics = [row for row in rows if row['schema'].startswith('wd.mind-local-owner-start-diagnostic.')]
+    if mode == 'off':
+        assert diagnostics == []
+    else:
+        expected = {'schema':'wd.mind-local-owner-start-diagnostic.' + mode, 'reason':'SOURCE_BUDGET',
+                    'exception_type':'UNKNOWN', 'authority':'none'}
+        if mode == 'v2': expected.update(worker_exit_code=None, worker_exit_stage_hint='UNKNOWN')
+        assert diagnostics == [expected]
+        assert any(row.get('state') == 'HOLD' for row in rows[:rows.index(diagnostics[0])])
+    assert all(private not in raw for raw in output.lines)
+
+
 @pytest.mark.parametrize('hint,expected', [(('model_load',None),('model_load',None)),
     (('UNKNOWN',2),('UNKNOWN',2)), ('private-secret',('UNKNOWN',None)), (None,('UNKNOWN',None))])
 def test_worker_stage_v2_wire_is_bounded_and_fixed(monkeypatch, hint, expected):

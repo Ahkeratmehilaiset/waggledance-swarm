@@ -3425,7 +3425,12 @@ class _SingleManifestOwner:
                 self._check_factory()
                 if _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
                     stage = 'SOURCE_PREWARM'
-                    self._source_budget = _prewarm_source_budget(self._snapshot)
+                    try:
+                        self._source_budget = _prewarm_source_budget(self._snapshot)
+                    except _StartupSourceBudgetRefused as exc:
+                        if type(exc) is _StartupSourceBudgetRefused:
+                            stage = 'SOURCE_BUDGET'
+                        raise
                     self._ensure_retained_locked(source_budget=self._source_budget)
                     self._prewarm_generation = self._generation
                     self._source_budget = None

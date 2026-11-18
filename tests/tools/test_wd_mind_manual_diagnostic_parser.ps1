@@ -1,15 +1,17 @@
-param([Parameter(Mandatory)][string]$HelperPath, [switch]$SelfTestV2, [switch]$SelfTestAdmission)
+param([Parameter(Mandatory)][string]$HelperPath, [switch]$SelfTestV2, [switch]$SelfTestAdmission,
+      [switch]$SelfTestSourceBudget)
 $ErrorActionPreference = 'Stop'
 . $HelperPath
-if ($SelfTestAdmission) {
-    # These exact bytes are also asserted by the Python guard tests. The real
-    # parser receives synthetic completed reads, never a child process.
+if ($SelfTestAdmission -or $SelfTestSourceBudget) {
+    # The real parser receives fixed synthetic reads, never a child process.
     $status='{"authority":"none","caller_authentication":"UNKNOWN","index_refresh":"NOT_SCHEDULED",'+
         '"manifest_sha256":"'+('a'*64)+'","schema":"wd.mind-local-owner-status.v1",'+
         '"source_authentication":"UNKNOWN","state":"HOLD"}'
-    $v1='{"authority":"none","exception_type":"LaunchRefused","reason":"ADMISSION",'+
+    $reason=if($SelfTestSourceBudget){'SOURCE_BUDGET'}else{'ADMISSION'}
+    $exceptionType=if($SelfTestSourceBudget){'UNKNOWN'}else{'LaunchRefused'}
+    $v1='{"authority":"none","exception_type":"'+$exceptionType+'","reason":"'+$reason+'",'+
         '"schema":"wd.mind-local-owner-start-diagnostic.v1"}'
-    $v2='{"authority":"none","exception_type":"LaunchRefused","reason":"ADMISSION",'+
+    $v2='{"authority":"none","exception_type":"'+$exceptionType+'","reason":"'+$reason+'",'+
         '"schema":"wd.mind-local-owner-start-diagnostic.v2","worker_exit_code":null,'+
         '"worker_exit_stage_hint":"UNKNOWN"}'
     foreach ($mode in @('off','v1','v2')) {
@@ -35,8 +37,8 @@ if ($SelfTestAdmission) {
         }
         if ($mode -ceq 'off') {
             if ($null -ne $record.StartDiagnostic) { throw 'unexpected diagnostic' }
-        } elseif ($record.ReportedState -cne 'HOLD' -or $record.StartDiagnostic.reason -cne 'ADMISSION' -or
-                  $record.StartDiagnostic.exception_type -cne 'LaunchRefused' -or
+        } elseif ($record.ReportedState -cne 'HOLD' -or $record.StartDiagnostic.reason -cne $reason -or
+                  $record.StartDiagnostic.exception_type -cne $exceptionType -or
                   $record.StartDiagnostic.schema -cne ('wd.mind-local-owner-start-diagnostic.'+$mode)) {
             throw ('admission diagnostic mismatch: '+$mode)
         }

@@ -917,11 +917,175 @@ def test_observer_refuses_inaccessible_process_image(monkeypatch):
         admin._observe_windows()
 
 
+def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch):
+    """The first open returns 87; the next synthetic snapshot contains no PID."""
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    class Kernel:
+        def __init__(self):
+            self.snapshots = 0
+            self.CreateToolhelp32Snapshot = Function(self.snapshot)
+            self.Process32FirstW = Function(self.first)
+            self.Process32NextW = Function(self.next)
+            self.OpenProcess = Function(self.open)
+            self.QueryFullProcessImageNameW = Function(lambda *a: 0)
+            self.GetExitCodeProcess = Function(lambda *a: 0)
+            self.CloseHandle = Function(lambda *a: 1)
+        def snapshot(self, *args):
+            self.snapshots += 1
+            return self.snapshots
+        def first(self, handle, pointer):
+            if handle == 1:
+                entry = ctypes.cast(pointer, ctypes.POINTER(admin._ProcessEntry)).contents
+                entry.pid, entry.parent, entry.exe = 12345, 44, 'synthetic.exe'
+                return 1
+            ctypes.set_last_error(18)
+            return 0
+        def next(self, *args):
+            ctypes.set_last_error(18)
+            return 0
+        def open(self, *args):
+            ctypes.set_last_error(87)
+            return 0
+    kernel = Kernel()
+    monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **k: kernel)
+    assert admin._windows_process_images() == ()
+    assert kernel.snapshots == 2
+
+
+@pytest.mark.parametrize('error', [31, 5, 87])
+def test_image_exit_proof_is_limited_to_image_error_31_or_5(error):
+    class Kernel:
+        @staticmethod
+        def QueryFullProcessImageNameW(*args):
+            ctypes.set_last_error(error)
+            return False
+        @staticmethod
+        def GetExitCodeProcess(handle, output):
+            ctypes.cast(output, ctypes.POINTER(wintypes.DWORD)).contents.value = 0
+            return True
+    if error in (31, 5):
+        assert admin._image_or_proven_exited(Kernel(), 1) is None
+    else:
+        with pytest.raises(ValueError, match='image_access'):
+            admin._image_or_proven_exited(Kernel(), 1)
+
+
+@pytest.mark.parametrize('pid,parent,name,peb,protection,native_pid,native_parent,query_ok,expected', [
+    (4, 0, 'System', None, 0x72, 4, 0, True, True),
+    (20, 4, 'Registry', None, 0x72, 20, 4, True, True),
+    (21, 4, 'Memory Compression', None, 0x72, 21, 4, True, True),
+    (0, 0, 'Idle', None, 0x72, 0, 0, True, False),
+    (20, 5, 'Registry', None, 0x72, 20, 5, True, False),
+    (20, 4, 'other.exe', None, 0x72, 20, 4, True, False),
+    (20, 4, 'Registry', 1, 0x72, 20, 4, True, False),
+    (20, 4, 'Registry', None, 0x71, 20, 4, True, False),
+    (20, 4, 'Registry', None, 0x72, 22, 4, True, False),
+    (20, 4, 'Registry', None, 0x72, 20, 5, True, False),
+    (20, 4, 'Registry', None, 0x72, 20, 4, False, False),
+])
+def test_synthetic_kernel_identity_needs_all_same_handle_facts(
+        monkeypatch, pid, parent, name, peb, protection, native_pid, native_parent, query_ok, expected):
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    handles = []
+    def query(handle, kind, output, size, returned):
+        handles.append(handle)
+        if not query_ok: return -1
+        ctypes.cast(returned, ctypes.POINTER(wintypes.ULONG)).contents.value = size
+        if kind == 0:
+            basic = ctypes.cast(output, ctypes.POINTER(admin._ProcessBasicInfo)).contents
+            basic.peb, basic.pid, basic.parent = peb, native_pid, native_parent
+        elif kind == 61:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_ubyte)).contents.value = protection
+        else: raise AssertionError('unexpected query')
+        return 0
+    ntdll = type('FakeNtdll', (), {})()
+    ntdll.NtQueryInformationProcess = Function(query)
+    monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **kw: ntdll)
+    assert admin._verified_kernel_process(999, pid, parent, name) is expected
+    assert all(handle == 999 for handle in handles)
+
+
+@pytest.mark.parametrize('error,second_has_pid,expected', [(87,False,True), (87,True,False),
+                                                           (5,False,False), (31,False,False)])
+def test_synthetic_open_failure_only_error_87_with_second_absence_is_skipped(
+        monkeypatch, error, second_has_pid, expected):
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    class Kernel:
+        OpenProcess = Function(lambda *a: (ctypes.set_last_error(error), 0)[1])
+        QueryFullProcessImageNameW = Function(lambda *a: 0)
+        GetExitCodeProcess = Function(lambda *a: 0)
+    snapshots = []
+    def snapshot(kernel):
+        snapshots.append(1)
+        return ((123, 4, 'Registry'),) if len(snapshots) == 1 or second_has_pid else ()
+    monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **kw: Kernel())
+    monkeypatch.setattr(admin, '_process_snapshot', snapshot)
+    if expected:
+        assert admin._windows_process_images() == ()
+        assert len(snapshots) == 2
+    else:
+        with pytest.raises(ValueError, match='process_access'):
+            admin._windows_process_images()
+        assert len(snapshots) == (2 if error == 87 else 1)
+
+
+def test_synthetic_unopenable_pid_zero_still_present_is_not_ignored(monkeypatch):
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    class Kernel:
+        OpenProcess = Function(lambda *a: (ctypes.set_last_error(87), 0)[1])
+        QueryFullProcessImageNameW = Function(lambda *a: 0)
+        GetExitCodeProcess = Function(lambda *a: 0)
+    monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **kw: Kernel())
+    monkeypatch.setattr(admin, '_process_snapshot', lambda kernel: ((0, 0, 'Idle'),))
+    with pytest.raises(ValueError, match='process_access'):
+        admin._windows_process_images()
+
+
+@pytest.mark.parametrize('verify', [True, False])
+def test_synthetic_image_failure_uses_same_open_handle_for_kernel_facts(monkeypatch, verify):
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    observed = []
+    def image(handle, *args):
+        observed.append(('image', handle))
+        ctypes.set_last_error(5)
+        return 0
+    def exit_status(handle, output):
+        observed.append(('exit', handle))
+        ctypes.cast(output, ctypes.POINTER(wintypes.DWORD)).contents.value = 259
+        return 1
+    class Kernel:
+        OpenProcess = Function(lambda *args: 999)
+        QueryFullProcessImageNameW = Function(image)
+        GetExitCodeProcess = Function(exit_status)
+        CloseHandle = Function(lambda handle: (observed.append(('close', handle)), 1)[1])
+    def verify_kernel(handle, pid, parent, name):
+        observed.append(('facts', handle))
+        return verify
+    monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **kw: Kernel())
+    monkeypatch.setattr(admin, '_process_snapshot', lambda kernel: ((20, 4, 'Registry'),))
+    monkeypatch.setattr(admin, '_verified_kernel_process', verify_kernel)
+    if verify: assert admin._windows_process_images() == ()
+    else:
+        with pytest.raises(ValueError, match='image_access'): admin._windows_process_images()
+    assert observed == [('image', 999), ('exit', 999), ('facts', 999), ('close', 999)]
+
+
 @pytest.mark.parametrize('result,code', [(False, 0), (True, 259)])
 def test_unknown_or_active_process_with_unreadable_image_refuses(result, code):
     class Kernel:
         @staticmethod
         def QueryFullProcessImageNameW(*args):
+            ctypes.set_last_error(5)
             return False
         @staticmethod
         def GetExitCodeProcess(handle, output):
@@ -935,6 +1099,7 @@ def test_unreadable_image_of_proven_exited_process_does_not_block():
     class Kernel:
         @staticmethod
         def QueryFullProcessImageNameW(*args):
+            ctypes.set_last_error(5)
             return False
         @staticmethod
         def GetExitCodeProcess(handle, output):

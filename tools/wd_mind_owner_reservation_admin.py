@@ -70,16 +70,28 @@ class _ProcessEntry(ctypes.Structure):
                 ('flags', wintypes.DWORD), ('exe', wintypes.WCHAR * 260)]
 
 
+class _ProcessBasicInfo(ctypes.Structure):
+    _fields_ = [('reserved1', ctypes.c_void_p), ('peb', ctypes.c_void_p),
+                ('reserved2', ctypes.c_void_p * 2), ('pid', ctypes.c_void_p),
+                ('parent', ctypes.c_void_p)]
+
+
+class _ImageUnavailable(ValueError):
+    def __init__(self):
+        super().__init__('image_access')
+
+
 def _image_or_proven_exited(kernel, process):
     size = wintypes.DWORD(32768)
     path = ctypes.create_unicode_buffer(size.value)
     if not kernel.QueryFullProcessImageNameW(process, 0, path, ctypes.byref(size)):
+        error = ctypes.get_last_error()
         # A stable process handle can prove this exact process has exited.
         # Unknown, STILL_ACTIVE and an unavailable exit status all refuse.
         code = wintypes.DWORD()
-        if kernel.GetExitCodeProcess(process, ctypes.byref(code)) and code.value != 259:
+        if error in (5, 31) and kernel.GetExitCodeProcess(process, ctypes.byref(code)) and code.value != 259:
             return None
-        raise ValueError('image_access')
+        raise _ImageUnavailable()
     if not path.value or not Path(path.value).is_absolute():
         raise ValueError('image_path')
     return path.value
@@ -99,22 +111,14 @@ def _windows_kernel_boot_ns():
     return (result.boot - 116444736000000000) * 100
 
 
-def _windows_process_images():
-    """Native snapshot without shell execution or killing any process."""
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+def _process_snapshot(kernel):
+    """Snapshot PID, parent and name; no identity claim survives PID reuse."""
     kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry)]
     kernel.Process32FirstW.restype = wintypes.BOOL
     kernel.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry)]
     kernel.Process32NextW.restype = wintypes.BOOL
-    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel.OpenProcess.restype = wintypes.HANDLE
-    kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
-                                                 wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
-    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
-    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel.GetExitCodeProcess.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
     snapshot = kernel.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
@@ -125,29 +129,75 @@ def _windows_process_images():
         entry = _ProcessEntry()
         entry.size = ctypes.sizeof(entry)
         available = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
-        if not available:
+        if not available and ctypes.get_last_error() != 18:
             raise ValueError('process_first')
         while available:
             pid = int(entry.pid)
             if pid in seen:
                 raise ValueError('duplicate_pid')
             seen.add(pid)
-            if pid not in (0, 4):
-                process = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
-                if not process:
-                    raise ValueError('process_access')
-                try:
-                    path = _image_or_proven_exited(kernel, process)
-                    if path is not None:
-                        items.append((pid, path))
-                finally:
-                    kernel.CloseHandle(process)
+            items.append((pid, int(entry.parent), str(entry.exe)))
             available = kernel.Process32NextW(snapshot, ctypes.byref(entry))
         if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
             raise ValueError('process_next')
         return tuple(items)
     finally:
-        kernel.CloseHandle(snapshot)
+        if not kernel.CloseHandle(snapshot):
+            raise ValueError('snapshot_handle_close')
+
+
+def _verified_kernel_process(process, pid, parent, name):
+    """Use facts from the same opened process; a bare name is insufficient."""
+    if name not in ('System', 'Registry', 'Memory Compression') or (pid != 4 and parent != 4):
+        return False
+    ntdll = ctypes.WinDLL('ntdll', use_last_error=True)
+    query = ntdll.NtQueryInformationProcess
+    query.argtypes = [wintypes.HANDLE, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG,
+                      ctypes.POINTER(wintypes.ULONG)]
+    query.restype = ctypes.c_long
+    basic, protection, returned = _ProcessBasicInfo(), ctypes.c_ubyte(), wintypes.ULONG()
+    if (query(process, 0, ctypes.byref(basic), ctypes.sizeof(basic), ctypes.byref(returned)) != 0
+            or returned.value != ctypes.sizeof(basic) or basic.peb is not None
+            or (basic.pid or 0) != pid or (basic.parent or 0) != parent):
+        return False
+    returned.value = 0
+    if (query(process, 61, ctypes.byref(protection), ctypes.sizeof(protection), ctypes.byref(returned)) != 0
+            or returned.value != ctypes.sizeof(protection) or protection.value != 0x72):
+        return False
+    return True
+
+
+def _windows_process_images():
+    """Read-only snapshot; unproven identities or access remain a refusal."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                 wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    items = []
+    for pid, parent, name in _process_snapshot(kernel):
+        process = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not process:
+            error = ctypes.get_last_error()
+            if error == 87 and all(other_pid != pid for other_pid, _, _ in _process_snapshot(kernel)):
+                continue
+            raise ValueError('process_access')
+        try:
+            try:
+                path = _image_or_proven_exited(kernel, process)
+            except _ImageUnavailable:
+                if not _verified_kernel_process(process, pid, parent, name):
+                    raise
+                continue
+            if path is not None:
+                items.append((pid, path))
+        finally:
+            if not kernel.CloseHandle(process):
+                raise ValueError('process_handle_close')
+    return tuple(items)
 
 
 def _observe_windows():

@@ -2077,10 +2077,12 @@ def test_foreign_global_verifier_reservation_is_not_captured_by_new_owner():
 
 def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatch):
     runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    # The synthetic snapshot has no budgetable source; exercise OFF explicitly.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
-    expected = {'schema': 'synthetic-refs-only', 'authority': 'none', 'results': []}
-    monkeypatch.setattr(runtime, 'map_pipe_candidates', lambda **kwargs: expected)
+    monkeypatch.setattr(runtime, 'map_pipe_candidates',
+                        lambda **kwargs: pytest.fail('OFF gate must not dispatch candidates'))
     monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: None)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_candidate_delivery', lambda self: None)
@@ -2089,9 +2091,14 @@ def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatc
     request = {'schema':'wd.mind-pipe-request.v1', 'query_id':'startup_work_overview',
                'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
     assert calls == []
-    assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
-    assert owner.candidates(request) == expected
-    assert owner.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+    try:
+        assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
+        with pytest.raises(runtime.FullRuntimeRefused, match='^mind_full_runtime_refused$'):
+            owner.candidates(request)
+        assert owner.status() == {'state': 'READY', 'owned': True, 'authority': 'none'}
+    finally:
+        closed = owner.close()
+    assert closed == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
     with pytest.raises(runtime.FullRuntimeRefused):
         owner.candidates(request)
     assert calls == [True]

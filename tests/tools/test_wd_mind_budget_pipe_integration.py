@@ -3,7 +3,7 @@
 No model or live data. Synthetic checkout/pin readers and worker are fixtures;
 this is not installed-bundle, native worker, caller-authentication or launch proof.
 """
-import io, json, math, os, threading, time
+import io, json, math, os, secrets, threading, time
 from pathlib import Path
 from multiprocessing.connection import Client
 import pytest
@@ -26,16 +26,64 @@ from tools import wd_mind_content_query_readonly as reader
 from tools import wd_bridge_mind_session as session
 from tools import wd_mind_runtime_process as process
 
+
+def _isolate_synthetic_pin(original, monkeypatch):
+    # A fresh synthetic pin isolates the OS rendezvous across parallel runs.
+    # It is not a deployed-manifest pin or authentication of a pipe peer.
+    pin = secrets.token_hex(32)
+    assert pin != 'b' * 64
+    assert pin != os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
+    monkeypatch.setattr(original, '_pin', pin)
+    monkeypatch.setattr(original._gate, '_manifest_pin', pin)
+    return pin
+
+
+def _bind_synthetic_owner(original, snapshot, binding, factory):
+    binding._PrivateBinding__snapshot = snapshot
+    binding._PrivateBinding__bundle = Path(original._root)
+    binding._PrivateBinding__manifest = original._pin
+    binding._PrivateBinding__policy_pin = reader._sha(snapshot['identifier_policy_binding'][0])
+    factory._bundle, factory._manifest = str(original._root), original._pin
+
+
+def _synthetic_routes(original, owner):
+    name = process.local_candidate_pipe_name(manifest_sha256=original._pin)
+    return {'enabled':True, 'owner':owner, 'pipe_name':name}, (original._root, original._pin)
+
+
+def _assert_synthetic_sources(tmp_path, snapshot):
+    source = Path(snapshot['messages']['source_path'])
+    sidecar = Path(snapshot['messages']['generation_path'])
+    assert tmp_path.resolve() in source.resolve().parents and tmp_path.resolve() in sidecar.resolve().parents
+    return source, sidecar
+
+
+def test_synthetic_pin_routes_are_consistent_without_pipe(synthetic_checkout_pins, flat_consumer_case,
+                                                           tmp_path, monkeypatch):
+    _, original, _, snapshot, _, _ = flat_consumer_case
+    pin = _isolate_synthetic_pin(original, monkeypatch)
+    source, sidecar = _assert_synthetic_sources(tmp_path, snapshot)
+    _, _, binding, factory, launches = _full_fixtures._single_owner_synthetic(monkeypatch, tmp_path)
+    _bind_synthetic_owner(original, snapshot, binding, factory)
+    owner = object()
+    service_args, client_args = _synthetic_routes(original, owner)
+    assert original._pin == original._gate._manifest_pin == binding._PrivateBinding__manifest == factory._manifest == pin
+    assert binding._PrivateBinding__snapshot is snapshot and binding._PrivateBinding__bundle == Path(original._root)
+    assert binding._PrivateBinding__policy_pin == reader._sha(snapshot['identifier_policy_binding'][0])
+    assert factory._bundle == str(original._root) and client_args == (original._root, pin)
+    assert service_args == {'enabled':True, 'owner':owner,
+                            'pipe_name':process.local_candidate_pipe_name(manifest_sha256=pin)}
+    assert source != sidecar and launches == []
+
 @pytest.mark.skipif(os.name != 'nt', reason='requires Windows AF_PIPE')
 @pytest.mark.parametrize('gate_on', [False, True])
 def test_synthetic_owner_real_pipe_selected_resolver_budget(
         synthetic_checkout_pins, flat_consumer_case, tmp_path, monkeypatch, gate_on):
     package, original, _, old, clock, _ = flat_consumer_case
+    _isolate_synthetic_pin(original, monkeypatch)
     _fixtures._located_candidates(flat_consumer_case, monkeypatch)  # synthetic pin/control fixtures
     snapshot = dict(old, messages=dict(old['messages']))
-    source = Path(snapshot['messages']['source_path'])
-    sidecar = Path(snapshot['messages']['generation_path'])
-    assert tmp_path.resolve() in source.resolve().parents and tmp_path.resolve() in sidecar.resolve().parents
+    source, sidecar = _assert_synthetic_sources(tmp_path, snapshot)
     # This is a synthetic test-owned source; derive text and time directly
     # from its rows independently of the resolver and the pipe candidate list.
     fixture_events = {reader._sha(reader._canonical(row)): (row['message'], row['ts_utc'])
@@ -62,11 +110,7 @@ def test_synthetic_owner_real_pipe_selected_resolver_budget(
     flat['projection_sha256'] = snapshot['projection_sha256']
     flat_bytes = reader._canonical(flat)
     _, adapter_module, binding, factory, launches = _full_fixtures._single_owner_synthetic(monkeypatch, tmp_path)
-    binding._PrivateBinding__snapshot = snapshot
-    binding._PrivateBinding__bundle = Path(original._root)
-    binding._PrivateBinding__manifest = original._pin
-    binding._PrivateBinding__policy_pin = reader._sha(snapshot['identifier_policy_binding'][0])
-    factory._bundle, factory._manifest = str(original._root), original._pin
+    _bind_synthetic_owner(original, snapshot, binding, factory)
     monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda _: snapshot)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _: None)
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', gate_on)
@@ -137,9 +181,10 @@ def test_synthetic_owner_real_pipe_selected_resolver_budget(
             prewarm=sum(n for _,n,tag in reads if tag == 'MainThread')
             assert prewarm > 0 and budgets[0][2] == 2*1024**3
             assert budgets[0][1]._remaining == budgets[0][2]-prewarm
-        name=process.local_candidate_pipe_name(manifest_sha256=original._pin)
+        service_args, client_args = _synthetic_routes(original, owner)
+        name = service_args['pipe_name']
         assert original._pin.lower() != os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH','').lower()
-        service=process.create_local_candidate_service(enabled=True, owner=owner, pipe_name=name)
+        service=process.create_local_candidate_service(**service_args)
         service.start()
         # Malformed requests actually reach AF_PIPE; reject without dropping service.
         for bad in ({'nonce':'bad'}, {'lane':'not-a-lane'}):
@@ -160,7 +205,7 @@ def test_synthetic_owner_real_pipe_selected_resolver_budget(
               '--policy-sha256',reader._sha(policy),'--approval-reference-sha256','c'*64,
               '--lane','codex-lead-1','--timeout-seconds','90']
         out, err=io.BytesIO(),io.BytesIO()
-        rc=session._local_candidate_entry(args,out,err,original._root,original._pin)
+        rc=session._local_candidate_entry(args,out,err,*client_args)
         owner_read=sum(n for _,n,tag in reads if tag=='mind-local-candidates')
         client_read=sum(n for _,n,tag in reads if tag=='mind-local-selected-client')
         if gate_on:

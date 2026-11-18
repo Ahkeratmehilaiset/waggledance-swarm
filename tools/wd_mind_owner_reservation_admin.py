@@ -623,6 +623,8 @@ def _repair_marker_locked(guard, directory_handle, observe, interpreter_root, in
         raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
     initial = os.fstat(guard.fd)
     identity = (initial.st_dev, initial.st_ino)
+    if identity != guard.file_id:
+        raise ValueError('marker_changed')
     marker_time, marker_size = initial.st_mtime_ns, initial.st_size
 
     def check_held():
@@ -632,7 +634,7 @@ def _repair_marker_locked(guard, directory_handle, observe, interpreter_root, in
         root = os.lstat(guard.root)
         path = os.lstat(guard.path)
         opened = os.fstat(guard.fd)
-        if ((root.st_dev, root.st_ino) != guard.root_id or not identity[1]
+        if ((root.st_dev, root.st_ino) != guard.root_id or not identity[1] or guard.file_id != identity
                 or (path.st_dev, path.st_ino) != identity
                 or (opened.st_dev, opened.st_ino) != identity
                 or path.st_nlink != 1 or opened.st_nlink != 1

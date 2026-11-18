@@ -681,6 +681,58 @@ def test_damaged_reset_rechecks_binding_after_last_handle_check(tmp_path, monkey
     assert marker.read_bytes() == b'broken'
 
 
+def test_damaged_reset_refuses_replaced_file_before_any_write(tmp_path):
+    import msvcrt
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'old-damaged')
+    old = os.lstat(marker)
+    replacement = root / 'replacement'
+    replacement.write_bytes(b'new-damaged')
+    os.replace(replacement, marker)
+    new = os.lstat(marker)
+    assert (old.st_dev, old.st_ino) != (new.st_dev, new.st_ino)
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    with admin._pin_directory_chain(root) as directory_handle:
+        fd = child._open_owned_marker(marker)
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+        parent = os.lstat(root)
+        guard = child._LocalOwnerReservation(root, marker, fd, (parent.st_dev, parent.st_ino),
+                                              (old.st_dev, old.st_ino))
+        try:
+            with pytest.raises(ValueError, match='marker_changed'):
+                admin._repair_synthetic_marker(guard, directory_handle,
+                    _clear(timestamp + 1_000_000_000), runtime, None, lambda: None)
+        finally:
+            guard.abandon()
+    assert marker.read_bytes() == b'new-damaged'
+
+
+def test_damaged_reset_rechecks_guard_file_identity_before_write(tmp_path):
+    import msvcrt
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'broken')
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    with admin._pin_directory_chain(root) as directory_handle:
+        fd = child._open_owned_marker(marker)
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+        parent, info = os.lstat(root), os.fstat(fd)
+        guard = child._LocalOwnerReservation(root, marker, fd, (parent.st_dev, parent.st_ino),
+                                              (info.st_dev, info.st_ino))
+        def observe():
+            guard.file_id = (info.st_dev, info.st_ino + 1)
+            return timestamp + 1_000_000_000, ()
+        try:
+            with pytest.raises(ValueError, match='marker_changed'):
+                admin._repair_synthetic_marker(guard, directory_handle, observe, runtime, None, lambda: None)
+        finally:
+            guard.abandon()
+    assert marker.read_bytes() == b'broken'
+
+
 @pytest.mark.parametrize('interrupt', [KeyboardInterrupt, SystemExit])
 def test_damaged_reset_propagates_interruption_after_write_started(tmp_path, monkeypatch, interrupt):
     root, runtime, marker = _paths(tmp_path)

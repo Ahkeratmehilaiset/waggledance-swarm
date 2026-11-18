@@ -896,10 +896,6 @@ param(
     [string] $RunId = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
-    [string] $MindOperatorPolicyPath = '',
-    [string] $MindOperatorPolicySha256 = '',
-    [string] $MindOperatorApprovalReferenceSha256 = '',
-    [switch] $MindRequestedButDisabled,
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
@@ -921,9 +917,6 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
-    [string] $MindOperatorPolicyPath = '',
-    [string] $MindOperatorPolicySha256 = '',
-    [string] $MindOperatorApprovalReferenceSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -943,9 +936,6 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
-    [string] $MindOperatorPolicyPath = '',
-    [string] $MindOperatorPolicySha256 = '',
-    [string] $MindOperatorApprovalReferenceSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -961,9 +951,6 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string] $Generation,
-    [string] $MindOperatorPolicyPath = '',
-    [string] $MindOperatorPolicySha256 = '',
-    [string] $MindOperatorApprovalReferenceSha256 = '',
     [switch] $ValidateOnly
 )
 '@
@@ -987,37 +974,8 @@ if ($Auto -and ($Apply -or $DryRun)) {
 }
 $targetParameters = @{}
 foreach ($key in $PSBoundParameters.Keys) {
-    if ($key -notin @('Auto', 'Apply', 'DryRun', 'MindRequestedButDisabled')) {
+    if ($key -notin @('Auto', 'Apply', 'DryRun')) {
         $targetParameters[$key] = $PSBoundParameters[$key]
-    }
-}
-# Invalid or incomplete optional Mind pins never block the fleet. They are
-# removed as a group so neither launcher can accidentally activate a partial
-# policy; the independently pinned reader checks their actual bytes later.
-$wdMindNames = @('MindOperatorPolicyPath','MindOperatorPolicySha256','MindOperatorApprovalReferenceSha256')
-$wdMindPath = [string]$targetParameters['MindOperatorPolicyPath']
-$wdMindHash = [string]$targetParameters['MindOperatorPolicySha256']
-$wdMindApproval = [string]$targetParameters['MindOperatorApprovalReferenceSha256']
-$wdMindCount = @($wdMindPath, $wdMindHash, $wdMindApproval | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
-$wdMindDisabled = [bool]$MindRequestedButDisabled
-$wdMindRequested = $wdMindDisabled -or $wdMindPath -cne '' -or $wdMindHash -cne '' -or $wdMindApproval -cne ''
-if ($wdMindRequested) {
-    $wdMindValid = -not $wdMindDisabled -and $wdMindCount -eq 3 -and $wdMindPath -cmatch '\A[Cc]:[\\/]' -and
-        $wdMindPath -notmatch '[\\/]$' -and
-        $wdMindPath.Substring(3) -notmatch '[:*?"<>|&;\x00-\x1f]' -and
-        @($wdMindPath.Substring(3).Split([char[]]'\\/') | Where-Object { $_ -in @('.', '..') -or $_ -match '[. ]$' }).Count -eq 0 -and
-        $wdMindHash -cmatch '\A[0-9a-fA-F]{64}\z' -and $wdMindApproval -cmatch '\A[0-9a-fA-F]{64}\z'
-    if ($wdMindValid) {
-        try {
-            $targetParameters['MindOperatorPolicyPath'] = [IO.Path]::GetFullPath($wdMindPath)
-            $targetParameters['MindOperatorPolicySha256'] = $wdMindHash.ToLowerInvariant()
-            $targetParameters['MindOperatorApprovalReferenceSha256'] = $wdMindApproval.ToLowerInvariant()
-        } catch { $wdMindValid = $false }
-    }
-    if (-not $wdMindValid) {
-        foreach ($name in $wdMindNames) { $targetParameters.Remove($name) }
-        $wdMindDisabled = $true
-        Write-Warning 'Mind content is OFF: invalid or incomplete policy pins.' -WarningAction Continue
     }
 }
 function Test-WdWrapperAdministrator {
@@ -1064,14 +1022,12 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     $commandParts = New-Object 'System.Collections.Generic.List[string]'
     [void]$commandParts.Add('&')
     [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
-    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash',
-                         'MindOperatorPolicyPath', 'MindOperatorPolicySha256', 'MindOperatorApprovalReferenceSha256')) {
+    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
         if ($targetParameters.ContainsKey($name)) {
             [void]$commandParts.Add("-$name")
             [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))
         }
     }
-    if ($wdMindDisabled) { [void]$commandParts.Add('-MindRequestedButDisabled') }
     if ($targetParameters.ContainsKey('HandshakeTimeoutSeconds')) {
         [void]$commandParts.Add('-HandshakeTimeoutSeconds')
         [void]$commandParts.Add(([int]$targetParameters['HandshakeTimeoutSeconds']).ToString(
@@ -1190,11 +1146,7 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         -BundleRoot $wdBridgeBundleRoot `
         -FleetManifestPath $wdBridgeFleetManifest `
         -SupervisorScript (Join-Path (Split-Path -Parent $PSCommandPath) 'wd_supervisor.ps1') `
-        -HostPath $elevationHost `
-        -MindOperatorPolicyPath ([string]$targetParameters['MindOperatorPolicyPath']) `
-        -MindOperatorPolicySha256 ([string]$targetParameters['MindOperatorPolicySha256']) `
-        -MindOperatorApprovalReferenceSha256 ([string]$targetParameters['MindOperatorApprovalReferenceSha256']) `
-        -MindRequestedButDisabled:$wdMindDisabled
+        -HostPath $elevationHost
     Write-Host ($wdBridgeResult | ConvertTo-Json -Depth 6 -Compress)
     if (-not [bool]$wdBridgeResult.ok) {
         throw ('Bridge Limited bootstrap refused at stage {0}: {1}' -f

@@ -1740,6 +1740,17 @@ def test_flat_consumer_synthetic_bundle_chain_keeps_pins(tmp_path, fault):
     replace_once('from tools import wd_mind_content_snapshot_package as package\n',
                  'from tools import wd_mind_content_snapshot_package as package\nfrom tools import wd_bridge_mind_session as session\n')
     replace_once('package.datetime = Clock\n', 'package.datetime = Clock\nsession.datetime = Clock\n')
+    replace_once("case = fixtures._semantic_case(reader, shared, all_tasks=True)\n", '''\
+pins = {}
+for name, expected in reader._REQUIRED_CODE.items():
+    raw = (bootstrap / name).read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    normalized = hashlib.sha256(raw.replace(b"\\r\\n", b"\\n")).hexdigest()
+    assert digest == expected or (b"\\r\\n" in raw and normalized == expected)
+    pins[name] = digest
+reader._REQUIRED_CODE = pins
+case = fixtures._semantic_case(reader, shared, all_tasks=True)
+''')
     probe = r'''
 fault = sys.argv[3]
 frame = reader._canonical({'schema':'wd.mind-pipe-candidates.v1', 'nonce':'1'*64,
@@ -1984,7 +1995,7 @@ def _split(case):
     return values, providers
 
 
-def test_content_session_uses_real_verification_and_synthetic_query(source_fixtures, tmp_path):
+def test_content_session_uses_real_verification_and_synthetic_query(source_fixtures, tmp_path, synthetic_session_checkout_pins):
     entry = _entry()
     case = source_fixtures._semantic_case(content, tmp_path)
     inputs, providers = _split(case)
@@ -1997,7 +2008,7 @@ def test_content_session_uses_real_verification_and_synthetic_query(source_fixtu
 
 
 @pytest.mark.parametrize("fault", ["source_bytes", "descriptor_pin", "second_cell", "provider_identity", "documents"])
-def test_content_session_preserves_source_and_binding_refusal_before_callbacks(source_fixtures, tmp_path, fault):
+def test_content_session_preserves_source_and_binding_refusal_before_callbacks(source_fixtures, tmp_path, fault, synthetic_session_checkout_pins):
     entry = _entry()
     case = source_fixtures._semantic_case(content, tmp_path)
     inputs, providers = _split(case)
@@ -2019,7 +2030,7 @@ def test_content_session_preserves_source_and_binding_refusal_before_callbacks(s
     assert case["stream"].reads == 0 and providers[0].calls == [] and providers[1].calls == []
 
 
-def test_content_session_late_source_change_never_returns_partial_content(source_fixtures, tmp_path, capsys):
+def test_content_session_late_source_change_never_returns_partial_content(source_fixtures, tmp_path, capsys, synthetic_session_checkout_pins):
     entry = _entry()
     case = source_fixtures._semantic_case(content, tmp_path)
     inputs, providers = _split(case)
@@ -2035,7 +2046,7 @@ def test_content_session_late_source_change_never_returns_partial_content(source
     assert captured.out == "" and captured.err == ""
 
 
-def test_content_session_does_not_write_files_or_change_environment(source_fixtures, tmp_path):
+def test_content_session_does_not_write_files_or_change_environment(source_fixtures, tmp_path, synthetic_session_checkout_pins):
     entry = _entry()
     case = source_fixtures._semantic_case(content, tmp_path)
     inputs, providers = _split(case)

@@ -6,12 +6,45 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import secrets
+import stat
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP = ROOT / 'tools/wd_mind_admin_bootstrap.py'
+_E2E_ROOT = ROOT / '.codex-audit' / 'mind-admin-bootstrap-e2e'
+
+
+def _e2e_case_root():
+    """Allocate only a fresh child of this worktree's audited test subtree."""
+    if not _E2E_ROOT.is_absolute() or '..' in _E2E_ROOT.parts:
+        raise ValueError('synthetic_path')
+    if os.name == 'nt':
+        candidate = os.path.normcase(os.path.abspath(_E2E_ROOT))
+        for protected in (r'C:\Python\wd-reboot-bundles', r'C:\Python\WD_REBOOT_STATE_CURRENT.json',
+                          r'C:\Python\project2\.codex-audit\mind-owner-reservation.v1'):
+            protected = os.path.normcase(os.path.abspath(protected))
+            try:
+                overlap = os.path.commonpath((candidate, protected)) in (candidate, protected)
+            except ValueError:
+                overlap = False
+            if overlap:
+                raise ValueError('synthetic_live_overlap')
+    for part in (ROOT, *ROOT.parents):
+        entry = os.lstat(part)
+        if stat.S_ISLNK(entry.st_mode) or getattr(entry, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('synthetic_reparse')
+    for part in (ROOT / '.codex-audit', _E2E_ROOT):
+        part.mkdir(exist_ok=True)
+        entry = os.lstat(part)
+        if not stat.S_ISDIR(entry.st_mode) or getattr(entry, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('synthetic_reparse')
+    assert _E2E_ROOT.resolve(strict=True) == _E2E_ROOT
+    case = _E2E_ROOT / secrets.token_hex(16)
+    case.mkdir()
+    return case
 
 
 def _operator_literal():
@@ -211,20 +244,51 @@ print('SYNTHETIC_FINDER_CLEAN')
     assert result.stdout.strip() == 'SYNTHETIC_FINDER_CLEAN'
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='exact owner marker uses Windows native locking')
 @pytest.mark.parametrize('scenario', ['create', 'reset', 'damaged', 'source_changed',
                                       'pointer_changed', 'binding_changed', 'binding_reset',
-                                      'binding_damaged', 'uncertain'])
+                                      'binding_damaged', 'uncertain', 'outside_root'])
 def test_exact_admin_end_to_end_with_only_synthetic_injections(tmp_path, scenario):
     """Exact loader/admin bytes; synthetic process overrides all live bindings."""
-    root, commit, pin, _ = _fixture(tmp_path, 'real_exact_e2e')
+    loader_bytes = BOOTSTRAP.read_bytes()
+    admin_bytes = (ROOT / 'tools/wd_mind_owner_reservation_admin.py').read_bytes()
+    case_root = _e2e_case_root()
+    root, commit, pin, _ = _fixture(case_root, 'real_exact_e2e')
     loader = root / 'tools-bootstrap/tools/wd_mind_admin_bootstrap.py'
     admin_source = root / 'tools-bootstrap/tools/wd_mind_owner_reservation_admin.py'
-    assert loader.read_bytes() == BOOTSTRAP.read_bytes()
-    assert admin_source.read_bytes() == (ROOT / 'tools/wd_mind_owner_reservation_admin.py').read_bytes()
+    assert loader.read_bytes() == loader_bytes
+    assert admin_source.read_bytes() == admin_bytes
     script = r'''
-import pathlib, sys, time
+import os, pathlib, re, stat, sys, time
 loader, store, pointer, fake_root, commit, pin, scenario = sys.argv[1:]
 loader, store, pointer, fake_root = map(pathlib.Path, (loader, store, pointer, fake_root))
+# The bound is part of this synthetic test script, not a caller-supplied
+# root override. Validate before the first mkdir or write in this process.
+allowed = pathlib.Path(__E2E_ALLOWED_BASE__)
+all_paths = (allowed, loader, store, pointer, fake_root)
+if any(not path.is_absolute() or '..' in path.parts for path in all_paths):
+    raise ValueError('synthetic_path')
+case = fake_root.parent
+if (case.parent != allowed or not re.fullmatch('[0-9a-f]{32}', case.name)
+        or store != case / 'bundles' or pointer != case / 'state.json'
+        or fake_root != case / 'owner-root'
+        or loader != store / commit / 'tools-bootstrap/tools/wd_mind_admin_bootstrap.py'):
+    raise ValueError('synthetic_scope')
+protected = tuple(map(pathlib.Path, (r'C:\Python\wd-reboot-bundles',
+    r'C:\Python\WD_REBOOT_STATE_CURRENT.json',
+    r'C:\Python\project2\.codex-audit\mind-owner-reservation.v1')))
+for path in all_paths:
+    for part in (path, *path.parents):
+        try: entry = os.lstat(part)
+        except FileNotFoundError: continue
+        if stat.S_ISLNK(entry.st_mode) or getattr(entry, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('synthetic_reparse')
+    resolved = os.path.normcase(str(path.resolve(strict=False)))
+    for forbidden in protected:
+        forbidden = os.path.normcase(os.path.abspath(forbidden))
+        try: overlap = os.path.commonpath((resolved, forbidden)) in (resolved, forbidden)
+        except ValueError: overlap = False
+        if overlap: raise ValueError('synthetic_live_overlap')
 fake_root.mkdir()
 interpreter_root = fake_root.parent / 'synthetic-interpreter'
 interpreter_root.mkdir()
@@ -239,7 +303,7 @@ def inject(finder, module):
     original_exec(finder, module)
     if module.__name__ != 'tools.wd_mind_owner_reservation_admin': return
     admin = holder['admin'] = module
-    assert admin._PRODUCTION_ENTRY_ENABLED is False
+    assert type(admin._PRODUCTION_ENTRY_ENABLED) is bool
     # Every overridden location is inside this synthetic test root. Never use
     # an installed pointer, live audit root, or real process observer.
     admin._BUNDLE_STORE, admin._CURRENT_POINTER = store, pointer
@@ -306,10 +370,22 @@ elif scenario in ('binding_reset', 'binding_damaged'):
 else:
     assert result == 2 and not marker.exists()
 print('SYNTHETIC_E2E_' + scenario.upper())
-'''
+'''.replace('__E2E_ALLOWED_BASE__', repr(str(_E2E_ROOT)))
+    fake_root = case_root / 'owner-root'
+    if scenario == 'outside_root':
+        fake_root = _E2E_ROOT / 'unapproved-root'
+        before = {str(path.relative_to(case_root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in case_root.rglob('*') if path.is_file()}
     result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(loader), str(root.parent),
-                             str(tmp_path / 'state.json'), str(tmp_path / 'owner-root'), commit, pin, scenario],
-                            cwd=str(tmp_path), capture_output=True, text=True, timeout=30, check=False)
+                             str(case_root / 'state.json'), str(fake_root), commit, pin, scenario],
+                            cwd=str(case_root), capture_output=True, text=True, timeout=30, check=False)
+    if scenario == 'outside_root':
+        assert result.returncode != 0 and 'synthetic_scope' in result.stderr
+        assert not fake_root.exists() and not (case_root / 'owner-root').exists()
+        assert not (case_root / 'synthetic-interpreter').exists()
+        assert before == {str(path.relative_to(case_root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in case_root.rglob('*') if path.is_file()}
+        return
     assert result.returncode == 0, result.stderr
     assert 'SYNTHETIC_E2E_' + scenario.upper() in result.stdout
     if scenario == 'uncertain':

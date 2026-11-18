@@ -442,6 +442,27 @@ def _pin_verified_synthetic_checkout(monkeypatch):
     monkeypatch.setattr(content, '_REQUIRED_CODE', pins)
 
 
+@pytest.mark.parametrize(('raw', 'accepted'), [
+    (b'first\nsecond\n', True),
+    (b'first\r\nsecond\r\n', True),
+    (b'changed\r\nsecond\r\n', False),
+])
+def test_synthetic_checkout_pin_accepts_only_verified_lf_or_crlf(monkeypatch, tmp_path, raw, accepted):
+    tools_dir = tmp_path / 'tools'
+    tools_dir.mkdir()
+    source = tools_dir / 'synthetic.py'
+    source.write_bytes(raw)
+    expected = hashlib.sha256(b'first\nsecond\n').hexdigest()
+    monkeypatch.setattr(content, '__file__', str(tools_dir / 'reader.py'))
+    monkeypatch.setattr(content, '_REQUIRED_CODE', {'tools/synthetic.py': expected})
+    if accepted:
+        _pin_verified_synthetic_checkout(monkeypatch)
+        assert content._REQUIRED_CODE['tools/synthetic.py'] == hashlib.sha256(raw).hexdigest()
+    else:
+        with pytest.raises(AssertionError, match='synthetic checkout does not match pinned bytes'):
+            _pin_verified_synthetic_checkout(monkeypatch)
+
+
 @pytest.mark.parametrize('controlled', [False, True], ids=['manual', 'controlled'])
 def test_real_synthetic_resolver_prefix_budget_reaches_fixed_reason(
         synthetic_session_checkout_pins, flat_consumer_case, monkeypatch, tmp_path, controlled):

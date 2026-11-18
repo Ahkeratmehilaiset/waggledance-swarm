@@ -24,6 +24,20 @@ READ_CHUNK = 4096
 _slot_lock = threading.Lock()
 _active = None
 
+# A child exit code is an unauthenticated hint, not proof of the failure cause.
+# In particular 2 remains the bootstrap/interpreter's existing refusal code.
+_WORKER_STAGE_HINTS = {
+    20: 'arguments', 21: 'model_pin', 22: 'offline_environment',
+    23: 'reader_mutex', 24: 'library_import', 25: 'model_load', 29: 'serving',
+}
+
+
+def _worker_exit_diagnostic(code, verified):
+    if verified is not True or type(code) is not int or not 0 <= code <= 0xffffffff:
+        return ('UNKNOWN', None)
+    hint = _WORKER_STAGE_HINTS.get(code, 'UNKNOWN')
+    return (hint, code if hint == 'UNKNOWN' else None)
+
 
 class LifecycleRefused(ValueError):
     """Fixed refusal, with no pipe contents or native exception text."""
@@ -74,6 +88,7 @@ class _Owner:
         self._condition = threading.Condition()
         self.resources = _Resources()
         self._state, self._reason, self._code = "STARTING", None, None
+        self._verified_exit_code = None
         # Legacy callers may still bind without registering an attempt.  Until
         # they are migrated this state does not prove that no spawn occurred.
         self._spawn_state = "NOT_ENTERED"
@@ -148,6 +163,15 @@ class _Owner:
             return {"state": self._state, "owned": self._owned,
                     "pid": None if self._process is None else self._process.pid,
                     "exit_code": self._code, "eof_sent": self._eof, "reason": self._reason}
+
+    def worker_exit_diagnostic(self):
+        """Observe only an already-recorded code; never wait for owner I/O."""
+        if not self._condition.acquire(blocking=False):
+            return ('UNKNOWN', None)
+        try:
+            return _worker_exit_diagnostic(self._verified_exit_code, self._verified_exit_code is not None)
+        finally:
+            self._condition.release()
 
     def _release(self, state):
         global _active
@@ -338,6 +362,10 @@ class _Owner:
                 if ready:
                     if self._process.wait(timeout=0) != code:
                         raise ValueError("exit")
+                    with self._condition:
+                        # This verifies the exit code only. Pump completion is
+                        # not proof of EOF when a pump terminated on a fault.
+                        self._verified_exit_code = code
                     self._job.close()
                     handle = getattr(self._process, "_handle", None)
                     if handle is not None:

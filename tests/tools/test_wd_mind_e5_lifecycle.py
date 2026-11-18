@@ -10,6 +10,27 @@ from tools import wd_mind_e5_lifecycle as lifecycle
 BULK_HASH = '61998bfeea1342988301f30f21d9781017249ef66761ec81874e5cc34633bc08'
 
 
+@pytest.mark.parametrize('code,expected', [
+    (20, ('arguments',None)), (21, ('model_pin',None)), (22, ('offline_environment',None)),
+    (23, ('reader_mutex',None)), (24, ('library_import',None)), (25, ('model_load',None)),
+    (29, ('serving',None)), (2, ('UNKNOWN',2)), (0, ('UNKNOWN',0)), (1, ('UNKNOWN',1)),
+    (26, ('UNKNOWN',26)), (-1, ('UNKNOWN',None)), (None, ('UNKNOWN',None)), (True, ('UNKNOWN',None)),
+    ('20', ('UNKNOWN',None)),
+])
+def test_worker_exit_stage_hint_is_fixed_and_preserves_bootstrap_code(code, expected, capsys):
+    # Constructing the owner does not start its keeper or create a process.
+    owner = lifecycle._Owner()
+    owner._code = code
+    assert owner.worker_exit_diagnostic() == ('UNKNOWN', None)
+    owner._verified_exit_code = code
+    status = owner.status()
+    assert status['exit_code'] == code
+    assert 'worker_exit_stage_hint' not in status and 'worker_exit_code' not in status
+    assert owner.worker_exit_diagnostic() == expected
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ''
+
+
 @pytest.mark.parametrize('bad', [True, 1, '', '0'*64])
 def test_bulk_owner_requires_exact_contract_before_reservation(bad):
     with pytest.raises(lifecycle.LifecycleRefused):
@@ -141,7 +162,7 @@ def test_default_closed_and_only_one_reserved_owner():
     assert owner.status()["owned"] is False
 
 
-@pytest.mark.parametrize("code,state", [(0, "EXITED"), (7, "FAILED")])
+@pytest.mark.parametrize("code,state", [(0, "EXITED"), (7, "FAILED"), (25, "FAILED")])
 def test_eof_then_verified_exit_releases_job(code, state):
     process = Process(exit_code=code)
     owner, job = bind(process)
@@ -149,8 +170,58 @@ def test_eof_then_verified_exit_releases_job(code, state):
         result = owner.shutdown(timeout=2)
         assert result["state"] == state and result["exit_code"] == code
         assert result["eof_sent"] and not result["owned"] and job.closed
+        assert owner.worker_exit_diagnostic() == (('model_load', None) if code == 25 else ('UNKNOWN', code))
     finally:
         finish(owner, process)
+
+
+@pytest.mark.parametrize('failure', ['mismatch', 'exception'])
+def test_worker_diagnostic_stays_unknown_during_unverified_wait(failure):
+    process = Process(on_eof=False)
+    owner, _ = bind(process)
+    wait_called, allow_wait = threading.Event(), threading.Event()
+    original_wait = process.wait
+    def wait(timeout):
+        if not allow_wait.is_set():
+            wait_called.set()
+            if failure == 'exception': raise OSError('synthetic-private-wait-error')
+            return 26
+        return original_wait(timeout)
+    process.wait = wait
+    try:
+        process.finish(25)
+        assert wait_called.wait(2)
+        end = time.monotonic() + 2
+        while owner.status()['state'] != 'HOLD' and time.monotonic() < end:
+            time.sleep(0.005)
+        assert owner.status()['state'] == 'HOLD'
+        assert owner.worker_exit_diagnostic() == ('UNKNOWN', None)
+    finally:
+        allow_wait.set()
+        finish(owner, process)
+
+
+def test_worker_diagnostic_stays_unknown_when_pumps_have_not_ended():
+    process = Process(on_eof=False)
+    owner, _ = bind(process)
+    try:
+        process.code = 25  # Exit observed, but synthetic stdout/stderr remain open.
+        end = time.monotonic() + 2
+        while owner.status()['exit_code'] is None and time.monotonic() < end:
+            time.sleep(0.005)
+        assert owner.status()['exit_code'] == 25
+        assert owner.worker_exit_diagnostic() == ('UNKNOWN', None)
+    finally:
+        finish(owner, process)
+
+
+def test_worker_diagnostic_lock_contention_never_waits():
+    owner = lifecycle._Owner()  # No keeper or child is started.
+    owner._condition = threading.Condition(threading.Lock())
+    owner._verified_exit_code = 25
+    with owner._condition:
+        assert owner.worker_exit_diagnostic() == ('UNKNOWN', None)
+    assert owner.worker_exit_diagnostic() == ('model_load', None)
 
 
 def test_deadline_keeps_same_process_job_and_excludes_restart():

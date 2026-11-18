@@ -548,21 +548,29 @@ def _release_verified(guard, verify_binding, *, _scope=_SYNTHETIC_SCOPE):
         raise ReservationAdminRefused('RESET_PUBLICATION_UNCERTAIN') from None
 
 
-def _repair_synthetic_marker(guard, directory_handle, observe, interpreter_root, interpreter, verify_binding):
-    """Repair damaged bytes only in the fixed synthetic scope, while locked.
+def _repair_marker_locked(guard, directory_handle, observe, interpreter_root, interpreter, verify_binding, *, scope):
+    """Shared damaged-byte repair only after scope and held-handle checks.
 
-    This is not the disabled production path. Same-user ABA, the process
-    snapshot/spawn race, and wall-clock movement remain UNKNOWN. An interrupt
-    after a write begins is propagated, but publication remains uncertain and
-    the caller must not treat it as a clean reset or retry automatically.
+    Production remains disabled. Same-user ABA, the process snapshot/spawn
+    race, and wall-clock movement remain UNKNOWN. An interrupt after a write
+    begins is propagated, but publication remains uncertain: do not retry.
     """
-    _assert_synthetic_root(guard.root)
+    if scope is _PRODUCTION_SCOPE:
+        _require_production_activation()
+    if ((scope is not _SYNTHETIC_SCOPE and scope is not _PRODUCTION_SCOPE)
+            or type(guard) is not child._LocalOwnerReservation):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    _assert_scope_root(guard.root, scope)
+    expected = Path(guard.root) / child._OWNER_RESERVATION_NAME
+    if (os.path.normcase(os.path.abspath(guard.path)) != os.path.normcase(os.path.abspath(expected))
+            or not callable(observe) or not callable(verify_binding)):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
     initial = os.fstat(guard.fd)
     identity = (initial.st_dev, initial.st_ino)
     marker_time, marker_size = initial.st_mtime_ns, initial.st_size
 
     def check_held():
-        _assert_synthetic_root(guard.root)
+        _assert_scope_root(guard.root, scope)
         _assert_open_directory_identity(guard.root, directory_handle)
         absent._plain(guard.path, directory=False)
         root = os.lstat(guard.root)
@@ -601,6 +609,21 @@ def _repair_synthetic_marker(guard, directory_handle, observe, interpreter_root,
         guard.fd = -1
     except Exception:
         raise _AdminReason('RESET_PUBLICATION_UNCERTAIN') from None
+
+
+def _repair_synthetic_marker(guard, directory_handle, observe, interpreter_root, interpreter, verify_binding):
+    return _repair_marker_locked(guard, directory_handle, observe, interpreter_root, interpreter,
+                                 verify_binding, scope=_SYNTHETIC_SCOPE)
+
+
+def _repair_production_marker(guard, directory_handle, *, bundle_root, manifest_sha256):
+    # No caller-provided root, observer or binding hook reaches this wrapper.
+    _require_production_activation()
+    location, verify_binding = _current_binding(bundle_root, manifest_sha256)
+    if type(location) is not dict or location.get('interpreter_status') != 'VERIFIED':
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    return _repair_marker_locked(guard, directory_handle, _observe_windows, location['interpreter_root'],
+                                 location['interpreter'], verify_binding, scope=_PRODUCTION_SCOPE)
 
 
 def _production_marker(*, operation, bundle_root, manifest_sha256):
@@ -652,9 +675,15 @@ def _production_marker(*, operation, bundle_root, manifest_sha256):
             msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
             guard = child._LocalOwnerReservation(root, path, fd,
                 (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
-            guard._check()
-            if guard._read() != child._OWNER_RESERVATION_MAGIC + b'R':
+            marker = guard._read()
+            if marker == child._OWNER_RESERVATION_MAGIC + b'C':
                 raise ReservationAdminRefused('MARKER_NOT_RESERVED')
+            if marker != child._OWNER_RESERVATION_MAGIC + b'R':
+                _repair_production_marker(guard, directory_handle, bundle_root=bundle_root,
+                                          manifest_sha256=manifest_sha256)
+                fd = None
+                return
+            guard._check()
             marker_time = os.fstat(fd).st_mtime_ns
             boot_ns, processes = _checked_observe(_observe_windows)
             _validate_observation(boot_ns, processes, interpreter_root, interpreter, marker_time)

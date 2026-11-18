@@ -51,6 +51,43 @@ def test_synthetic_root_refuses_missing_worktree_metadata_before_filesystem_open
         admin._assert_synthetic_root(tmp_path)
 
 
+def test_production_repair_wrapper_is_disabled_before_guard_or_path_access(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail('disabled production repair must not inspect a path or handle')
+    monkeypatch.setattr(admin.os, 'fstat', unexpected)
+    monkeypatch.setattr(admin.os, 'lstat', unexpected)
+    monkeypatch.setattr(admin, '_current_binding', unexpected)
+    monkeypatch.setattr(admin, '_observe_windows', unexpected)
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._repair_production_marker(None, None, bundle_root='untrusted', manifest_sha256='a'*64)
+
+
+@pytest.mark.parametrize('scope', ['production', 'invalid'])
+def test_common_repair_rejects_unavailable_scope_before_guard_access(scope, monkeypatch):
+    def unexpected(*args, **kwargs): pytest.fail('must refuse before guard or path access')
+    monkeypatch.setattr(admin.os, 'fstat', unexpected)
+    value = admin._PRODUCTION_SCOPE if scope == 'production' else object()
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._repair_marker_locked(None, None, None, None, None, None, scope=value)
+
+
+def test_common_repair_refuses_synthetic_guard_for_a_foreign_leaf(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    foreign = root / 'other-file'
+    foreign.write_bytes(b'broken')
+    fd = child._open_owned_marker(foreign)
+    info, parent = os.fstat(fd), os.lstat(root)
+    guard = child._LocalOwnerReservation(root, foreign, fd,
+        (parent.st_dev, parent.st_ino), (info.st_dev, info.st_ino))
+    try:
+        with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+            admin._repair_marker_locked(guard, None, _clear(), runtime, None, lambda: None,
+                                        scope=admin._SYNTHETIC_SCOPE)
+    finally:
+        guard.abandon()
+    assert foreign.read_bytes() == b'broken' and not marker.exists()
+
+
 def test_marker_refuses_synthetic_directory_not_named_audit(tmp_path):
     root = tmp_path / 'forbidden'
     root.mkdir()

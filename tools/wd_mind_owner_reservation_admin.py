@@ -426,6 +426,8 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
     RESET_PUBLICATION_UNCERTAIN means the marker may already be C or may still
     be R. Never automatically revert it or retry; inspect current ownership and
     marker state using an independently authorized operator procedure.
+    A CLEANUP_UNCERTAIN suffix additionally means releasing the marker handle
+    failed; it does not imply that the handle was either retained or closed.
     """
     if os.name != 'nt' or operation not in ('create', 'reset'):
         raise ReservationAdminRefused('invalid_operation')
@@ -515,7 +517,15 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
         raise ReservationAdminRefused('ADMIN_REFUSED') from None
     finally:
         if guard is not None and guard.fd >= 0:
-            guard.abandon()
+            primary = sys.exc_info()[1]
+            try:
+                guard.abandon()
+            except Exception:
+                if (isinstance(primary, ReservationAdminRefused)
+                        and str(primary) == 'RESET_PUBLICATION_UNCERTAIN'):
+                    raise ReservationAdminRefused(
+                        'RESET_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN') from None
+                raise
             fd = None
         if fd is not None:
             os.close(fd)

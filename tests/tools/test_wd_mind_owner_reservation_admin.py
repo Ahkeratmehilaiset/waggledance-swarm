@@ -585,6 +585,37 @@ def test_reset_release_failure_before_write_is_also_uncertain(tmp_path, monkeypa
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
 
 
+@pytest.mark.parametrize('fail_before_close', [False, True])
+def test_reset_publication_and_cleanup_failures_are_both_uncertain(tmp_path, monkeypatch, fail_before_close):
+    root, runtime, marker = _paths(tmp_path)
+    _reserved(marker)
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    real_abandon = child._LocalOwnerReservation.abandon
+    failed_guard = []
+
+    def fail_cleanup(guard):
+        failed_guard.append(guard)
+        if not fail_before_close:
+            real_abandon(guard)
+        raise OSError('private-cleanup-error')
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(admin.os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError('private-fsync-error')))
+            patch.setattr(child._LocalOwnerReservation, 'abandon', fail_cleanup)
+            with pytest.raises(admin.ReservationAdminRefused,
+                               match='^RESET_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN$') as exc:
+                admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+        assert (failed_guard[0].fd >= 0) is fail_before_close
+    finally:
+        for guard in failed_guard:
+            if guard.fd >= 0:
+                real_abandon(guard)
+    assert 'private-' not in str(exc.value)
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+
+
 def test_reset_rejects_future_boot(tmp_path):
     root, runtime, marker = _paths(tmp_path)
     _reserved(marker)

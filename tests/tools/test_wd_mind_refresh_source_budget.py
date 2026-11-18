@@ -122,8 +122,11 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
     monkeypatch.setattr(reader, '_narrow_dependencies', lambda: dependencies)
 
     if fault in ('prewarm_source_mutation', 'prewarm_budget', 'prewarm_mid_budget'):
-        with pytest.raises(runtime.FullRuntimeRefused):
+        with pytest.raises(runtime.FullRuntimeRefused) as refused:
             owner._refresh_generation(enabled=True)
+        assert str(refused.value) == 'mind_full_runtime_refused'
+        assert refused.value.__cause__ is None
+        assert refused.value.__suppress_context__ is True
         assert owner._state == 'HOLD' and owner._generation is old_generation and owner._owner is worker
         assert owner._retained is None and old_handler._retained is None
         if fault == 'prewarm_budget':

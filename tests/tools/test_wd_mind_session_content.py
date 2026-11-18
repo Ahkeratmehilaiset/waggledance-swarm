@@ -367,6 +367,84 @@ def test_local_candidate_cli_refuses_without_partial_output(flat_consumer_case, 
     assert policy not in err.getvalue()
 
 
+@pytest.fixture
+def synthetic_session_checkout_pins(monkeypatch):
+    """Use synthetic checkout bytes, not production bundle-pin evidence."""
+    root = Path(content.__file__).resolve().parents[1]
+    pins = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in content._REQUIRED_CODE}
+    monkeypatch.setattr(content, '_REQUIRED_CODE', pins)
+
+
+@pytest.mark.parametrize('controlled', [False, True], ids=['manual', 'controlled'])
+def test_local_candidate_budget_exhaustion_never_emits_partial_content(
+        synthetic_session_checkout_pins, flat_consumer_case, monkeypatch, tmp_path, controlled):
+    """Real synthetic resolver budget; fake in-process candidate transport."""
+    from tools import wd_mind_runtime_process as process
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    # One complete prefix fits, but no selected-row byte does. This exercises
+    # mid-resolution exhaustion rather than a mocked budget exception.
+    resolver._source_budget = session._SourceReadBudget(resolver._cursor.offset)
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: resolver)
+    observed = {}
+    class Query:
+        def __init__(self, request): self.request = request
+        def start(self): pass
+        def wait(self, *, timeout):
+            observed['nonce'] = self.request['nonce']
+            frame.update(nonce=self.request['nonce'], lane=self.request['lane'], scope=self.request['scope'])
+            return {'status':'CANDIDATES', 'authority':'none', 'sender_authentication':'UNKNOWN',
+                    'source_verification':'UNVERIFIED', 'candidate_frame':content._canonical(frame)}
+        def status(self): return {'state':'STOPPED'}
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **kw: Query(kw['request']))
+    class Control:
+        def __init__(self): self.reads = 0
+        def read(self, size):
+            self.reads += 1
+            return b'G' + observed['nonce'].encode('ascii') if self.reads == 1 else b''
+    policy = b'{"private":"synthetic-only"}'
+    policy_path = tmp_path / 'synthetic-policy.json'
+    policy_path.write_bytes(policy)
+    args = _local_client_args(policy_path, policy)
+    if controlled:
+        args[0] = '--mind-local-candidate-read-controlled'
+    out, err = io.BytesIO(), io.BytesIO()
+    # The fake Query is deliberately not the runtime's exact query type and
+    # cannot be reaped by production logic. Never mutate the real pending list.
+    private_pending = []
+    monkeypatch.setattr(session, '_LOCAL_CANDIDATE_PENDING', private_pending)
+    try:
+        code = session._local_candidate_entry(args, out, err, str(Path.cwd()), 'a'*64,
+                                              control=Control() if controlled else None)
+        assert len(private_pending) == 1
+        assert code == 2 and resolver._closed and resolver._source_budget._remaining == 0
+        assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+        if controlled:
+            ready = json.loads(out.getvalue())
+            assert ready == {'schema':'wd.mind-controlled-read-ready.v1', 'authority':'none',
+                             'nonce':observed['nonce']}
+        else:
+            assert out.getvalue() == b''
+        assert b'synthetic-only' not in out.getvalue() + err.getvalue()
+    finally:
+        # Keep every synthetic worker reachable until target-finally and the
+        # physical thread exit are both observed, including error paths.
+        deferred = None
+        for worker, state in tuple(private_pending):
+            while True:
+                try:
+                    if state['worker_done'].is_set() and worker.ident is not None:
+                        worker.join(timeout=0)
+                        if not worker.is_alive():
+                            break
+                    time.sleep(0.05)
+                except BaseException as exc:
+                    if deferred is None:
+                        deferred = exc
+        if deferred is not None:
+            raise deferred
+
+
 def test_local_candidate_cli_rechecks_policy_after_candidate_query(flat_consumer_case, monkeypatch, tmp_path):
     from tools import wd_mind_runtime_process as process
     resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)

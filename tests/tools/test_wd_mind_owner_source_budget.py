@@ -254,8 +254,11 @@ def test_real_generationless_prewarm_charges_every_source_stream_read(
             flat_manifest_sha256=reader._sha(flat_bytes), ids=gate._ids, vectors=gate._vectors,
             encoder_binding_bytes=gate._encoder, source_budget=budget)
     if exhaust:
-        with pytest.raises(package.SnapshotPackageRefused):
+        with pytest.raises(package.SnapshotPackageRefused) as refused:
             rebuild()
+        assert str(refused.value) == 'content_snapshot_package_refused'
+        assert refused.value.__cause__ is None
+        assert refused.value.__suppress_context__ is True
     else:
         assert rebuild() is not None
     assert any(kind == 'readline' for kind, _ in reads)
@@ -452,8 +455,11 @@ def test_candidate_request_charges_real_synthetic_source_reads(
                'lane': 'codex-lead-1', 'scope': 'shared'}
     call = owner.located_candidates if located else owner.candidates
     if exhaust:
-        with pytest.raises(runtime.FullRuntimeRefused):
+        with pytest.raises(runtime.FullRuntimeRefused) as refused:
             call(request)
+        assert str(refused.value) == 'mind_full_runtime_refused'
+        assert refused.value.__cause__ is None
+        assert refused.value.__suppress_context__ is True
         consumed = sum(size for _, size in actual_reads)
         limit = context['messages']['end_cursor'].offset + 1
         assert context['messages']['end_cursor'].offset <= consumed <= limit
@@ -544,7 +550,7 @@ def test_startup_client_and_owner_account_separate_real_source_reads(
     assert owner_read + client_read <= 2 * 1024 ** 3
 
 
-def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatch):
+def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatch, capsys):
     class Source(BytesIO):
         def __init__(self):
             super().__init__(b'\n')
@@ -590,9 +596,12 @@ def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatc
     assert seen == [(worker.ident, snapshot['projection_sha256'])]
     assert seen[0][0] != threading.get_ident()
     assert stream.reads == 1 and owner._source_budget._remaining == 0
-    with pytest.raises(ValueError, match='source_budget'):
+    with pytest.raises(ValueError, match='^source_budget$') as refused:
         owner._rotation_source_check()
+    assert str(refused.value) == 'source_budget'
     assert stream.reads == 1
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ''
 
 
 def test_generationless_pin_matches_canonical_repository_bytes():
@@ -649,8 +658,11 @@ def test_located_request_preflight_refusal_preserves_ready(monkeypatch):
                         lambda _self: pytest.fail('no source or factory work is allowed'))
     request = {'schema': 'wd.mind-pipe-request.v2', 'query_id': 'startup_work_overview',
                'nonce': '0' * 64, 'lane': 'codex-lead-1', 'scope': 'own'}
-    with pytest.raises(runtime.FullRuntimeRefused):
+    with pytest.raises(runtime.FullRuntimeRefused) as refused:
         owner.located_candidates(request)
+    assert str(refused.value) == 'mind_full_runtime_refused'
+    assert refused.value.__cause__ is None
+    assert refused.value.__suppress_context__ is True
     assert owner._state == 'READY' and owner._retained is retained
 
 
@@ -708,7 +720,7 @@ def test_lost_prewarm_generation_is_internal_fault_and_holds(monkeypatch):
     assert owner._state == 'HOLD' and owner._retained is None and handler._retained is None
 
 
-@pytest.mark.parametrize('fault', [False, True], ids=['prewarm_ok', 'prewarm_fails'])
+@pytest.mark.parametrize('fault', [None, 'generic', 'budget'], ids=['prewarm_ok', 'prewarm_fails', 'prewarm_budget'])
 def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     _runtime, _adapter, binding, factory, _calls = _full_fixtures._single_owner_synthetic(monkeypatch, tmp_path)
@@ -719,7 +731,9 @@ def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monk
     seen = []
     def prewarm(owner, *, source_budget=None):
         seen.append((owner._state, source_budget, owner._source_budget))
-        if fault:
+        if fault == 'budget':
+            raise runtime._StartupSourceBudgetRefused('source_budget')
+        if fault == 'generic':
             raise ValueError('synthetic prewarm refusal')
         owner._retained = owner._handler._retained = object()
     monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', prewarm)
@@ -731,6 +745,9 @@ def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monk
     assert seen[0][1]._remaining == 2 * 1024 ** 3
     if fault:
         assert status['state'] == 'HOLD' and owner._source_budget is seen[0][1]
+        if fault == 'budget':
+            assert owner.start_diagnostic() == {'reason':'SOURCE_PREWARM', 'exception_type':'UNKNOWN',
+                                                 'authority':'none'}
     else:
         assert status['state'] == 'READY' and owner._source_budget is None
         assert owner._prewarm_generation is owner._generation

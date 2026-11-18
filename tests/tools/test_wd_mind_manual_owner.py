@@ -11,6 +11,108 @@ import sys
 import pytest
 
 
+@pytest.mark.parametrize('mode', ['pinned', 'tampered_dependency', 'unlisted_dependency', 'wrong_manifest', 'real_disabled'])
+def test_admin_verified_bytes_closes_package_imports(tmp_path, mode):
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    text = helper.read_text(encoding='utf-8')
+    trampoline = text.split("$script:WdMindAdminVerifiedBytes = @'\n", 1)[1].split("\n'@", 1)[0]
+    root = tmp_path / 'bundle'
+    code = root / 'tools-bootstrap/tools'
+    code.mkdir(parents=True)
+    sources = {
+        'tools/__init__.py': b'',
+        'tools/dependency.py': b'VALUE = 37\n',
+        'tools/wd_mind_owner_reservation_admin.py': (
+            b'from tools import dependency\n'
+            + (b'from tools import unlisted\n' if mode == 'unlisted_dependency' else b'')
+            + b'def main(argv):\n print("SYNTHETIC", dependency.VALUE)\n return 2\n'),
+    }
+    if mode == 'real_disabled':
+        repo = helper.parents[3]
+        definition = json.loads((repo / 'ops/windows/reboot/bridge-code-files.json').read_text())
+        sources = {p: (repo / p).read_bytes() for p in definition['python_files']
+                   if p.endswith('.py') and p.startswith(('tools/', 'waggledance/'))}
+    if mode == 'unlisted_dependency':
+        (code / 'unlisted.py').write_bytes(b'raise AssertionError("unlisted ran")\n')
+    files = {}
+    for relative, content in sources.items():
+        path = root / 'tools-bootstrap' / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        files['tools-bootstrap/' + relative] = hashlib.sha256(content).hexdigest()
+    definition = json.dumps({'python_files': list(sources)}, separators=(',', ':')).encode()
+    (root / 'bridge-code-files.json').write_bytes(definition)
+    files['bridge-code-files.json'] = hashlib.sha256(definition).hexdigest()
+    manifest = json.dumps({'schema_version': 1, 'files': files}, separators=(',', ':')).encode()
+    (root / 'deployment-manifest.json').write_bytes(manifest)
+    pin = hashlib.sha256(manifest).hexdigest()
+    if mode == 'tampered_dependency':
+        (code / 'dependency.py').write_bytes(b'raise AssertionError("tampered ran")\n')
+    if mode == 'wrong_manifest':
+        pin = '0' * 64
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', trampoline, str(root), pin, 'reset'],
+                            capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 2
+    assert result.stdout.strip() == ('SYNTHETIC 37' if mode == 'pinned' else '')
+    assert result.stderr.strip() == ('owner_marker_production_route_unavailable' if mode == 'real_disabled' else '')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual admin invocation')
+@pytest.mark.parametrize('mode', ['pinned', 'disabled', 'context_tampered', 'helper_tampered'])
+def test_manual_admin_route_is_explicit_and_pinned(tmp_path, mode):
+    root = tmp_path / 'bundle'
+    root.mkdir()
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    helper_copy = root / helper.name
+    helper_copy.write_bytes(helper.read_bytes())
+    context = root / 'BridgeCodeContext.ps1'
+    context.write_text("function Get-WdBridgeCodePackageDefinition { param($Path) @{Definition=@{}} }\n"
+                       "function Assert-WdBridgeCodePackageIntegrity { param($BundleRoot,$Deployment,$Definition) }\n")
+    sources = {'tools/__init__.py': b'', 'tools/wd_mind_owner_reservation_admin.py':
+               b'def main(argv):\n print("SYNTHETIC_ROUTE")\n return 2\n'}
+    files = {}
+    for relative, content in sources.items():
+        path = root / 'tools-bootstrap' / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        files['tools-bootstrap/' + relative] = hashlib.sha256(content).hexdigest()
+    definition = json.dumps({'python_files': list(sources)}, separators=(',', ':')).encode()
+    (root / 'bridge-code-files.json').write_bytes(definition)
+    for name in (helper.name, context.name, 'bridge-code-files.json'):
+        files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
+    manifest = json.dumps({'schema_version': 1, 'files': files}, separators=(',', ':')).encode()
+    (root / 'deployment-manifest.json').write_bytes(manifest)
+    if mode == 'context_tampered':
+        context.write_text('throw "synthetic context should not run"')
+    elif mode == 'helper_tampered':
+        helper_copy.write_bytes(helper_copy.read_bytes() + b'\n# changed\n')
+    quote = lambda p: str(p).replace("'", "''")
+    enabled = '' if mode == 'disabled' else '-Enabled'
+    python = Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs/Python/Python313/python.exe'
+    if not python.is_file():
+        pytest.skip('trusted test interpreter is not available')
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    script = f"""
+$ErrorActionPreference='Stop'
+. '{quote(helper)}'
+try {{ $v=Invoke-WdMindManualReservationAdmin {enabled} -Operation reset -BundleRoot '{quote(root)}' `
+ -ExpectedManifestHash '{hashlib.sha256(manifest).hexdigest()}' -BridgePythonPath '{quote(python)}' `
+ -BridgePythonSha256 '{hashlib.sha256(python.read_bytes()).hexdigest()}'
+ Write-Output ('RESULT='+$v) }} catch {{ Write-Output ('ERROR='+$_.Exception.Message) }}
+"""
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand',
+                           base64.b64encode(script.encode('utf-16le')).decode()],
+                          capture_output=True, text=True, timeout=30, check=True)
+    if mode == 'pinned':
+        assert 'SYNTHETIC_ROUTE' in proc.stdout
+        assert '2' in proc.stdout
+        assert 'ERROR=' not in proc.stdout
+    else:
+        assert ('ERROR=mind_manual_admin_disabled' if mode == 'disabled' else
+                'ERROR=mind_manual_admin_refused') in proc.stdout
+        assert 'SYNTHETIC_ROUTE' not in proc.stdout
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
 @pytest.mark.parametrize(('reason', 'accepted'), [
     ('ADMISSION_MISSING', True), ('ADMISSION_RESERVED', True),

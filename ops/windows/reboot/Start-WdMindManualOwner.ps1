@@ -53,6 +53,109 @@ function Read-WdMindManualPinnedBytes {
     return ,$bytes
 }
 
+# Operator-invoked review route only. The packaged admin main remains disabled.
+# Python/stdlib closure and same-account tampering remain UNKNOWN.
+$script:WdMindAdminVerifiedBytes = @'
+import hashlib, hmac, importlib.abc, importlib.util, json, os, pathlib, re, stat, sys
+
+def unique(pairs):
+    result = {}
+    for k, v in pairs:
+        if k in result: raise ValueError('duplicate')
+        result[k] = v
+    return result
+
+def read(path, digest, limit):
+    before = os.lstat(path)
+    if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or
+            getattr(before, 'st_file_attributes', 0) & 0x400): raise ValueError('file')
+    with open(path, 'rb') as f:
+        opened = os.fstat(f.fileno())
+        data = f.read(limit + 1)
+        after = os.fstat(f.fileno())
+    if ((before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino) or
+        (opened.st_dev, opened.st_ino, opened.st_size) != (after.st_dev, after.st_ino, after.st_size) or
+        len(data) > limit or len(data) != opened.st_size or type(digest) is not str or
+        not re.fullmatch('[0-9a-fA-F]{64}', digest) or
+        not hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest.lower())): raise ValueError('pin')
+    return data
+
+try:
+    root = pathlib.Path(sys.argv[1])
+    expected, operation = sys.argv[2:4]
+    if not root.is_absolute() or operation not in ('create', 'reset'): raise ValueError('input')
+    raw = read(root / 'deployment-manifest.json', expected, 4 * 1024 * 1024)
+    manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    if type(manifest) is not dict or manifest.get('schema_version') != 1 or type(manifest.get('files')) is not dict: raise ValueError('manifest')
+    files = manifest['files']
+    definition_raw = read(root / 'bridge-code-files.json', files['bridge-code-files.json'], 4 * 1024 * 1024)
+    definition = json.loads(definition_raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    paths = definition['python_files']
+    if type(paths) is not list or len(paths) != len(set(paths)): raise ValueError('definition')
+    blobs = {}
+    for relative in paths:
+        if type(relative) is not str or not relative.endswith('.py'): continue
+        pieces = relative.split('/')
+        if pieces[0] not in ('tools', 'waggledance'): continue
+        if any(not re.fullmatch('[A-Za-z_][A-Za-z_0-9]*(?:\\.py)?', piece) for piece in pieces): raise ValueError('path')
+        path = root / 'tools-bootstrap' / pathlib.PurePosixPath(relative)
+        data = read(path, files['tools-bootstrap/' + relative], 8 * 1024 * 1024)
+        package = pieces[-1] == '__init__.py'
+        name = '.'.join(pieces[:-1] if package else pieces[:-1] + [pieces[-1][:-3]])
+        if name in blobs: raise ValueError('collision')
+        blobs[name] = (str(path), data, package)
+    if 'tools.wd_mind_owner_reservation_admin' not in blobs or not blobs.get('tools', (None,None,False))[2]: raise ValueError('missing')
+    if any(k == 'tools' or k.startswith('tools.') or k == 'waggledance' or k.startswith('waggledance.') for k in sys.modules): raise ValueError('loaded')
+    class Pinned(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.split('.')[0] not in ('tools', 'waggledance'): return None
+            if fullname not in blobs: raise ModuleNotFoundError('unlisted package module')
+            return importlib.util.spec_from_loader(fullname, self, is_package=blobs[fullname][2])
+        def create_module(self, spec): return None
+        def exec_module(self, module):
+            path, data, package = blobs[module.__name__]
+            module.__file__ = path
+            if package: module.__path__ = []
+            exec(compile(data, path, 'exec'), module.__dict__)
+    sys.meta_path.insert(0, Pinned())
+    from tools import wd_mind_owner_reservation_admin as admin
+    code = admin.main([operation, '--bundle-root', str(root), '--manifest-sha256', expected])
+    if type(code) is not int: raise ValueError('exit')
+except Exception:
+    raise SystemExit(2) from None
+raise SystemExit(code)
+'@
+
+function Invoke-WdMindManualReservationAdmin {
+    <# Review-only; no lane entrypoint, no live marker mutation. #>
+    [CmdletBinding()]
+    param([switch] $Enabled, [Parameter(Mandatory)][ValidateSet('create','reset')][string] $Operation,
+          [Parameter(Mandatory)][string] $BundleRoot, [Parameter(Mandatory)][string] $ExpectedManifestHash,
+          [Parameter(Mandatory)][string] $BridgePythonPath, [Parameter(Mandatory)][string] $BridgePythonSha256)
+    if (-not $Enabled) { throw 'mind_manual_admin_disabled' }
+    try {
+        $root = [IO.Path]::GetFullPath($BundleRoot).TrimEnd('\\')
+        $manifestPath = Join-Path $root 'deployment-manifest.json'
+        $utf8 = New-Object Text.UTF8Encoding($false,$true)
+        $manifest = $utf8.GetString((Read-WdMindManualPinnedBytes $manifestPath $ExpectedManifestHash 4194304)).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+        if ($manifest.schema_version -ne 1 -or $null -eq $manifest.files) { throw 'manifest' }
+        foreach ($name in @('Start-WdMindManualOwner.ps1','BridgeCodeContext.ps1','bridge-code-files.json')) {
+            $pin = $manifest.files.PSObject.Properties[$name]
+            if ($null -eq $pin -or $pin.Value -isnot [string]) { throw 'pin' }
+            $bytes = Read-WdMindManualPinnedBytes (Join-Path $root $name) $pin.Value 8388608
+            if ($name -ceq 'Start-WdMindManualOwner.ps1' -and
+                $utf8.GetString($bytes).TrimStart([char]0xFEFF) -cne $script:WdMindManualOwnerHelperText) { throw 'helper' }
+            if ($name -ceq 'BridgeCodeContext.ps1') { $contextBytes = $bytes }
+        }
+        [void](Read-WdMindManualPinnedBytes $BridgePythonPath $BridgePythonSha256 134217728)
+        . ([scriptblock]::Create($utf8.GetString($contextBytes).TrimStart([char]0xFEFF)))
+        $package = Get-WdBridgeCodePackageDefinition -Path (Join-Path $root 'bridge-code-files.json')
+        [void](Assert-WdBridgeCodePackageIntegrity -BundleRoot $root -Deployment $manifest -Definition $package.Definition)
+        & $BridgePythonPath -I -S -B -c $script:WdMindAdminVerifiedBytes $root $ExpectedManifestHash $Operation
+        return [int]$LASTEXITCODE
+    } catch { throw 'mind_manual_admin_refused' }
+}
+
 function Get-WdMindManualOwnerRecord {
     param([Parameter(Mandatory)] $Owner)
     if ($null -eq $Owner -or $Owner.Token -cnotmatch '\A[0-9a-f]{32}\z' -or

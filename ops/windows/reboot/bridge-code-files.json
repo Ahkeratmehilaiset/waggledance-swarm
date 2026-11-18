@@ -96,6 +96,7 @@
     "tools/wd_mind_e5_worker.py",
     "tools/wd_mind_full_runtime.py",
     "tools/wd_mind_interpreter_identity.py",
+    "tools/wd_mind_owner_reservation_admin.py",
     "tools/wd_mind_retained_query.py",
     "tools/wd_mind_runtime_bootstrap.py",
     "tools/wd_mind_runtime_child.py",

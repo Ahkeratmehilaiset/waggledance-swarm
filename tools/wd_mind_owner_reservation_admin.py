@@ -617,6 +617,14 @@ def _checked_observe(observe):
         raise _AdminReason('HOST_OBSERVATION_UNAVAILABLE') from None
 
 
+def _report_reset_interruption(original):
+    """Best effort only; abnormal exit or absent receipt always means UNKNOWN."""
+    try:
+        print('RESET_PUBLICATION_UNCERTAIN', file=sys.stderr, flush=True)
+    except BaseException as notification_failure:
+        raise original from notification_failure
+
+
 def _release_verified(guard, verify_binding, *, _scope=_SYNTHETIC_SCOPE):
     """Release a verified R marker; a failed post-write result is uncertain."""
     if _scope is _PRODUCTION_SCOPE:
@@ -650,14 +658,17 @@ def _release_verified(guard, verify_binding, *, _scope=_SYNTHETIC_SCOPE):
         guard.fd = -1
     except Exception:
         raise ReservationAdminRefused('RESET_PUBLICATION_UNCERTAIN') from None
+    except BaseException as interruption:
+        _report_reset_interruption(interruption)
+        raise
 
 
 def _repair_marker_locked(guard, directory_handle, observe, interpreter_root, interpreter, verify_binding, *, scope):
     """Shared damaged-byte repair only after scope and held-handle checks.
 
-    Production remains disabled. Same-user ABA, the process snapshot/spawn
-    race, and wall-clock movement remain UNKNOWN. An interrupt after a write
-    begins is propagated, but publication remains uncertain: do not retry.
+    Production requires the pinned guarded entry. Same-user ABA, the process
+    snapshot/spawn race and wall-clock movement remain UNKNOWN. An interrupt
+    after a write begins is propagated; publication remains uncertain.
     """
     if scope is _PRODUCTION_SCOPE:
         _require_production_activation()
@@ -715,6 +726,9 @@ def _repair_marker_locked(guard, directory_handle, observe, interpreter_root, in
         guard.fd = -1
     except Exception:
         raise _AdminReason('RESET_PUBLICATION_UNCERTAIN') from None
+    except BaseException as interruption:
+        _report_reset_interruption(interruption)
+        raise
 
 
 def _repair_synthetic_marker(guard, directory_handle, observe, interpreter_root, interpreter, verify_binding):
@@ -819,7 +833,12 @@ def _production_marker(*, operation, bundle_root, manifest_sha256):
             primary = sys.exc_info()[1]
             try:
                 guard.abandon()
-            except Exception:
+            except BaseException as cleanup_failure:
+                if primary is not None and not isinstance(primary, Exception):
+                    primary.add_note('CLEANUP_UNCERTAIN')
+                    raise primary from cleanup_failure
+                if not isinstance(cleanup_failure, Exception):
+                    raise
                 if (isinstance(primary, (_AdminReason, ReservationAdminRefused))
                         and str(primary) == 'RESET_PUBLICATION_UNCERTAIN'):
                     raise ReservationAdminRefused('RESET_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN') from None
@@ -939,7 +958,12 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
             primary = sys.exc_info()[1]
             try:
                 guard.abandon()
-            except Exception:
+            except BaseException as cleanup_failure:
+                if primary is not None and not isinstance(primary, Exception):
+                    primary.add_note('CLEANUP_UNCERTAIN')
+                    raise primary from cleanup_failure
+                if not isinstance(cleanup_failure, Exception):
+                    raise
                 if (isinstance(primary, ReservationAdminRefused)
                         and str(primary) == 'RESET_PUBLICATION_UNCERTAIN'):
                     raise ReservationAdminRefused(

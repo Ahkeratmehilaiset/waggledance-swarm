@@ -1618,6 +1618,67 @@ def test_synthetic_production_reset_reports_publication_and_cleanup_uncertain(
         'owner_marker_reset_publication_uncertain;cleanup_uncertain')
 
 
+@pytest.mark.parametrize('damaged', [False, True])
+@pytest.mark.parametrize('interrupt_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('cleanup_error', [None, OSError, KeyboardInterrupt])
+def test_synthetic_reset_interrupt_preserves_original_and_reports_unknown(
+        tmp_path, monkeypatch, capsys, damaged, interrupt_type, cleanup_error):
+    root, runtime, marker = _paths(tmp_path)
+    interpreter = runtime / 'synthetic-interpreter.exe'
+    interpreter.write_bytes(b'synthetic')
+    marker.write_bytes(b'invalid marker' if damaged else child._OWNER_RESERVATION_MAGIC + b'R')
+    old = time.time_ns() - 20_000_000_000
+    os.utime(marker, ns=(old, old))
+    store = tmp_path / 'synthetic-bundles'
+    commit, pin = 'a' * 40, 'b' * 64
+    (store / commit).mkdir(parents=True)
+    monkeypatch.setattr(admin, '_BUNDLE_STORE', store)
+    monkeypatch.setattr(admin, '_FIXED_PRODUCTION_ROOT', root)
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', lambda _root: None)
+    monkeypatch.setattr(admin, '_current_binding', lambda *_: (
+        {'interpreter_status': 'VERIFIED', 'interpreter_root': str(runtime),
+         'interpreter': str(interpreter)}, lambda: None))
+    monkeypatch.setattr(admin, '_observe_windows', lambda: (time.time_ns() - 1_000_000_000, ()))
+    original_write = os.write
+    fault = interrupt_type('synthetic interrupt')
+    calls = []
+    def interrupted_write(fd, data):
+        calls.append(data)
+        original_write(fd, data)
+        raise fault
+    monkeypatch.setattr(admin.os, 'write', interrupted_write)
+    if cleanup_error is not None:
+        original_abandon = child._LocalOwnerReservation.abandon
+        def failed_cleanup(guard):
+            original_abandon(guard)
+            raise cleanup_error('synthetic cleanup failure')
+        monkeypatch.setattr(child._LocalOwnerReservation, 'abandon', failed_cleanup)
+    with pytest.raises(interrupt_type) as exc:
+        admin.main(['reset', '--source-commit', commit, '--manifest-sha256', pin])
+    assert exc.value is fault
+    assert 'RESET_PUBLICATION_UNCERTAIN' in capsys.readouterr().err
+    if cleanup_error is not None:
+        assert isinstance(exc.value.__cause__, cleanup_error)
+        assert 'CLEANUP_UNCERTAIN' in getattr(exc.value, '__notes__', ())
+    assert len(calls) == 1
+    assert marker.read_bytes().startswith(child._OWNER_RESERVATION_MAGIC)
+
+
+@pytest.mark.parametrize('notification_failure', [OSError, KeyboardInterrupt])
+@pytest.mark.parametrize('interrupt_type', [KeyboardInterrupt, SystemExit])
+def test_reset_interruption_keeps_original_if_reporting_fails(monkeypatch, notification_failure, interrupt_type):
+    class Unwritable:
+        def write(self, _text): raise notification_failure('synthetic notification error')
+    fault = interrupt_type('synthetic original')
+    with monkeypatch.context() as patch:
+        patch.setattr(admin.sys, 'stderr', Unwritable())
+        with pytest.raises(interrupt_type) as exc:
+            admin._report_reset_interruption(fault)
+    assert exc.value is fault
+    assert isinstance(exc.value.__cause__, notification_failure)
+
+
 def test_production_entry_and_root_refuse_before_mutation(tmp_path, monkeypatch, capsys):
     root, runtime, marker = _paths(tmp_path)
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)

@@ -1,9 +1,11 @@
-"""Verified-bytes operator bootstrap, with production administration disabled.
+"""Verified-bytes bootstrap for a pinned operator administration candidate.
 
 This module is data for a separately reviewed operator command; executing this
 file by name is deliberately refused. The command must pin and execute these
 exact bytes from an externally anchored deployment manifest before calling
-``_run``. This is not a human-authentication boundary: same-account changes,
+``_run``. This candidate is not evidence of installation or human authentication.
+Abnormal exit or absent unambiguous receipt means UNKNOWN: never automatically
+retry or revert a reset. Same-account changes,
 interpreter/stdlib/DLL integrity and changes between checks remain UNKNOWN.
 """
 from __future__ import annotations

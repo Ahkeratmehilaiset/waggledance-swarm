@@ -139,6 +139,7 @@ class _LocalAdmission:
         self._guard_anchor, self._cleanup_evidence = guard, cleanup_evidence
         self._owner = self._factory = self._worker = None
         self._spawning = self._unknown = self._closed = False
+        self._pre_resource_refusal = False
 
     def _check_locked(self):
         if (self._closed or self._unknown or self._guard is not self._guard_anchor
@@ -193,13 +194,25 @@ class _LocalAdmission:
                 raise LaunchRefused('owner_admission_refused')
             self._worker = None
             self._spawning = True
+            self._pre_resource_refusal = False
+
+    def note_pre_resource_refusal(self, owner, factory):
+        """Record a refusal observed before the lifecycle reservation was entered."""
+        with self._lock:
+            self._check_locked()
+            if (owner is not self._owner or factory is not self._factory
+                    or not self._spawning or self._worker is not None):
+                self._unknown = True
+                raise LaunchRefused('owner_admission_refused')
+            self._pre_resource_refusal = True
 
     def capture_worker(self, owner, factory, worker):
         with self._lock:
             self._check_locked()
             from tools import wd_mind_e5_lifecycle as lifecycle
             if (owner is not self._owner or factory is not self._factory or not self._spawning
-                    or self._worker is not None or type(worker) is not lifecycle._Owner
+                    or self._worker is not None or self._pre_resource_refusal
+                    or type(worker) is not lifecycle._Owner
                     or worker._require_spawn_attempt is not True):
                 self._unknown = True
                 raise LaunchRefused('owner_admission_refused')
@@ -215,9 +228,11 @@ class _LocalAdmission:
     def finish_worker_start(self, owner, factory):
         with self._lock:
             if (owner is not self._owner or factory is not self._factory
-                    or not self._spawning or self._worker is None):
+                    or not self._spawning
+                    or (self._worker is None and self._pre_resource_refusal is not True)):
                 self._unknown = True
             self._spawning = False
+            self._pre_resource_refusal = False
 
     def quiescent(self):
         with self._lock:
@@ -251,6 +266,7 @@ def _reserve_local_owner(root):
     owner must be independently established before provisioning; it is UNKNOWN.
     """
     fd = None
+    refusal = 'owner_reservation_hold'
     try:
         if os.name != 'nt' or not isinstance(root, Path) or not root.is_absolute():
             raise LaunchRefused('owner_reservation_invalid')
@@ -258,6 +274,11 @@ def _reserve_local_owner(root):
         import msvcrt
         path = root / _OWNER_RESERVATION_NAME
         absent._plain(root, directory=True)
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            refusal = 'owner_reservation_missing'
+            raise
         absent._plain(path, directory=False)
         root_stat, path_stat = os.lstat(root), os.lstat(path)
         if not root_stat.st_ino or not path_stat.st_ino or path_stat.st_nlink != 1:
@@ -268,7 +289,11 @@ def _reserve_local_owner(root):
         guard = _LocalOwnerReservation(root, path, fd,
             (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
         guard._check()
-        if guard._read() != _OWNER_RESERVATION_MAGIC + b'C':
+        marker = guard._read()
+        if marker == _OWNER_RESERVATION_MAGIC + b'R':
+            refusal = 'owner_reservation_reserved'
+            raise LaunchRefused('owner_reservation_hold')
+        if marker != _OWNER_RESERVATION_MAGIC + b'C':
             raise LaunchRefused('owner_reservation_hold')
         os.lseek(fd, len(_OWNER_RESERVATION_MAGIC), os.SEEK_SET)
         if os.write(fd, b'R') != 1:
@@ -283,7 +308,7 @@ def _reserve_local_owner(root):
         if fd is not None:
             try: os.close(fd)
             except OSError: pass
-        raise LaunchRefused('owner_reservation_hold') from None
+        raise LaunchRefused(refusal) from None
 _BOOTSTRAP_REFUSALS = frozenset({"isolation_required", "runtime_verification_failed", "reader_execution_failed"})
 _READER_REFUSALS = frozenset({
     "stdin_unreadable", "stdin_over_budget", "stdin_not_json", "query_shape", "situation_invalid", "time_invalid",
@@ -2158,6 +2183,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
         raise LaunchRefused("mind_e5_start_refused") from None
     _admission.assert_worker_start(_admission_owner, _admission_factory)
     job = process = owner = None
+    owner_reservation_entered = False
     try:
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800
                 or (bulk_contract_sha256 is not None and
@@ -2279,9 +2305,11 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                         or lifecycle.BULK_STDOUT_BYTES != 64 * 1024 * 1024
                         or client_module.BULK_CONTRACT_SHA256 != BULK_CONTRACT_SHA256):
                     raise ValueError('bulk_contract_mismatch')
+                owner_reservation_entered = True
                 owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=bulk_contract_sha256,
                                           require_spawn_attempt=True)
             else:
+                owner_reservation_entered = True
                 owner = lifecycle.reserve(enabled=True, require_spawn_attempt=True)
             _admission.capture_worker(_admission_owner, _admission_factory, owner)
             owner.mark_job_attempt()
@@ -2332,6 +2360,8 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                 status = owner.shutdown(timeout=0)
                 return {"status": "HOLD" if status["owned"] else "REFUSED", "client": None,
                         "owner": owner, "lifecycle": status, "authority": "none"}
+            if not owner_reservation_entered and job is None and process is None:
+                _admission.note_pre_resource_refusal(_admission_owner, _admission_factory)
             raise LaunchRefused("mind_e5_start_refused") from None
     raise LaunchRefused("mind_e5_start_refused") from None
 
@@ -2550,13 +2580,12 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         control_thread.start()
         while not stop.is_set():
             owner_status = adapter.status()
-            # A query holds the owner's lock; BUSY is not an owner failure.
-            # Only tolerate it after the service has already reported READY.
-            if (type(owner_status) is dict and owner_status.get('state') == 'BUSY'
-                    and service is not None and last_state == 'READY'):
-                stop.wait(0.1)
-                continue
-            if type(owner_status) is not dict or owner_status.get('state') not in ('STARTING', 'READY'):
+            # Service creation is reachable only after an owned READY state.
+            # A query can make the owner BUSY before READY was emitted; still
+            # inspect service completion/errors and do not fail that query.
+            busy = (type(owner_status) is dict and owner_status.get('state') == 'BUSY'
+                    and service is not None)
+            if not busy and (type(owner_status) is not dict or owner_status.get('state') not in ('STARTING', 'READY')):
                 failed = True
                 break
             if owner_status.get('state') == 'READY' and service is None:
@@ -2706,13 +2735,35 @@ def _parent_control_entry(*, control_stream, output_stream, bundle_root, expecte
             _PARENT_ACTIVE = None
 
 
+def _emit_preowner_diagnostic(out, manifest, reason, exception_type, v2):
+    """Emit only fixed non-sensitive status/diagnostic records."""
+    status = {'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
+        'manifest_sha256':manifest, 'authority':'none',
+        'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
+        'index_refresh':'NOT_SCHEDULED'}
+    diagnostic = {'schema':'wd.mind-local-owner-start-diagnostic.v2' if v2 else
+        'wd.mind-local-owner-start-diagnostic.v1', 'reason':reason,
+        'exception_type':exception_type, 'authority':'none'}
+    if v2:
+        diagnostic.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
+    for record in (status, diagnostic):
+        data = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+        offset = 0
+        while offset < len(data):
+            count = out.write(memoryview(data)[offset:])
+            if type(count) is not int or not 0 < count <= len(data) - offset:
+                raise ValueError('diagnostic_write')
+            offset += count
+        out.flush()
+
+
 def _guarded_local_entry(entry, **kwargs):
     """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
     if entry is _local_query_entry:
         return 2  # The closed route must not reserve or change the owner marker.
     try:
         guard = _reserve_local_owner(_AUDIT_ROOT)
-    except LaunchRefused:
+    except LaunchRefused as exc:
         # This is a pre-owner failure. Do not inspect or repair the marker;
         # never expose its path, bytes, or the underlying exception.
         v1 = kwargs.get('include_start_diagnostics') is True
@@ -2721,25 +2772,9 @@ def _guarded_local_entry(entry, **kwargs):
         if (entry is _local_candidate_owner_entry and (v1 or v2)
                 and type(manifest) is str and _HEX.fullmatch(manifest)):
             try:
-                status = {'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
-                    'manifest_sha256':manifest, 'authority':'none',
-                    'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
-                    'index_refresh':'NOT_SCHEDULED'}
-                diagnostic = {'schema':'wd.mind-local-owner-start-diagnostic.v2' if v2 else
-                    'wd.mind-local-owner-start-diagnostic.v1', 'reason':'ADMISSION',
-                    'exception_type':'LaunchRefused', 'authority':'none'}
-                if v2:
-                    diagnostic.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
-                out = kwargs['output_stream']
-                for record in (status, diagnostic):
-                    data = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
-                    offset = 0
-                    while offset < len(data):
-                        count = out.write(memoryview(data)[offset:])
-                        if type(count) is not int or not 0 < count <= len(data) - offset:
-                            raise ValueError('diagnostic_write')
-                        offset += count
-                    out.flush()
+                reason = {'owner_reservation_missing':'ADMISSION_MISSING',
+                          'owner_reservation_reserved':'ADMISSION_RESERVED'}.get(str(exc), 'ADMISSION')
+                _emit_preowner_diagnostic(kwargs['output_stream'], manifest, reason, 'LaunchRefused', v2)
             except Exception:
                 pass  # Output uncertainty remains a refusal, never READY.
         return 2
@@ -2863,13 +2898,23 @@ def _fixed_child_main(argv):
                         and _HEX.fullmatch(argv[4]) and _HEX.fullmatch(argv[6]))
     if argv not in (['--mind-owner-child'], ['--parent-control']) and not local_owner and not local_owner_path:
         return 2
+    expected = ''
     try:
         expected = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         if not _HEX.fullmatch(expected):
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
         if __name__ == '__main__':
-            canonical = _load_pinned_canonical_child(Path(bundle), expected)
+            try:
+                canonical = _load_pinned_canonical_child(Path(bundle), expected)
+            except BaseException as exc:
+                if (local_owner or local_owner_path) and (diagnostic_optin or worker_diagnostic_optin):
+                    try:
+                        _emit_preowner_diagnostic(sys.stdout.buffer, expected, 'IMPORT',
+                                                  _local_exception_type(exc), worker_diagnostic_optin)
+                    except BaseException:
+                        pass
+                return 2
             return canonical._fixed_child_main(argv + ([diagnostic_flag] if diagnostic_flag else []))
         if local_owner_path:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,

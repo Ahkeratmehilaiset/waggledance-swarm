@@ -59,8 +59,9 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
             b'"index_refresh":"NOT_SCHEDULED","manifest_sha256":"' + b'a' * 64 +
             b'","schema":"wd.mind-local-owner-status.v1",'
             b'"source_authentication":"UNKNOWN","state":"HOLD"}\n')
+        reason = {'missing': 'ADMISSION_MISSING', 'reserved': 'ADMISSION_RESERVED'}.get(condition, 'ADMISSION')
         diagnostic_wire = (b'{"authority":"none","exception_type":"LaunchRefused",'
-            b'"reason":"ADMISSION","schema":"wd.mind-local-owner-start-diagnostic.' +
+            b'"reason":"' + reason.encode('ascii') + b'","schema":"wd.mind-local-owner-start-diagnostic.' +
             diagnostics.encode('ascii') + b'"')
         if diagnostics == 'v2':
             diagnostic_wire += b',"worker_exit_code":null,"worker_exit_stage_hint":"UNKNOWN"'
@@ -70,7 +71,7 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
             'manifest_sha256':'a' * 64, 'authority':'none', 'caller_authentication':'UNKNOWN',
             'source_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'}
         expected = {'schema':'wd.mind-local-owner-start-diagnostic.' + diagnostics,
-            'reason':'ADMISSION', 'exception_type':'LaunchRefused', 'authority':'none'}
+            'reason':reason, 'exception_type':'LaunchRefused', 'authority':'none'}
         if diagnostics == 'v2':
             expected.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
         assert detail == expected
@@ -110,7 +111,7 @@ def test_reservation_diagnostic_accepts_successful_short_writes(tmp_path, monkey
     assert child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
         expected_manifest_sha256='a' * 64, include_start_diagnostics=True) == 2
     status, detail = map(json.loads, output.getvalue().splitlines())
-    assert status['state'] == 'HOLD' and detail['reason'] == 'ADMISSION'
+    assert status['state'] == 'HOLD' and detail['reason'] == 'ADMISSION_MISSING'
     assert detail['exception_type'] == 'LaunchRefused'
     assert not (root / MARKER).exists()
 

@@ -571,7 +571,6 @@ def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatc
     owner = object.__new__(runtime._SingleManifestOwner)
     owner._generation = (binding, snapshot, None)
     owner._source_budget = prefix._SourceReadBudget(1)
-    owner._batch_proof = None
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory', lambda _self: None)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
     monkeypatch.setattr(runtime, '_bundle_inputs', lambda *_args: controls)

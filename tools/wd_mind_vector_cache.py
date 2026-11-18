@@ -18,7 +18,6 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import hashlib
-import hmac
 import json
 import math
 import os
@@ -39,23 +38,6 @@ _MAX_HEADER = 8192
 _MAGIC = b"WDMVC1\n"
 _CACHE_ROOT = Path(r"C:\wd-mind-private\vector-cache")
 _CACHE_NAME = "vectors.bin"
-# ONE-OFF AUDIT WIP. Do not ship this exception as production configuration.
-_AUDIT_ROOT = Path(r"C:\Python\project2\.codex-audit\pr2179-real-e5-160-20261117")
-_AUDIT_CACHE_ROOT = _AUDIT_ROOT / "private" / "vector-cache"
-_AUDIT_SOURCE = _AUDIT_ROOT / "source-runtime" / "shared" / "events.jsonl"
-_AUDIT_SOURCE_SHA256 = "12e4d84e121a712e225da840cc7a16802a6588c3e91adfe93f4c7bc31e02e4f5"
-_AUDIT_SOURCE_SIZE = 38400
-_AUDIT_BUNDLE_NAME = re.compile(r"git-bundle-([0-9a-f]{8})-real-pending\Z")
-_AUDIT_IDENTITY = re.compile(r"windows-v1:[0-9a-f]{8}:[0-9a-f]{16}\Z")
-# Namespace ancestry is not yet proved safe against non-admin replacement.
-# This is an internal test seam, not an operator-controlled runtime option.
-_AUDIT_WIP_ENABLED = False
-# This remains false: ancestor namespace safety is not independently proven.
-_AUDIT_NAMESPACE_PROVEN = False
-# Operator accepted UNKNOWN namespace tampering only for the fixed 160-row
-# synthetic experiment. This is not proof and grants no production exception.
-_FIXED_SYNTHETIC_AUDIT_ENABLED = True
-_AUDIT_LEAF = re.compile(r"vectors\.bin(?:\.lock|\.[0-9a-f]{32}\.tmp)?\Z")
 
 
 class CacheRefused(ValueError):
@@ -140,21 +122,6 @@ class _HandleInfo(ctypes.Structure):
                 ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
 
 
-class _UnicodeString(ctypes.Structure):
-    _fields_ = [("length", wintypes.USHORT), ("maximum_length", wintypes.USHORT),
-                ("buffer", wintypes.LPWSTR)]
-
-
-class _ObjectAttributes(ctypes.Structure):
-    _fields_ = [("length", wintypes.ULONG), ("root", wintypes.HANDLE),
-                ("name", ctypes.POINTER(_UnicodeString)), ("attributes", wintypes.ULONG),
-                ("security_descriptor", ctypes.c_void_p), ("quality", ctypes.c_void_p)]
-
-
-class _IoStatusBlock(ctypes.Structure):
-    _fields_ = [("status_or_pointer", ctypes.c_void_p), ("information", ctypes.c_size_t)]
-
-
 class _Acl(ctypes.Structure):
     _fields_ = [("revision", ctypes.c_ubyte), ("pad", ctypes.c_ubyte), ("size", wintypes.WORD),
                 ("count", wintypes.WORD), ("pad2", wintypes.WORD)]
@@ -225,83 +192,6 @@ class _Native:
         except BaseException:
             self.kernel.CloseHandle(handle)
             raise
-
-    def open_relative(self, parent, name, disposition, access, share, *, directory=False, missing_ok=False, _audit=None):
-        """Audit-only relative leaf; namespace tampering remains UNKNOWN."""
-        if _AUDIT_NAMESPACE_PROVEN is not True and not _fixed_synthetic_audit_directory(_audit, self, parent):
-            raise CacheRefused("audit_namespace_unverified")
-        if (type(name) is not str or not _AUDIT_LEAF.fullmatch(name) or directory is not False
-                or disposition not in (1, 3) or type(access) is not int or type(share) is not int):
-            raise CacheRefused("audit_leaf")
-        nt = ctypes.WinDLL("ntdll", use_last_error=True)
-        nt.NtCreateFile.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG,
-            ctypes.POINTER(_ObjectAttributes), ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
-            wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
-        nt.NtCreateFile.restype = ctypes.c_long
-        chars = ctypes.create_unicode_buffer(name)
-        text = _UnicodeString(len(name.encode("utf-16-le")), (len(name) + 1) * 2,
-                              ctypes.cast(chars, wintypes.LPWSTR))
-        attrs = _ObjectAttributes(ctypes.sizeof(_ObjectAttributes), parent, ctypes.pointer(text),
-                                  0x40, None, None)  # OBJ_CASE_INSENSITIVE; single leaf only.
-        result, handle = _IoStatusBlock(), wintypes.HANDLE()
-        desired = access | 0x80 | 0x20000 | 0x100000 | (0x80000 if disposition == 1 else 0)
-        status = nt.NtCreateFile(ctypes.byref(handle), desired, ctypes.byref(attrs), ctypes.byref(result),
-            None, 0x80, share, 2 if disposition == 1 else 1, 0x00200020, None, 0) & 0xffffffff
-        if status == 0xc0000034 and disposition == 3:
-            if missing_ok:
-                return None
-            raise CacheMiss("missing")
-        if status != 0:
-            raise CacheRefused("audit_relative_open")
-        try:
-            if result.information != (2 if disposition == 1 else 1):
-                raise CacheRefused("audit_relative_disposition")
-            info = _HandleInfo()
-            if (not self.kernel.GetFileInformationByHandle(handle, ctypes.byref(info))
-                    or self.kernel.GetFileType(handle) != 1 or info.attributes & 0x410):
-                raise CacheRefused("audit_relative_type")
-            if info.links != 1:
-                raise CacheRefused("audit_hardlink")
-            if disposition == 1:
-                self.set_created_user_owner(handle)
-            self.user_acl(handle)
-            return handle.value
-        except BaseException:
-            self.kernel.CloseHandle(handle)
-            raise
-
-    def rename_relative(self, source_handle, parent, name, *, _audit=None):
-        """Experimental NT rename using a held target directory handle."""
-        if _AUDIT_NAMESPACE_PROVEN is not True and not _fixed_synthetic_audit_directory(_audit, self, parent):
-            raise CacheRefused("audit_namespace_unverified")
-        if name != _CACHE_NAME:
-            raise CacheRefused("audit_leaf")
-        source_info, parent_info = _HandleInfo(), _HandleInfo()
-        if (not self.kernel.GetFileInformationByHandle(source_handle, ctypes.byref(source_info))
-                or not self.kernel.GetFileInformationByHandle(parent, ctypes.byref(parent_info))
-                or source_info.attributes & 0x410 or source_info.links != 1
-                or not parent_info.attributes & 0x10 or parent_info.attributes & 0x400):
-            raise CacheRefused("audit_relative_type")
-        self.user_acl(source_handle)
-        self.user_acl(parent, provisioned_dir=True)
-        class RenameInfo(ctypes.Structure):
-            _fields_ = [("replace", ctypes.c_ubyte), ("root", wintypes.HANDLE),
-                        ("length", wintypes.DWORD), ("name", wintypes.WCHAR * len(name))]
-        # Allocate at least sizeof(FILE_RENAME_INFORMATION) plus filename bytes,
-        # including padding and a terminator, as required by the NT contract.
-        name_bytes = len(name.encode("utf-16-le"))
-        storage = ctypes.create_string_buffer(ctypes.sizeof(RenameInfo) + name_bytes + 2)
-        info = ctypes.cast(storage, ctypes.POINTER(RenameInfo)).contents
-        info.replace, info.root, info.length, info.name = 1, parent, name_bytes, name
-        nt = ctypes.WinDLL("ntdll", use_last_error=True)
-        nt.NtSetInformationFile.argtypes = [wintypes.HANDLE, ctypes.POINTER(_IoStatusBlock),
-                                            ctypes.c_void_p, wintypes.ULONG, wintypes.ULONG]
-        nt.NtSetInformationFile.restype = ctypes.c_long
-        result = _IoStatusBlock()
-        status = nt.NtSetInformationFile(source_handle, ctypes.byref(result), storage,
-                                         len(storage), 10) & 0xffffffff
-        if status != 0:
-            raise CacheRefused("audit_relative_rename")
 
     def user_acl(self, handle, *, provisioned_dir=False):
         owner, acl, security, token, system = (ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p(),
@@ -388,213 +278,18 @@ class _Native:
                 self.kernel.CloseHandle(token)
 
 
-def _same_path(left, right):
-    if not isinstance(left, (str, Path)):
-        return False
-    path = Path(left)
-    return (path.is_absolute() and ".." not in path.parts
-            and os.path.normcase(os.path.normpath(str(path))) == os.path.normcase(os.path.normpath(str(right))))
-
-
-class _AuditPermit:
-    """One pinned, synthetic-only audit route; never an operator configuration."""
-    __slots__ = ("bundle", "manifest_pin", "source_identity")
-
-    def __init__(self, bundle, manifest_pin, source_identity):
-        object.__setattr__(self, "bundle", bundle)
-        object.__setattr__(self, "manifest_pin", manifest_pin)
-        object.__setattr__(self, "source_identity", source_identity)
-
-    def __setattr__(self, name, value):
-        raise AttributeError("immutable")
-
-
-def _fixed_synthetic_audit_permit(permit):
-    return (_FIXED_SYNTHETIC_AUDIT_ENABLED is True and type(permit) is _AuditPermit
-            and _same_path(permit.bundle.parent, _AUDIT_ROOT)
-            and _AUDIT_BUNDLE_NAME.fullmatch(permit.bundle.name) is not None
-            and type(permit.manifest_pin) is str and _HEX.fullmatch(permit.manifest_pin) is not None
-            and type(permit.source_identity) is str and _AUDIT_IDENTITY.fullmatch(permit.source_identity) is not None)
-
-
-def _audit_permit(bundle, manifest_pin, manifest_bytes, source_path, prefix_sha, offset, source_identity):
-    if _AUDIT_WIP_ENABLED is not True and _FIXED_SYNTHETIC_AUDIT_ENABLED is not True:
-        raise CacheRefused("audit_path_unverified")
-    bundle = Path(bundle)
-    if (not _same_path(bundle.parent, _AUDIT_ROOT) or not _AUDIT_BUNDLE_NAME.fullmatch(bundle.name)
-            or type(manifest_pin) is not str or not _HEX.fullmatch(manifest_pin.lower())
-            or type(manifest_bytes) is not bytes
-            or not hmac.compare_digest(hashlib.sha256(manifest_bytes).hexdigest(), manifest_pin.lower())
-            or not _same_path(source_path, _AUDIT_SOURCE) or prefix_sha != _AUDIT_SOURCE_SHA256
-            or type(offset) is not int or offset != _AUDIT_SOURCE_SIZE
-            or type(source_identity) is not str or not _AUDIT_IDENTITY.fullmatch(source_identity)):
-        raise CacheRefused("audit_binding")
-    document = json.loads(manifest_bytes.decode("utf-8-sig"), object_pairs_hook=_unique,
-                          parse_constant=lambda _: (_ for _ in ()).throw(CacheRefused("audit_manifest")))
-    commit = document.get("source_commit") if type(document) is dict else None
-    if (type(document) is not dict or type(document.get("schema_version")) is not int
-            or document['schema_version'] != 1 or type(document.get("files")) is not dict
-            or type(commit) is not str or not re.fullmatch(r"[0-9a-f]{40}", commit)
-            or bundle.name != "git-bundle-" + commit[:8] + "-real-pending"):
-        raise CacheRefused("audit_bundle")
-    return _AuditPermit(bundle, manifest_pin.lower(), source_identity)
-
-
-def _audit_for_bundle(bundle, manifest_pin, manifest_bytes, args):
-    path = Path(bundle)
-    if not path.is_absolute() or ".." in path.parts:
-        raise CacheRefused("bundle_path")
-    root = os.path.normcase(os.path.normpath(str(_AUDIT_ROOT)))
-    selected = os.path.normcase(os.path.normpath(str(path)))
-    lexical_audit = selected == root or selected.startswith(root + os.sep)
-    real_root = os.path.normcase(os.path.normpath(os.path.realpath(str(_AUDIT_ROOT))))
-    real_selected = os.path.normcase(os.path.normpath(os.path.realpath(str(path))))
-    real_audit = real_selected == real_root or real_selected.startswith(real_root + os.sep)
-    if real_audit and not lexical_audit:
-        raise CacheRefused("audit_bundle_alias")
-    if not lexical_audit:
-        return None  # Normal production binding; no audit path is enabled.
-    if _AUDIT_WIP_ENABLED is not True and _FIXED_SYNTHETIC_AUDIT_ENABLED is not True:
-        raise CacheRefused("audit_path_unverified")
-    if type(args) is not dict:
-        raise CacheRefused("audit_binding")
-    cursor = args.get("cursor")
-    if cursor is None or getattr(cursor, "generation", object()) is not None:
-        raise CacheRefused("audit_binding")
-    return _audit_permit(path, manifest_pin, manifest_bytes, args.get("source_path"),
-                         args.get("expected_prefix_sha256"), getattr(cursor, "offset", None),
-                         getattr(cursor, "file_identity", None))
-
-
-def _audit_cache_path(permit):
-    if type(permit) is not _AuditPermit:
-        raise CacheRefused("audit_binding")
-    return _AUDIT_CACHE_ROOT / _CACHE_NAME
-
-
-def _audit_binding(binding, permit):
-    if permit is None:
-        return
-    if (type(permit) is not _AuditPermit or binding['prefix_offset'] != _AUDIT_SOURCE_SIZE
-            or binding['prefix_sha256'] != _AUDIT_SOURCE_SHA256
-            or binding['source_identity_sha256'] != hashlib.sha256(_canonical(permit.source_identity)).hexdigest()
-            or binding['source_generation_sha256'] != hashlib.sha256(_canonical(None)).hexdigest()):
-        raise CacheRefused("audit_binding")
-
-
-class _AuditScope:
-    """Hold synthetic source and manifest handles throughout cache I/O."""
-    def __init__(self, native, permit):
-        self.native, self.permit, self.handles, self.files = native, permit, [], []
-        self.manifest = self.source = None
-
-    def _parents(self, path, *, private):
-        current = Path(path.anchor)
-        opened = []
-        for part in (None, *path.parts[1:]):
-            if part is not None:
-                current /= part
-            handle = self.native.open(current, 3, 0x80, 3, directory=True)
-            self.handles.append(handle)
-            opened.append(handle)
-        if private:
-            self.native.user_acl(opened[-1], provisioned_dir=True)
-
-    def _file(self, path, *, private):
-        import msvcrt
-        self._parents(path.parent, private=private)
-        try:
-            handle = self.native.open(path, 3, 0x80000000, 1)
-        except CacheMiss:
-            raise CacheRefused("audit_file_missing") from None
-        try:
-            if private:
-                self.native.user_acl(handle)
-            fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
-        except BaseException:
-            self.native.kernel.CloseHandle(handle)
-            raise
-        try:
-            file = os.fdopen(fd, "rb")
-        except BaseException:
-            os.close(fd)
-            raise
-        self.files.append(file)
-        return file
-
-    def _check(self):
-        import msvcrt
-        source_handle = msvcrt.get_osfhandle(self.source.fileno())
-        info = _HandleInfo()
-        if not self.native.kernel.GetFileInformationByHandle(source_handle, ctypes.byref(info)):
-            raise CacheRefused("audit_source_stat")
-        identity = f"windows-v1:{info.volume:08x}:{info.index_high:08x}{info.index_low:08x}"
-        if identity != self.permit.source_identity or (info.size_high << 32 | info.size_low) != _AUDIT_SOURCE_SIZE:
-            raise CacheRefused("audit_source_identity")
-        self.source.seek(0)
-        raw = self.source.read(_AUDIT_SOURCE_SIZE + 1)
-        if len(raw) != _AUDIT_SOURCE_SIZE or hashlib.sha256(raw).hexdigest() != _AUDIT_SOURCE_SHA256:
-            raise CacheRefused("audit_source_sha")
-        self.manifest.seek(0)
-        raw_manifest = self.manifest.read(4 * 1024 * 1024 + 1)
-        if not 0 < len(raw_manifest) <= 4 * 1024 * 1024 or hashlib.sha256(raw_manifest).hexdigest() != self.permit.manifest_pin:
-            raise CacheRefused("audit_manifest")
-        document = json.loads(raw_manifest.decode("utf-8-sig"), object_pairs_hook=_unique)
-        commit = document.get("source_commit") if type(document) is dict else None
-        if (type(commit) is not str or not re.fullmatch(r"[0-9a-f]{40}", commit)
-                or self.permit.bundle.name != "git-bundle-" + commit[:8] + "-real-pending"):
-            raise CacheRefused("audit_bundle")
-
-    def __enter__(self):
-        try:
-            if (not _same_path(self.permit.bundle.parent, _AUDIT_ROOT)
-                    or not _AUDIT_BUNDLE_NAME.fullmatch(self.permit.bundle.name)):
-                raise CacheRefused("audit_bundle")
-            self.manifest = self._file(self.permit.bundle / "deployment-manifest.json", private=False)
-            self.source = self._file(_AUDIT_SOURCE, private=True)
-            self._check()
-            return self
-        except BaseException:
-            self.__exit__(None, None, None, _verify=False)
-            raise
-
-    def __exit__(self, exc_type, exc, tb, _verify=True):
-        try:
-            if _verify and exc_type is None:
-                self._check()
-        finally:
-            for file in reversed(self.files):
-                file.close()
-            for handle in reversed(self.handles):
-                self.native.kernel.CloseHandle(handle)
-            self.files.clear()
-            self.handles.clear()
-
-
 class _Directory:
-    def __init__(self, path, audit=None):
+    def __init__(self, path):
         self.path, self.native, self.handles = path, _Native(), []
-        self.audit, self.scope = audit, None
 
     def __enter__(self):
         path = Path(self.path)
         if not path.is_absolute() or ".." in path.parts or path.drive.upper() != "C:":
             raise CacheRefused("path")
-        if self.audit is None:
-            valid = _same_path(path, _CACHE_ROOT)
-        else:
-            if _AUDIT_WIP_ENABLED is not True and _FIXED_SYNTHETIC_AUDIT_ENABLED is not True:
-                raise CacheRefused("audit_path_unverified")
-            if _AUDIT_NAMESPACE_PROVEN is not True and not _fixed_synthetic_audit_permit(self.audit):
-                raise CacheRefused("audit_namespace_unverified")
-            valid = type(self.audit) is _AuditPermit and _same_path(path, _AUDIT_CACHE_ROOT)
-        if not valid:
+        if os.path.normcase(os.path.normpath(str(path))) != os.path.normcase(os.path.normpath(str(_CACHE_ROOT))):
             raise CacheRefused("cache_root")
         current = Path(path.anchor)
         try:
-            if self.audit is not None:
-                self.scope = _AuditScope(self.native, self.audit)
-                self.scope.__enter__()
             for part in (None, *path.parts[1:]):
                 if part is not None:
                     current /= part
@@ -606,29 +301,14 @@ class _Directory:
             self.native.user_acl(self.handles[-2], provisioned_dir=True)
             self.native.user_acl(self.handles[-1], provisioned_dir=True)
             return self
-        except BaseException as exc:
-            self.__exit__(type(exc), exc, exc.__traceback__)
+        except BaseException:
+            self.__exit__(None, None, None)
             raise
 
-    def __exit__(self, exc_type, exc, tb):
-        try:
-            if self.scope is not None:
-                scope, self.scope = self.scope, None
-                scope.__exit__(exc_type, exc, tb)
-        finally:
-            for handle in reversed(self.handles):
-                self.native.kernel.CloseHandle(handle)
-            self.handles.clear()
-
-
-def _fixed_synthetic_audit_directory(directory, native, parent):
-    return (type(directory) is _Directory and directory.native is native
-            and _same_path(directory.path, _AUDIT_CACHE_ROOT)
-            and bool(directory.handles) and directory.handles[-1] == parent
-            and type(directory.scope) is _AuditScope
-            and directory.scope.permit is directory.audit
-            and directory.scope.source is not None and directory.scope.manifest is not None
-            and _fixed_synthetic_audit_permit(directory.audit))
+    def __exit__(self, *_):
+        for handle in reversed(self.handles):
+            self.native.kernel.CloseHandle(handle)
+        self.handles.clear()
 
 
 def _plain_path(path):
@@ -658,22 +338,6 @@ def _fd(native, path, disposition, access, share, flags, *, missing_ok=False):
         raise
 
 
-def _audit_fd(directory, path, disposition, access, share, flags, *, missing_ok=False):
-    """Synthetic audit leaf open relative to held parent; never production."""
-    import msvcrt
-    if directory.audit is None or not directory.handles:
-        raise CacheRefused("audit_namespace_unverified")
-    handle = directory.native.open_relative(directory.handles[-1], path.name, disposition,
-                                            access, share, missing_ok=missing_ok, _audit=directory)
-    if handle is None:
-        return None
-    try:
-        return msvcrt.open_osfhandle(handle, flags | os.O_BINARY)
-    except BaseException:
-        directory.native.kernel.CloseHandle(handle)
-        raise
-
-
 class _WriterLock:
     def __init__(self, directory, cache):
         self.directory, self.path, self.fd = directory, cache.with_name(cache.name + ".lock"), None
@@ -682,13 +346,8 @@ class _WriterLock:
         import msvcrt
         # The lock object is fixed for the one allowed cache name. A failed
         # racing CREATE_NEW refuses; it never adopts or changes an unknown file.
-        if self.directory.audit is None:
-            disposition = 3 if os.path.lexists(self.path) else 1
-            self.fd = _fd(self.directory.native, self.path, disposition, 0xC0000000, 3, os.O_RDWR)
-        else:
-            self.fd = _audit_fd(self.directory, self.path, 3, 0xC0000000, 3, os.O_RDWR, missing_ok=True)
-            if self.fd is None:
-                self.fd = _audit_fd(self.directory, self.path, 1, 0xC0000000, 3, os.O_RDWR)
+        disposition = 3 if os.path.lexists(self.path) else 1
+        self.fd = _fd(self.directory.native, self.path, disposition, 0xC0000000, 3, os.O_RDWR)
         try:
             os.lseek(self.fd, 0, os.SEEK_SET)
             msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
@@ -709,7 +368,7 @@ class _WriterLock:
                 self.fd = None
 
 
-def preflight(path, *, _audit=None):
+def preflight(path):
     """Validate root/ACL/owner/lock and report presence, without reading data.
 
     MISSING is only the OS's exact FILE_NOT_FOUND for the single fixed cache
@@ -719,10 +378,8 @@ def preflight(path, *, _audit=None):
     """
     path = _plain_path(path)
     try:
-        directory_context = _Directory(path.parent) if _audit is None else _Directory(path.parent, _audit)
-        with directory_context as directory, _WriterLock(directory, path):
-            fd = (_fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
-                  if _audit is None else _audit_fd(directory, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True))
+        with _Directory(path.parent) as directory, _WriterLock(directory, path):
+            fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
             if fd is None:
                 return "MISSING"
             os.close(fd)
@@ -733,32 +390,14 @@ def preflight(path, *, _audit=None):
         raise CacheRefused("preflight") from None
 
 
-def write_cache(path, binding, rows, *, _audit=None):
+def write_cache(path, binding, rows):
     """Persist vectors only; the destination directory must already be private."""
     path, binding, rows = _plain_path(path), _binding(binding), _rows(rows)
-    _audit_binding(binding, _audit)
     header = _canonical(_header(binding, rows))
     if len(header) > _MAX_HEADER:
         raise CacheRefused("header")
     try:
-        directory_context = _Directory(path.parent) if _audit is None else _Directory(path.parent, _audit)
-        with directory_context as directory, _WriterLock(directory, path):
-            if _audit is not None:
-                import msvcrt
-                existing = _audit_fd(directory, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
-                if existing is not None:
-                    os.close(existing)
-                tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-                fd = _audit_fd(directory, tmp, 1, 0x40010000, 0, os.O_WRONLY)
-                with os.fdopen(fd, "wb") as output:
-                    output.write(_MAGIC + struct.pack("<I", len(header)) + header)
-                    for block in _encoded(rows):
-                        output.write(block)
-                    output.flush()
-                    os.fsync(output.fileno())
-                    directory.native.rename_relative(msvcrt.get_osfhandle(output.fileno()), directory.handles[-1],
-                                                     path.name, _audit=directory)
-                return
+        with _Directory(path.parent) as directory, _WriterLock(directory, path):
             if os.path.lexists(path):
                 # A pre-existing link or a broadly readable file must not be
                 # silently replaced, even though rename itself is not a read.
@@ -781,20 +420,17 @@ def write_cache(path, binding, rows, *, _audit=None):
         raise CacheRefused("write") from None
 
 
-def load_cache(path, expected_binding, verify_prefix, *, _audit=None):
+def load_cache(path, expected_binding, verify_prefix):
     """Return a complete, checked cache or raise; compare passage hashes again at use."""
     path, expected = _plain_path(path), _binding(expected_binding)
-    _audit_binding(expected, _audit)
     if not callable(verify_prefix):
         raise CacheRefused("prefix_verifier")
     try:
-        directory_context = _Directory(path.parent) if _audit is None else _Directory(path.parent, _audit)
-        with directory_context as directory:
+        with _Directory(path.parent) as directory:
             # Do not share write/delete while parsing: a concurrent writer must
             # either publish before this open or wait until this read closes.
             try:
-                fd = (_fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
-                      if _audit is None else _audit_fd(directory, path, 3, 0x80000000, 1, os.O_RDONLY))
+                fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
             except FileNotFoundError:
                 # A synthetic file opener can surface the OS exception rather
                 # than the native wrapper's typed missing-cache result.

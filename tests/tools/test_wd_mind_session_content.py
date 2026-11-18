@@ -304,6 +304,62 @@ def _local_client_args(policy_path, policy, *, lane='codex-lead-1', timeout='10'
             '--approval-reference-sha256', 'c'*64, '--lane', lane, '--timeout-seconds', timeout]
 
 
+def test_selected_prefix_budget_boundary_after_tail_reservation():
+    budget = session._SourceReadBudget(1024 ** 3)
+    budget.reserve(64 * 1024 ** 2 + 1)
+    session._preflight_selected_source_prefix(budget, 251658239)
+    with pytest.raises(session._SelectedSourcePrefixBudgetRefused):
+        session._preflight_selected_source_prefix(budget, 251658240)
+
+
+@pytest.mark.parametrize('controlled', [False, True])
+@pytest.mark.parametrize('fault', ['prefix_budget', 'subclass', 'other'])
+def test_local_candidate_cli_reports_only_known_prefix_budget(monkeypatch, tmp_path, controlled, fault):
+    policy = b'{"synthetic":"policy"}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+
+    def fail_resolver(**_kwargs):
+        if fault == 'prefix_budget':
+            raise session._SelectedSourcePrefixBudgetRefused('synthetic-private-detail')
+        if fault == 'subclass':
+            class UntrustedBudgetRefusal(session._SelectedSourcePrefixBudgetRefused):
+                pass
+            raise UntrustedBudgetRefusal('synthetic-private-detail')
+        raise ValueError('synthetic-private-detail')
+
+    monkeypatch.setattr(session, 'create_selected_row_resolver', fail_resolver)
+    args = _local_client_args(policy_path, policy)
+    if controlled:
+        args[0] = '--mind-local-candidate-read-controlled'
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(args, out, err, str(Path.cwd()), 'a' * 64,
+                                          control=io.BytesIO() if controlled else None)
+    assert code == 2 and out.getvalue() == b''
+    if fault == 'prefix_budget':
+        assert err.getvalue() == (b'{"error":"mind_session_content_refused",'
+                                  b'"reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n')
+    else:
+        assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+    assert b'synthetic-private-detail' not in err.getvalue()
+
+
+def test_prefix_budget_reason_is_not_emitted_after_deadline(monkeypatch, tmp_path):
+    ticks = iter([0, 0, 0, 0, 20])
+    monkeypatch.setattr(session, 'time', SimpleNamespace(monotonic=lambda: next(ticks, 20)))
+    def fail_resolver(**_kwargs):
+        raise session._SelectedSourcePrefixBudgetRefused('synthetic-private-detail')
+    monkeypatch.setattr(session, 'create_selected_row_resolver', fail_resolver)
+    policy = b'{}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(_local_client_args(policy_path, policy), out, err,
+                                          str(Path.cwd()), 'a' * 64)
+    assert code == 2 and out.getvalue() == b''
+    assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+
+
 @pytest.mark.parametrize(('lane', 'scope'), [('codex-lead-1', 'own'), ('claude-rco-1', 'shared')])
 def test_local_candidate_cli_rechecks_real_synthetic_rows(flat_consumer_case, monkeypatch, tmp_path, lane, scope):
     from tools import wd_mind_runtime_process as process
@@ -374,6 +430,28 @@ def synthetic_session_checkout_pins(monkeypatch):
     pins = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in content._REQUIRED_CODE}
     monkeypatch.setattr(content, '_REQUIRED_CODE', pins)
+
+
+@pytest.mark.parametrize('controlled', [False, True], ids=['manual', 'controlled'])
+def test_real_synthetic_resolver_prefix_budget_reaches_fixed_reason(
+        synthetic_session_checkout_pins, flat_consumer_case, monkeypatch, tmp_path, controlled):
+    resolver, _, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    policy = snapshot['identifier_policy_binding'][0]
+    policy_path = tmp_path / 'synthetic-policy.json'
+    policy_path.write_bytes(policy)
+    # The tail allowance fits; the known four-prefix preflight misses by one byte.
+    monkeypatch.setattr(session, '_STARTUP_SOURCE_READ_LIMIT',
+                        64 * 1024 ** 2 + 1 + 4 * resolver._cursor.offset)
+    args = _local_client_args(policy_path, policy)
+    if controlled:
+        args[0] = '--mind-local-candidate-read-controlled'
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(args, out, err, str(resolver._root), resolver._pin,
+                                          control=io.BytesIO() if controlled else None)
+    assert code == 2 and out.getvalue() == b''
+    assert err.getvalue() == (b'{"error":"mind_session_content_refused",'
+                              b'"reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n')
+    assert policy not in err.getvalue()
 
 
 @pytest.mark.parametrize('controlled', [False, True], ids=['manual', 'controlled'])
@@ -494,6 +572,34 @@ def test_local_candidate_cli_timeout_retains_work_without_kill(monkeypatch, tmp_
         release.set()
         worker.join(5)
         session._LOCAL_CANDIDATE_PENDING.remove((worker, _))
+
+
+def test_late_prefix_budget_refusal_does_not_replace_timeout(monkeypatch, tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    def delayed(**_):
+        entered.set()
+        release.wait(5)
+        raise session._SelectedSourcePrefixBudgetRefused('synthetic-private-detail')
+    monkeypatch.setattr(session, 'create_selected_row_resolver', delayed)
+    policy = b'{}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    before = {id(pending) for pending in session._LOCAL_CANDIDATE_PENDING}
+    try:
+        code = session._local_candidate_entry(_local_client_args(policy_path, policy, timeout='1'),
+            out, err, str(Path.cwd()), 'a' * 64)
+        assert entered.is_set() and code == 2 and out.getvalue() == b''
+        assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+        worker, state = session._LOCAL_CANDIDATE_PENDING[-1]
+        assert worker.is_alive() and worker.daemon is False
+    finally:
+        release.set()
+        for worker, state in [pending for pending in session._LOCAL_CANDIDATE_PENDING if id(pending) not in before]:
+            assert worker.ident is not None, 'uncertain worker start remains in HOLD'
+            worker.join(5)
+            assert not worker.is_alive() and state['reason'] is None, 'worker still retained in HOLD'
+            session._LOCAL_CANDIDATE_PENDING.remove((worker, state))
 
 
 def test_local_candidate_cli_preserves_uncertain_query_owner(monkeypatch, tmp_path):

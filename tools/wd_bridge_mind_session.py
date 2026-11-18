@@ -158,6 +158,10 @@ class MindContentSessionRefused(ValueError):
     """Fixed-token refusal from the opt-in in-process content session boundary."""
 
 
+class _SelectedSourcePrefixBudgetRefused(MindContentSessionRefused):
+    """Known source-prefix preflight exceeds the selected read budget."""
+
+
 def _pin_flat_session(bundle_root, expected_manifest_sha256):
     """Check this module's actual file against a separately supplied anchor."""
     from tools import wd_mind_absent_generation_prefix_readonly as absent
@@ -561,6 +565,15 @@ class _SelectedReadDeadline(Exception):
     pass
 
 
+def _preflight_selected_source_prefix(budget, offset):
+    try:
+        budget.require(1 + 4 * offset)
+    except ValueError as exc:
+        if type(exc) is ValueError:
+            raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget') from None
+        raise
+
+
 def _selected_pin_read(path, expected, limit):
     """Read a pinned plain file without importing code from the bundle."""
     if type(expected) is not str or _SHA256.fullmatch(expected) is None:
@@ -922,7 +935,7 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
         if source_budget is not None:
             # This single startup query needs one initial and three retained
             # prefix checks; refuse before scanning if they cannot all fit.
-            source_budget.require(1 + 4 * cursor.offset)
+            _preflight_selected_source_prefix(source_budget, cursor.offset)
         with bridge._open_log(source) as stream:
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
             stream.seek(cursor.offset - 1)
@@ -947,6 +960,8 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
         retained._source_check(result._context())
         result._check_controls()
         return result
+    except _SelectedSourcePrefixBudgetRefused:
+        raise
     except Exception:
         raise MindContentSessionRefused('mind_session_content_refused') from None
     finally:
@@ -1515,6 +1530,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
     """Read candidates as proposals; only locally rederived results may leave."""
     pending = None
     interrupted = None
+    deadline = None
     try:
         _reap_local_candidate_pending()
         names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
@@ -1535,7 +1551,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 or re.fullmatch(r'(?:[1-9]|[1-8][0-9]|90)', timeout_text) is None):
             raise ValueError('args')
         deadline = time.monotonic() + int(timeout_text)
-        state = {'result':None, 'query':None, 'resolver':None, 'abandoned':False, 'result_lock':threading.Lock(), 'worker_done':threading.Event()}
+        state = {'result':None, 'reason':None, 'query':None, 'resolver':None, 'abandoned':False, 'result_lock':threading.Lock(), 'worker_done':threading.Event()}
 
         def work():
             policy = None
@@ -1601,6 +1617,11 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 if not 0 < len(encoded) <= 16384:
                     raise ValueError('result')
                 _store_local_candidate_result(state, encoded)
+            except _SelectedSourcePrefixBudgetRefused as exc:
+                with state['result_lock']:
+                    if type(exc) is _SelectedSourcePrefixBudgetRefused and not state['abandoned'] and time.monotonic() < deadline:
+                        state['reason'] = 'SOURCE_PREFIX_BUDGET'
+                    state['result'] = None
             except BaseException:
                 with state['result_lock']:
                     state['result'] = None
@@ -1614,7 +1635,11 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
             _LOCAL_CANDIDATE_PENDING.append(pending)
         worker.start()
         worker.join(max(0, deadline - time.monotonic()))
-        if worker.is_alive() or state['result'] is None or time.monotonic() >= deadline:
+        if worker.is_alive() or time.monotonic() >= deadline:
+            raise ValueError('refused')
+        if state['result'] is None:
+            if state['reason'] == 'SOURCE_PREFIX_BUDGET':
+                raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget')
             raise ValueError('refused')
         output.write(state['result'])
         output.flush()
@@ -1623,7 +1648,11 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         if not isinstance(exc, Exception):
             interrupted = exc
         try:
-            error.write(b'{"error":"mind_session_content_refused","authority":"none"}\n')
+            if (type(exc) is _SelectedSourcePrefixBudgetRefused and deadline is not None
+                    and time.monotonic() < deadline):
+                error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n')
+            else:
+                error.write(b'{"error":"mind_session_content_refused","authority":"none"}\n')
             error.flush()
         except BaseException as err:
             if interrupted is None and not isinstance(err, Exception):

@@ -87,7 +87,11 @@ def test_candidate_ipc_client_uncertain_thread_start_stays_owned(monkeypatch):
         def start(self): raise KeyboardInterrupt()
         def is_alive(self): return False
         def fire(self):
-            actual = real_thread(target=self.target)
+            done = threading.Event()
+            def target():
+                try: self.target()
+                finally: done.set()
+            actual = real_thread(target=target)
             pending = None
             try:
                 actual.start()
@@ -97,7 +101,7 @@ def test_candidate_ipc_client_uncertain_thread_start_stays_owned(monkeypatch):
             import time
             while True:
                 try:
-                    if actual.ident is not None:
+                    if done.is_set() and actual.ident is not None:
                         actual.join(1)
                         if not actual.is_alive(): break
                 except BaseException as exc:

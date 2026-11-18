@@ -14,7 +14,7 @@ def finish_owned(thread, release, pending=None):
     while True:
         try:
             release.set()
-            if thread.ident is not None:
+            if thread._test_owner_done.is_set() and thread.ident is not None:
                 thread.join(timeout=1)
                 if not thread.is_alive(): break
         except BaseException as exc:
@@ -36,6 +36,14 @@ def finish_all_owned(threads, release):
     if pending is not None: raise pending
 
 def start_owned(thread, release):
+    target, args, kwargs = thread._target, thread._args, thread._kwargs
+    thread._test_owner_done = threading.Event()
+    def observed_target():
+        try:
+            target(*args, **kwargs)
+        finally:
+            thread._test_owner_done.set()
+    thread._target, thread._args, thread._kwargs = observed_target, (), {}
     try:
         thread.start()
     except BaseException as exc:
@@ -120,3 +128,64 @@ def test_close_before_any_start_is_clean():
     assert q.status()['state']=='NEW'
     assert q.close(timeout=0)['state']=='STOPPED'
     assert q.status()['state']=='STOPPED'
+
+def test_finish_owned_retries_interruptions_and_raises_first_after_exit(monkeypatch):
+    class Release:
+        calls=0
+        def set(self):
+            self.calls += 1
+            if self.calls <= 2: raise SystemExit('later release interruption')
+    class Thread:
+        ident=123
+        calls=0
+        exited=False
+        _test_owner_done=threading.Event()
+        def join(self, timeout):
+            self.calls += 1
+            if self.calls <= 2: raise KeyboardInterrupt('later join interruption')
+            self.exited=True
+        def is_alive(self): return not self.exited
+    sleep_calls=[]
+    def interrupted_sleep(_):
+        sleep_calls.append(1)
+        if len(sleep_calls)==1: raise GeneratorExit('later sleep interruption')
+    monkeypatch.setattr(time,'sleep',interrupted_sleep)
+    first=KeyboardInterrupt('original interruption')
+    release, thread=Release(), Thread()
+    thread._test_owner_done.set()
+    with pytest.raises(KeyboardInterrupt) as caught:
+        finish_owned(thread, release, first)
+    assert caught.value is first
+    assert thread.exited and thread.calls==3 and release.calls>=5 and sleep_calls
+
+def test_finish_all_preserves_remaining_owners_after_cancellation(monkeypatch):
+    handled=[]
+    original=KeyboardInterrupt('original interruption')
+    def finish(thread, release):
+        handled.append(thread)
+        if thread=='first': raise original
+    monkeypatch.setitem(finish_all_owned.__globals__,'finish_owned',finish)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        finish_all_owned(['first','second'], object())
+    assert caught.value is original
+    assert handled==['first','second']
+
+def test_finish_owned_never_releases_early_identity_without_target_done(monkeypatch):
+    class Thread:
+        ident=123
+        _test_owner_done=threading.Event()
+        joined=False
+        def join(self, timeout):
+            assert self._test_owner_done.is_set()
+            self.joined=True
+        def is_alive(self): return False
+    class Release:
+        def set(self): pass
+    thread=Thread()
+    waits=[]
+    def advance(_):
+        waits.append(1)
+        if len(waits)==2: thread._test_owner_done.set()
+    monkeypatch.setattr(time,'sleep',advance)
+    finish_owned(thread, Release())
+    assert len(waits)==2 and thread.joined

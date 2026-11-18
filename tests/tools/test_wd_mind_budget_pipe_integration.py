@@ -99,7 +99,19 @@ def test_synthetic_owner_real_pipe_selected_resolver_budget(
                      'mind-local-selected-client', 'mind-local-query'}
     original_start = threading.Thread.start
     def tracked_start(thread):
-        if thread.name in tracked_names: tracked_threads.append(thread)
+        if thread.name in tracked_names:
+            # The target's own completion event proves Thread._bootstrap has
+            # entered run(); ident alone can be set before _started is set.
+            if type(thread) is not threading.Thread or not callable(thread._target):
+                raise RuntimeError('unsupported tracked thread')
+            target, target_done = thread._target, threading.Event()
+            tracked_threads.append((thread, target_done))
+            def run_tracked(*args, **kwargs):
+                try:
+                    return target(*args, **kwargs)
+                finally:
+                    target_done.set()
+            thread._target = run_tracked
         return original_start(thread)
     monkeypatch.setattr(threading.Thread, 'start', tracked_start)
     create_query = process.create_local_candidate_query
@@ -216,12 +228,19 @@ def test_synthetic_owner_real_pipe_selected_resolver_budget(
         # A start entered without an observed identity stays HOLD.
         while True:
             try:
-                all_threads_stopped = all(thread.ident is not None and not thread.is_alive()
-                                          for thread in tracked_threads)
+                def target_done_and_joined(thread, target_done):
+                    if not target_done.is_set() or thread.ident is None:
+                        return False
+                    # Never join an uncertain, never-entered start. Once the
+                    # target ran, join(0) plus is_alive verifies native exit.
+                    thread.join(timeout=0)
+                    return not thread.is_alive()
+                all_threads_stopped = all(target_done_and_joined(thread, target_done)
+                                          for thread, target_done in tracked_threads)
                 all_queries_accounted = all(query._thread is None or
-                    (any(thread is query._thread for thread in tracked_threads)
-                     and query._done.is_set() and query._thread.ident is not None
-                     and not query._thread.is_alive()) for query in queries)
+                    (query._done.is_set() and any(thread is query._thread
+                        and target_done_and_joined(thread, target_done)
+                        for thread, target_done in tracked_threads)) for query in queries)
                 if all_threads_stopped and all_queries_accounted:
                     break
             except BaseException as exc:

@@ -759,18 +759,23 @@ def test_startup_preflight_budget_diagnostic_before_retained_prewarm(tmp_path, m
     monkeypatch.setattr(runtime, '_STARTUP_PREWARM_SOURCE_READ_LIMIT', 64)
     _runtime, _adapter, binding, factory, launches = _full_fixtures._single_owner_synthetic(monkeypatch, tmp_path)
     binding._PrivateBinding__snapshot['messages'] = {'end_cursor': SimpleNamespace(offset=5)}
-    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda _self: {
-        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    builds = []
+    def build(_self):
+        builds.append(True)
+        return {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', build)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked',
                         lambda *_a, **_kw: pytest.fail('prewarm must not read'))
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
     state = owner.start()
-    assert launches == [True] and owner._source_budget is None
+    assert owner._source_budget is None
     if gate_on:
+        assert launches == [] and builds == []
         assert state['state'] == 'HOLD'
         assert owner.start_diagnostic() == {'reason':'SOURCE_BUDGET', 'exception_type':'UNKNOWN', 'authority':'none'}
     else:
+        assert launches == [True] and builds == [True]
         assert state['state'] == 'READY'
         assert owner.start_diagnostic() == {'reason':'NONE', 'exception_type':'NONE', 'authority':'none'}
 

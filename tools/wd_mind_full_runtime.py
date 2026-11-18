@@ -3353,6 +3353,16 @@ class _SingleManifestOwner:
             try:
                 self._check_factory()
                 _flat_snapshot(self._binding, self._snapshot)
+                if _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+                    # Refuse a known over-budget snapshot before cache or worker
+                    # setup can trigger an expensive passage build.
+                    stage = 'SOURCE_PREWARM'
+                    try:
+                        _prewarm_source_fits(self._snapshot)
+                    except _StartupSourceBudgetRefused as exc:
+                        if type(exc) is _StartupSourceBudgetRefused:
+                            stage = 'SOURCE_BUDGET'
+                        raise
                 vector_cache = None
                 if self._vector_cache_enabled:
                     stage = 'CACHE_PREFLIGHT'

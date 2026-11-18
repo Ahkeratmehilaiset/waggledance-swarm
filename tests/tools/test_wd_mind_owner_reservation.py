@@ -55,6 +55,16 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
     if diagnostics == 'off':
         assert output.getvalue() == b''
     else:
+        status_wire = (b'{"authority":"none","caller_authentication":"UNKNOWN",'
+            b'"index_refresh":"NOT_SCHEDULED","manifest_sha256":"' + b'a' * 64 +
+            b'","schema":"wd.mind-local-owner-status.v1",'
+            b'"source_authentication":"UNKNOWN","state":"HOLD"}\n')
+        diagnostic_wire = (b'{"authority":"none","exception_type":"LaunchRefused",'
+            b'"reason":"ADMISSION","schema":"wd.mind-local-owner-start-diagnostic.' +
+            diagnostics.encode('ascii') + b'"')
+        if diagnostics == 'v2':
+            diagnostic_wire += b',"worker_exit_code":null,"worker_exit_stage_hint":"UNKNOWN"'
+        assert output.getvalue() == status_wire + diagnostic_wire + b'}\n'
         status, detail = map(json.loads, output.getvalue().splitlines())
         assert status == {'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
             'manifest_sha256':'a' * 64, 'authority':'none', 'caller_authentication':'UNKNOWN',

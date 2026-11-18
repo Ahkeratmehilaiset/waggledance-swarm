@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
+import stat
 import subprocess
 import struct
 import sys
@@ -22,6 +24,42 @@ pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows byte-range lock
 REPO = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(scope='session')
+def _admin_synthetic_run_root():
+    """Keep this module's test markers inside the admin's fixed test scope."""
+    base = admin._SYNTHETIC_ROOT
+    if base != REPO / '.codex-audit' / 'marker-admin-synthetic-tests':
+        raise ValueError('synthetic_scope')
+    if not (REPO / '.git').exists():
+        raise ValueError('synthetic_worktree')
+    live = os.path.normcase(str(child._AUDIT_ROOT.resolve(strict=True)))
+    candidate = os.path.normcase(os.path.abspath(base))
+    if os.path.commonpath((candidate, live)) in (candidate, live):
+        raise ValueError('synthetic_live_overlap')
+    for part in (REPO, *REPO.parents):
+        entry = os.lstat(part)
+        if not stat.S_ISDIR(entry.st_mode) or getattr(entry, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('synthetic_reparse')
+    for part in (REPO / '.codex-audit', base):
+        part.mkdir(exist_ok=True)
+        entry = os.lstat(part)
+        if not stat.S_ISDIR(entry.st_mode) or getattr(entry, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('synthetic_reparse')
+    if os.path.normcase(str(base.resolve(strict=True))) != candidate:
+        raise ValueError('synthetic_alias')
+    run = base / secrets.token_hex(16)
+    run.mkdir()
+    return run
+
+
+@pytest.fixture
+def tmp_path(_admin_synthetic_run_root):
+    """Do not change pytest's basetemp for other modules in the same run."""
+    case = _admin_synthetic_run_root / secrets.token_hex(16)
+    case.mkdir()
+    return case
+
+
 def _paths(tmp_path):
     root = tmp_path / 'audit'
     root.mkdir()
@@ -36,6 +74,13 @@ def _clear(boot=1):
 
 def _reserved(path):
     path.write_bytes(child._OWNER_RESERVATION_MAGIC + b'R')
+
+
+def test_admin_tmp_path_matches_fixed_three_component_marker_scope(tmp_path):
+    root = tmp_path / 'audit'
+    root.mkdir()
+    assert len(root.relative_to(admin._SYNTHETIC_ROOT).parts) == 3
+    assert admin._assert_synthetic_root(root) == os.path.normcase(str(root.resolve(strict=True)))
 
 
 def test_synthetic_root_is_worktree_relative_and_disjoint_from_live_audit():

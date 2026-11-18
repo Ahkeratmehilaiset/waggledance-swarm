@@ -36,6 +36,14 @@ def _admin_synthetic_run_root():
     candidate = os.path.normcase(os.path.abspath(base))
     if os.path.commonpath((candidate, live)) in (candidate, live):
         raise ValueError('synthetic_live_overlap')
+    for installed in (os.path.normcase(os.path.abspath(admin._BUNDLE_STORE)),
+                      os.path.normcase(str(admin._BUNDLE_STORE.resolve(strict=False)))):
+        try:
+            overlap = os.path.commonpath((candidate, installed)) in (candidate, installed)
+        except ValueError:
+            raise ValueError('synthetic_bundle_identity_unknown') from None
+        if overlap:
+            raise ValueError('synthetic_bundle_overlap')
     for part in (REPO, *REPO.parents):
         entry = os.lstat(part)
         if not stat.S_ISDIR(entry.st_mode) or getattr(entry, 'st_file_attributes', 0) & 0x400:
@@ -74,6 +82,16 @@ def _clear(boot=1):
 
 def _reserved(path):
     path.write_bytes(child._OWNER_RESERVATION_MAGIC + b'R')
+
+
+@pytest.mark.parametrize('relationship', ['same', 'ancestor', 'descendant'])
+def test_admin_fixture_refuses_overlapping_bundle_before_mkdir(monkeypatch, relationship):
+    target = {'same': admin._SYNTHETIC_ROOT, 'ancestor': admin._SYNTHETIC_ROOT.parent,
+              'descendant': admin._SYNTHETIC_ROOT / 'synthetic-bundle'}[relationship]
+    monkeypatch.setattr(admin, '_BUNDLE_STORE', target)
+    monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: pytest.fail('mkdir before bundle overlap refusal'))
+    with pytest.raises(ValueError, match='synthetic_bundle_overlap'):
+        _admin_synthetic_run_root.__wrapped__()
 
 
 def test_admin_tmp_path_matches_fixed_three_component_marker_scope(tmp_path):

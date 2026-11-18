@@ -1002,6 +1002,30 @@ def _select_local_source_record(reader, records, hit, used):
     return selected
 
 
+_LOCAL_START_REASONS = frozenset(('BINDING_CHECK', 'CACHE_PREFLIGHT', 'WORKER_SETUP',
+    'HANDLER_BUILD', 'CACHE_RESULT', 'FINAL_BINDING_CHECK', 'SOURCE_PREWARM',
+    'ADMISSION', 'POLICY', 'RUNTIME_BINDING', 'WORKER_FACTORY', 'OWNER_CREATE',
+    'EXTERNAL_POLICY', 'OWNER_START', 'OWNER_NOT_READY', 'OWNER_ENTRY', 'IMPORT', 'THREAD_START', 'UNKNOWN'))
+_LOCAL_START_TYPES = frozenset(('ValueError', 'TypeError', 'RuntimeError', 'OSError',
+    'FileNotFoundError', 'PermissionError', 'TimeoutError', 'KeyboardInterrupt',
+    'GeneratorExit', 'CancelledError', 'FullRuntimeRefused', 'FullRuntimeCancellationUnknown',
+    'BaseExceptionGroup', 'ExceptionGroup', 'LaunchRefused', 'UNKNOWN'))
+
+def _local_exception_type(exc):
+    pairs = ((ValueError, 'ValueError'), (TypeError, 'TypeError'), (RuntimeError, 'RuntimeError'),
+             (OSError, 'OSError'), (FileNotFoundError, 'FileNotFoundError'),
+             (PermissionError, 'PermissionError'), (TimeoutError, 'TimeoutError'),
+             (KeyboardInterrupt, 'KeyboardInterrupt'), (GeneratorExit, 'GeneratorExit'),
+             (LaunchRefused, 'LaunchRefused'))
+    return next((name for kind, name in pairs if type(exc) is kind), 'UNKNOWN')
+
+def _validated_start_failure(value):
+    if (type(value) is dict and set(value) == {'reason', 'exception_type'}
+            and type(value['reason']) is str and value['reason'] in _LOCAL_START_REASONS
+            and type(value['exception_type']) is str and value['exception_type'] in _LOCAL_START_TYPES):
+        return {'reason': value['reason'], 'exception_type': value['exception_type']}
+    return {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN'}
+
 class _LocalManifestQuery:
     """Retain one pinned owner in this process; no lane identity is authenticated.
 
@@ -1013,7 +1037,7 @@ class _LocalManifestQuery:
                  '_admission', '_admission_anchor',
                  '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_lock', '_cancel',
                  '_state', '_policy_invalid', '_pending_result', '_host_start_gate', '_host_stop',
-                 '_host_owner_start_inflight')
+                 '_host_owner_start_inflight', '_start_failure')
 
     def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
                  worker_timeout, lock_timeout, shutdown_timeout, policy_path=None, admission=None,
@@ -1030,6 +1054,7 @@ class _LocalManifestQuery:
         self._thread, self._lock, self._cancel = None, threading.Lock(), threading.Event()
         self._state, self._policy_invalid = 'NEW', False
         self._pending_result = None
+        self._start_failure = None
 
     def __repr__(self):
         return '<PrivateMindLocalManifestQuery>'
@@ -1064,33 +1089,41 @@ class _LocalManifestQuery:
             raw = None
 
     def _prepare(self):
-        from tools import wd_mind_full_runtime as runtime
-        from tools import wd_mind_e5_client as client
         binding = factory = owner = None
+        stage = 'IMPORT'
         try:
+            from tools import wd_mind_full_runtime as runtime
+            from tools import wd_mind_e5_client as client
+            stage = 'ADMISSION'
             if self._admission is not self._admission_anchor:
                 raise ValueError('admission_changed')
             self._admission.assert_owner(self)
+            stage = 'POLICY'
             self._check_policy()
             self._check_external_policy()
             if self._cancel.is_set():
                 return
+            stage = 'RUNTIME_BINDING'
             binding = runtime.assemble_full_runtime(enabled=True, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, identifier_policy_bytes=self._policy,
                 expected_identifier_policy_sha256=self._policy_sha)
             if self._cancel.is_set():
                 return
+            stage = 'WORKER_FACTORY'
             factory = runtime.create_manifest_worker_factory(enabled=True, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, worker_timeout_seconds=self._worker_timeout,
                 lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256,
                 _admission=self._admission, _admission_owner=self)
             anchor = self._check_policy()
+            stage = 'OWNER_CREATE'
             owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=self._metadata['lane'],
                 worker_factory=factory, shutdown_timeout=self._shutdown_timeout, policy_anchor=anchor,
                 worker_rotation=True, vector_cache_enabled=True)
             with self._lock:
                 self._owner = owner  # Retain before any worker may be launched.
+            stage = 'EXTERNAL_POLICY'
             self._check_external_policy()
+            stage = 'OWNER_START'
             if self._host_start_gate is None:
                 if self._cancel.is_set():
                     return
@@ -1111,9 +1144,10 @@ class _LocalManifestQuery:
             with self._lock:
                 self._state = ('READY' if not self._cancel.is_set() and type(outcome) is dict
                                and outcome.get('state') == 'READY' and outcome.get('owned') is True else 'HOLD')
-        except BaseException:
+        except BaseException as exc:
             with self._lock:
                 self._state = 'HOLD'
+                self._start_failure = {'reason': stage, 'exception_type': _local_exception_type(exc)}
         finally:
             self._policy = binding = factory = owner = None
             with self._lock:
@@ -1131,9 +1165,10 @@ class _LocalManifestQuery:
             self._thread = threading.Thread(target=self._prepare, name='mind-local-owner', daemon=False)
             try:
                 self._thread.start()
-            except BaseException:
+            except BaseException as exc:
                 self._cancel.set()
                 self._state = 'HOLD'
+                self._start_failure = {'reason': 'THREAD_START', 'exception_type': _local_exception_type(exc)}
                 raise
             return {'state': 'STARTING', 'owned': None, 'authority': 'none'}
 
@@ -1168,6 +1203,23 @@ class _LocalManifestQuery:
         if state == 'HOLD' or self._policy_invalid:
             return {'state': 'HOLD', 'owned': outcome.get('owned') if type(outcome) is dict else None, 'authority': 'none'}
         return outcome
+
+    def start_diagnostic(self):
+        if not self._lock.acquire(blocking=False):
+            return {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN', 'authority': 'none'}
+        try:
+            failure, owner = self._start_failure, self._owner
+        finally:
+            self._lock.release()
+        if failure is None and owner is not None:
+            try:
+                value = owner.start_diagnostic()
+                if type(value) is dict and value.get('authority') == 'none':
+                    failure = {'reason': value.get('reason'), 'exception_type': value.get('exception_type')}
+            except BaseException:
+                failure = None
+        safe = _validated_start_failure(failure)
+        return {'reason': safe['reason'], 'exception_type': safe['exception_type'], 'authority': 'none'}
 
     def close(self):
         self._cancel.set()
@@ -2356,7 +2408,7 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
                                  policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
                                  _admission=None, _host_start_gate=None, _host_stop=None,
-                                 _host_owner_start_inflight=None):
+                                 _host_owner_start_inflight=None, include_start_diagnostics=False):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2366,13 +2418,16 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     policy = adapter = service = service_thread = control_thread = None
     stop, service_done = threading.Event(), threading.Event()
     service_error, control_error = [], []
-    last_state, failed = None, False
+    last_state, failed, start_failure = None, False, None
+    last_diagnostic, diagnostic_count = None, 0
+    startup_reported_ready = False
+    diagnostic_stop, diagnostic_done, diagnostic_thread = threading.Event(), threading.Event(), None
 
     class _HostStopBeforeStart(Exception):
         pass
 
     def emit(state):
-        nonlocal last_state
+        nonlocal last_state, startup_reported_ready
         if state == last_state:
             return
         raw = json.dumps({'schema':'wd.mind-local-owner-status.v1', 'state':state,
@@ -2387,6 +2442,52 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             offset += count
         output_stream.flush()
         last_state = state
+        if state == 'READY': startup_reported_ready = True
+
+    def emit_diagnostic():
+        nonlocal last_diagnostic, diagnostic_count
+        if include_start_diagnostics is not True or diagnostic_count >= 2 or startup_reported_ready:
+            return
+        value = start_failure
+        if adapter is not None:
+            try:
+                candidate = adapter.start_diagnostic()
+                if type(candidate) is dict and candidate.get('authority') == 'none':
+                    proposed = _validated_start_failure({'reason': candidate.get('reason'),
+                                                         'exception_type': candidate.get('exception_type')})
+                    if proposed != {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN'} or value is None:
+                        value = proposed
+            except BaseException:
+                pass
+        safe = _validated_start_failure(value)
+        key = (safe['reason'], safe['exception_type'])
+        if key == last_diagnostic or (last_diagnostic is not None and last_diagnostic != ('UNKNOWN', 'UNKNOWN')):
+            return
+        record = {'schema':'wd.mind-local-owner-start-diagnostic.v1', 'reason':key[0],
+                  'exception_type':key[1], 'authority':'none'}
+        raw = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+        if len(raw) > 1024:
+            raise ValueError('diagnostic_size')
+        offset = 0
+        while offset < len(raw):
+            count = output_stream.write(memoryview(raw)[offset:])
+            if type(count) is not int or not 0 < count <= len(raw) - offset:
+                raise ValueError('diagnostic_write')
+            offset += count
+        output_stream.flush()
+        last_diagnostic, diagnostic_count = key, diagnostic_count + 1
+
+    def diagnostic_worker():
+        try:
+            while True:
+                emit_diagnostic()
+                if diagnostic_stop.wait(0.05):
+                    emit_diagnostic()  # One final observation after close; duplicates are suppressed.
+                    return
+        except BaseException:
+            pass
+        finally:
+            diagnostic_done.set()
 
     def read_stop():
         try:
@@ -2475,13 +2576,21 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             stop.wait(0.1)
     except _HostStopBeforeStart:
         pass
-    except BaseException:
+    except BaseException as exc:
+        start_failure = {'reason': 'OWNER_ENTRY', 'exception_type': _local_exception_type(exc)}
         failed = True
     finally:
         policy = None
         if failed:
             try: emit('HOLD')
             except BaseException: pass
+            if include_start_diagnostics is True and not startup_reported_ready:
+                try:
+                    diagnostic_thread = threading.Thread(target=diagnostic_worker,
+                        name='mind-owner-start-diagnostic', daemon=False)
+                    diagnostic_thread.start()
+                except BaseException:
+                    pass  # Keep any possibly-started thread reachable through cleanup.
         if service_thread is not None:
             while not service_done.is_set() or service_thread.is_alive():
                 try: emit('HOLD')
@@ -2519,6 +2628,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 except BaseException: failed = True
                 try: control_thread.join(timeout=0.25)
                 except BaseException: pass
+        if diagnostic_thread is not None:
+            diagnostic_stop.set()
+            while not diagnostic_done.is_set():
+                try: diagnostic_done.wait(0.25)
+                except BaseException: pass  # A failed start may still have scheduled the thread.
+            while diagnostic_thread.is_alive():
+                try: diagnostic_thread.join(timeout=0.25)
+                except BaseException: pass  # Retain the writer and remain HOLD until it exits.
         if _cleanup_evidence is not None:
             _cleanup_evidence['clean'] = True
         try: emit('STOPPED')
@@ -2693,6 +2810,10 @@ def _fixed_child_main(argv):
     local = (len(argv) == 7 and argv[0] == '--mind-local-query'
              and argv[1] == '--policy-sha256' and argv[3] == '--approval-reference-sha256'
              and argv[5] == '--lane' and _HEX.fullmatch(argv[2]) and _HEX.fullmatch(argv[4]))
+    diagnostic_optin = bool(argv and argv[-1] == '--start-diagnostics')
+    if diagnostic_optin:
+        if not argv or argv[0] != '--mind-local-candidate-owner': return 2
+        argv = argv[:-1]
     local_owner = (len(argv) == 5 and argv[0] == '--mind-local-candidate-owner'
                    and argv[1] == '--policy-sha256' and argv[3] == '--approval-reference-sha256'
                    and _HEX.fullmatch(argv[2]) and _HEX.fullmatch(argv[4]))
@@ -2709,15 +2830,15 @@ def _fixed_child_main(argv):
         bundle = str(Path(__file__).resolve().parents[2])
         if __name__ == '__main__':
             canonical = _load_pinned_canonical_child(Path(bundle), expected)
-            return canonical._fixed_child_main(argv)
+            return canonical._fixed_child_main(argv + (['--start-diagnostics'] if diagnostic_optin else []))
         if local_owner_path:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],
-                policy_sha256=argv[4], approval_reference_sha256=argv[6])
+                policy_sha256=argv[4], approval_reference_sha256=argv[6], include_start_diagnostics=diagnostic_optin)
         if local_owner:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_sha256=argv[2],
-                approval_reference_sha256=argv[4])
+                approval_reference_sha256=argv[4], include_start_diagnostics=diagnostic_optin)
         if local:
             _startup_scope_for_lane(argv[6])
             return _guarded_local_entry(_local_query_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,

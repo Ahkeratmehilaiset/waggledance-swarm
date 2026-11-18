@@ -2651,6 +2651,16 @@ def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max
             'candidates':candidates, 'export':prepared}
 
 
+_START_ERROR_TYPES = {
+    ValueError: 'ValueError', TypeError: 'TypeError', RuntimeError: 'RuntimeError',
+    OSError: 'OSError', FileNotFoundError: 'FileNotFoundError', PermissionError: 'PermissionError',
+    TimeoutError: 'TimeoutError', KeyboardInterrupt: 'KeyboardInterrupt',
+    GeneratorExit: 'GeneratorExit', asyncio.CancelledError: 'CancelledError',
+    FullRuntimeRefused: 'FullRuntimeRefused', FullRuntimeCancellationUnknown: 'FullRuntimeCancellationUnknown',
+    BaseExceptionGroup: 'BaseExceptionGroup', ExceptionGroup: 'ExceptionGroup',
+}
+
+
 class _SingleManifestOwner:
     """Own a graceful worker, or an explicitly enabled rotator, and flat handler.
 
@@ -2663,7 +2673,7 @@ class _SingleManifestOwner:
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
                  '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget',
-                 '_prewarm_generation')
+                 '_prewarm_generation', '_start_failure')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
                  vector_cache_enabled=False):
@@ -2690,6 +2700,7 @@ class _SingleManifestOwner:
         self._cache_status = 'NOT_STARTED' if vector_cache_enabled else 'DISABLED'
         self._source_budget = None
         self._prewarm_generation = None
+        self._start_failure = None
 
     @property
     def _binding(self):
@@ -3204,6 +3215,18 @@ class _SingleManifestOwner:
         finally:
             self._lock.release()
 
+    def start_diagnostic(self):
+        """Return fixed codes only; never expose exception messages or locals."""
+        if not self._lock.acquire(blocking=False):
+            return {'reason': 'BUSY', 'exception_type': 'UNKNOWN', 'authority': 'none'}
+        try:
+            value = self._start_failure
+            if value is None:
+                return {'reason': 'NONE', 'exception_type': 'NONE', 'authority': 'none'}
+            return {'reason': value[0], 'exception_type': value[1], 'authority': 'none'}
+        finally:
+            self._lock.release()
+
     def start(self):
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
@@ -3212,11 +3235,13 @@ class _SingleManifestOwner:
             if self._state != 'NEW':
                 raise FullRuntimeRefused('mind_full_runtime_refused') from None
             self._state = 'STARTING'
+            stage = 'BINDING_CHECK'
             try:
                 self._check_factory()
                 _flat_snapshot(self._binding, self._snapshot)
                 vector_cache = None
                 if self._vector_cache_enabled:
+                    stage = 'CACHE_PREFLIGHT'
                     try:
                         vector_cache = _load_pinned_vector_cache(self._binding)
                         vector_cache.preflight()
@@ -3224,6 +3249,7 @@ class _SingleManifestOwner:
                     except BaseException:
                         self._cache_status = 'PREFLIGHT_REFUSED'
                         raise
+                stage = 'WORKER_SETUP'
                 from tools import wd_mind_e5_snapshot_adapter as adapter_module
                 bundle, manifest = self._binding._PrivateBinding__bundle, self._binding._PrivateBinding__manifest
                 if self._rotation_enabled:
@@ -3269,9 +3295,11 @@ class _SingleManifestOwner:
                 self._handler = _FlatRequestHandler(self._binding, self._snapshot, self._lane, self._lanes,
                     self._client, self._adapter, self._factory, self._timeout, self._factory._bulk,
                     self._watcher_lease, vector_cache)
+                stage = 'HANDLER_BUILD'
                 result = self._handler.build()
                 if result != {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}:
                     raise ValueError('build')
+                stage = 'CACHE_RESULT'
                 if (self._vector_cache_enabled and
                         (type(self._handler._memory) is not _PrivateFlatMemory
                          or self._handler._memory.cache_status not in ('HIT_STORED', 'MISS_STORED'))):
@@ -3279,22 +3307,27 @@ class _SingleManifestOwner:
                     raise ValueError('cache_not_stored')
                 if self._vector_cache_enabled:
                     self._cache_status = self._handler._memory.cache_status
+                stage = 'FINAL_BINDING_CHECK'
                 self._check_factory()
                 if _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+                    stage = 'SOURCE_PREWARM'
                     self._source_budget = prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
                     self._ensure_retained_locked(source_budget=self._source_budget)
                     self._prewarm_generation = self._generation
                     self._source_budget = None
                 self._state = 'READY'
-            except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+            except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError) as exc:
+                self._start_failure = (stage, next((name for kind, name in _START_ERROR_TYPES.items() if type(exc) is kind), 'UNKNOWN'))
                 self._launch_cancel.set()
                 self._state = 'HOLD'
                 raise
             except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+                self._start_failure = (stage, next((name for kind, name in _START_ERROR_TYPES.items() if type(exc) is kind), 'UNKNOWN'))
                 self._launch_cancel.set()
                 self._state = 'HOLD'
                 pending_cancel = _flat_cancellation(exc)
-            except BaseException:
+            except BaseException as exc:
+                self._start_failure = (stage, next((name for kind, name in _START_ERROR_TYPES.items() if type(exc) is kind), 'UNKNOWN'))
                 # Unknown post-launch states are never declared exited. The
                 # saved owner (if present) remains reachable for explicit EOF.
                 self._state = 'HOLD'

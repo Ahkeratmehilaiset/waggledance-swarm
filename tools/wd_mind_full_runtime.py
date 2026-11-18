@@ -1424,9 +1424,152 @@ def _load_pinned_vector_cache(binding):
         _CACHE_MODULE_LOCK.release()
 
 
+class _OwnerBatchProof:
+    """Ephemeral proof for one owner-owned rotating batch, not an authority token."""
+    __slots__ = ('owner', 'handler', 'binding', 'snapshot', 'frozen', 'generation', 'adapter',
+                 'rotator', 'factory', 'callback', 'thread', 'checks', 'active', 'frames',
+                 'before_client', 'before_next', 'rotation_seen', 'after_client', 'after_next')
+
+    def __init__(self, owner, handler, binding, frozen, adapter, callback, count):
+        self.owner, self.handler, self.binding = owner, handler, binding
+        self.snapshot, self.frozen, self.generation = handler._snapshot, frozen, owner._generation
+        self.adapter = adapter
+        self.rotator, self.factory, self.callback = handler._rotator, handler._factory, callback
+        self.thread, self.checks, self.active = threading.get_ident(), 0, True
+        self.frames = (count + 3) // 4
+        self.before_client = self.before_next = self.after_client = self.after_next = None
+        self.rotation_seen = False
+
+    def validate(self, *, registered=True):
+        from tools import wd_mind_e5_snapshot_adapter as adapter_module
+        from tools import wd_mind_e5_rotating_client as rotation
+        from tools import wd_mind_e5_client as e5_client
+        owner, handler, adapter, rotator = self.owner, self.handler, self.adapter, self.rotator
+        callback = self.callback
+        if (not self.active or threading.get_ident() != self.thread
+                or type(owner) is not _SingleManifestOwner or type(handler) is not _FlatRequestHandler
+                or type(self.binding) is not _PrivateBinding
+                or type(adapter) is not adapter_module._RotatingFlatAdapter
+                or type(rotator) is not rotation.RotatingGracefulE5Client
+                or type(self.frames) is not int or not 1 <= self.frames <= 4
+                or type(rotation._FRAME_BATCH) is not int or rotation._FRAME_BATCH != 4
+                or type(e5_client._MAX_BATCH) is not int or e5_client._MAX_BATCH != 4
+                or type(adapter_module._BATCH) is not int or adapter_module._BATCH != 4
+                or owner._batch_proof is not (self if registered else None) or owner._state != 'STARTING'
+                or not owner._lock.locked() or not handler._lock.locked()
+                or owner._generation is not self.generation
+                or owner._handler is not handler or owner._binding is not self.binding
+                or handler._binding is not self.binding or owner._snapshot is not self.snapshot
+                or handler._snapshot is not self.snapshot or self.snapshot != self.frozen
+                or self.binding._PrivateBinding__snapshot != self.frozen
+                or owner._client is not rotator or owner._rotation_anchor is not rotator
+                or owner._rotation_type is not type(rotator)
+                or handler._rotator is not rotator or owner._adapter is not adapter
+                or handler._adapter is not adapter or adapter._rotator is not rotator
+                or adapter._client is not rotator or owner._factory is not self.factory
+                or handler._factory is not self.factory or adapter._factory is not self.factory
+                or adapter._bundle != str(self.binding._PrivateBinding__bundle)
+                or adapter._manifest != self.binding._PrivateBinding__manifest
+                or adapter._snapshot != self.snapshot.get('projection_sha256')
+                or rotator._snapshot != self.snapshot.get('projection_sha256')
+                or rotator._factory is not self.factory or rotator._source_check is not callback
+                or adapter._source_check is not callback or type(callback) is not types.MethodType
+                or callback.__self__ is not owner
+                or callback.__func__ is not _SingleManifestOwner._rotation_source_check):
+            raise ValueError('owner_batch_proof_invalid')
+
+    def activate(self):
+        """Only call inside a caller-owned try/finally that closes this proof."""
+        self.validate(registered=False)
+        self.owner._batch_proof = self
+        self.validate()
+
+    def record_check(self):
+        self.validate()
+        from tools import wd_mind_e5_client as e5_client
+        client = self.rotator._client
+        if client is not None and (type(client) is not e5_client.GracefulE5WorkerClient
+                                   or type(client._next_id) is not int or client._next_id < 1
+                                   or type(client._used_nonces) is not set
+                                   or type(self.rotator._worker_nonces) is not set
+                                   or type(self.rotator._session_nonces) is not set):
+            raise ValueError('owner_batch_worker_invalid')
+        if self.checks == 0:
+            if client is not None and client._used_nonces != self.rotator._worker_nonces:
+                raise ValueError('owner_batch_nonce_before')
+            self.before_client = client
+            self.before_next = None if client is None else client._next_id
+        elif client is None:
+            if self.rotation_seen or self.after_client is not None:
+                raise ValueError('owner_batch_rotation_invalid')
+            self.rotation_seen = True
+        else:
+            if self.after_client is not None:
+                raise ValueError('owner_batch_check_order')
+            if client is self.before_client and not self.rotation_seen:
+                expected = self.before_next + self.frames
+            elif self.rotation_seen or self.before_client is None:
+                expected = 1 + self.frames
+            else:
+                raise ValueError('owner_batch_worker_changed')
+            if client._next_id != expected:
+                raise ValueError('owner_batch_frames_incomplete')
+            new_nonces = client._used_nonces - self.rotator._worker_nonces
+            if (not self.rotator._worker_nonces <= client._used_nonces
+                    or len(new_nonces) != 1 or not new_nonces <= self.rotator._session_nonces):
+                raise ValueError('owner_batch_nonce_after')
+            self.after_client, self.after_next = client, client._next_id
+        self.checks += 1
+
+    def finish(self):
+        self.validate()
+        if (self.checks < 2 or self.after_client is None
+                or self.rotator._client is not self.after_client
+                or self.after_client._next_id != self.after_next):
+            raise ValueError('owner_batch_checks_missing')
+
+    def close(self):
+        self.active = False
+        if self.owner._batch_proof is self:
+            self.owner._batch_proof = None
+
+
+def _owner_batch_proof(handler, binding, frozen, passage_encoder, count):
+    """Opt in only for the exact retained owner/adapter/callback graph."""
+    try:
+        from tools import wd_mind_e5_snapshot_adapter as adapter_module
+        if type(handler) is not _FlatRequestHandler or type(count) is not int or not 1 <= count <= 16:
+            return None
+        adapter, rotator = handler._adapter, handler._rotator
+        if (type(adapter) is not adapter_module._RotatingFlatAdapter
+                or type(passage_encoder) is not types.MethodType
+                or passage_encoder.__self__ is not adapter
+                or passage_encoder.__func__ is not adapter_module._RotatingFlatAdapter.passage):
+            return None
+        callback = rotator._source_check
+        if (type(callback) is not types.MethodType
+                or callback.__func__ is not _SingleManifestOwner._rotation_source_check
+                or type(callback.__self__) is not _SingleManifestOwner):
+            return None
+        owner = callback.__self__
+        if owner._batch_proof is not None:
+            return None
+        proof = _OwnerBatchProof(owner, handler, binding, frozen, adapter, callback, count)
+        try:
+            proof.validate(registered=False)
+            return proof
+        except BaseException as exc:
+            proof.close()
+            if isinstance(exc, Exception):
+                return None
+            raise
+    except Exception:
+        return None
+
+
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
-                                 prior_memory=None, vector_cache=None):
+                                 prior_memory=None, vector_cache=None, owner_handler=None):
     """Use the pinned immutable snapshot helper and retain watcher ownership on HOLD.
 
     This captures the full prefix as immutable bytes and can use substantial RAM;
@@ -1501,20 +1644,33 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     if record_id in by_id and old_records[record_id] == by_id[record_id]:
                         reusable[record_id] = prior_memory.vectors[index * 1536:(index + 1) * 1536]
 
-            def checkpoint():
+            def checkpoint(proof=None):
                 watcher.check()
                 if snapshot != frozen or binding._snapshot_support() is not package:
                     raise ValueError('snapshot_changed')
-                binding._immutable_checkpoint(frozen)
+                if proof is None:
+                    binding._immutable_checkpoint(frozen)
+                else:
+                    proof.validate()
                 _checked_encoder_binding(encoder_binding_bytes, encoder_binding_sha256)
 
             missing = tuple(record_id for record_id in ids if record_id not in reusable)
             for start in range(0, len(missing), 16):
                 chosen = missing[start:start + 16]
                 texts = tuple('passage: ' + reader.decode_text(by_id[key]['stored_text'])[:2000] for key in chosen)
-                checkpoint()
-                raw = passage_encoder(texts)
-                checkpoint()
+                proof = None
+                try:
+                    proof = _owner_batch_proof(owner_handler, binding, frozen, passage_encoder, len(chosen))
+                    if proof is not None:
+                        proof.activate()
+                    checkpoint(proof)
+                    raw = passage_encoder(texts)
+                    if proof is not None:
+                        proof.finish()
+                    checkpoint(proof)
+                finally:
+                    if proof is not None:
+                        proof.close()
                 if type(raw) is not bytes or len(raw) != len(chosen) * 1536:
                     raise ValueError('passage')
                 for index in range(len(chosen)):
@@ -1575,7 +1731,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
 def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                       encoder_binding_bytes=None, encoder_binding_sha256=None,
                       source_verification=None, watcher_join_timeout_seconds=None, _watcher_lease=None,
-                      _prior_memory=None, _vector_cache=None):
+                      _prior_memory=None, _vector_cache=None, _owner_handler=None):
     """Build one memory-only float32 vector per screened, source-bound record.
 
     Provider identity and supplied encoder metadata are caller-trusted; this
@@ -1593,7 +1749,7 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                 raise ValueError('source_verification')
             return _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                                 encoder_binding_sha256, watcher_join_timeout_seconds, _watcher_lease,
-                                                _prior_memory, _vector_cache)
+                                                _prior_memory, _vector_cache, _owner_handler)
         if _prior_memory is not None:
             raise ValueError('refresh_requires_immutable_snapshot')
         if _vector_cache is not None:
@@ -2070,7 +2226,7 @@ class _FlatRequestHandler:
                 encoder_binding_bytes=self._adapter.encoder_binding_bytes,
                 encoder_binding_sha256=self._adapter.encoder_binding_sha256,
                 source_verification='verified_immutable_snapshot_v1', _watcher_lease=self._watcher_lease,
-                _prior_memory=prior_memory, _vector_cache=self._vector_cache)
+                _prior_memory=prior_memory, _vector_cache=self._vector_cache, _owner_handler=self)
             self._memory = memory
             self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
             self._source_check()
@@ -2689,7 +2845,7 @@ class _SingleManifestOwner:
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
                  '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget',
-                 '_prewarm_generation')
+                 '_prewarm_generation', '_batch_proof')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
                  vector_cache_enabled=False):
@@ -2716,6 +2872,7 @@ class _SingleManifestOwner:
         self._cache_status = 'NOT_STARTED' if vector_cache_enabled else 'DISABLED'
         self._source_budget = None
         self._prewarm_generation = None
+        self._batch_proof = None
 
     @property
     def _binding(self):
@@ -2787,6 +2944,10 @@ class _SingleManifestOwner:
         else:
             self._binding._immutable_checkpoint(snapshot, source_budget=self._source_budget)
         self._check_factory()
+        if self._batch_proof is not None:
+            if type(self._batch_proof) is not _OwnerBatchProof:
+                raise ValueError('owner_batch_proof_invalid')
+            self._batch_proof.record_check()
         return snapshot['projection_sha256']
 
     def _rotation_is_bound(self):

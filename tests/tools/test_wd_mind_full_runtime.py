@@ -13,6 +13,374 @@ from tools import wd_mind_content_query_readonly as reader
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture
+def owner_batch_fixture(tmp_path, monkeypatch):
+    """Real owner/adapter types and callback; synthetic source and transport."""
+    import struct
+    import threading
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_e5_snapshot_adapter as adapter_module
+    from tools import wd_mind_e5_rotating_client as rotating
+    from tools import wd_mind_e5_client as client_module
+
+    projection = {'messages': {'records': [{'record_id': 'synthetic', 'stored_text': 'work'}]}}
+    snapshot = {'projection_bytes': reader._serialized(projection), 'projection_sha256': 'a' * 64}
+    source = b'synthetic source'
+    report = {'source_prefix': {'sha256': hashlib.sha256(source).hexdigest()}}
+    binding = runtime._PrivateBinding(snapshot, tmp_path, 'b' * 64, (), {})
+    checks, fault = [], {'source': False}
+    def immutable(_self, _frozen, **_kwargs):
+        checks.append('source')
+        if fault['source']:
+            raise ValueError('synthetic_source_changed')
+    monkeypatch.setattr(runtime._PrivateBinding, '_immutable_checkpoint', immutable)
+    monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda self: snapshot)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory', lambda self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
+    monkeypatch.setattr(runtime, '_checked_encoder_binding', lambda *_args: None)
+    monkeypatch.setattr(runtime, '_flat_snapshot', lambda *_args: projection)
+    monkeypatch.setattr(reader, '_verified_complete', lambda _snapshot: (projection, {}, report))
+    monkeypatch.setattr(reader, 'decode_text', lambda value: value)
+
+    class Watcher:
+        def start(self, *_args): pass
+        def check(self): checks.append('watcher')
+        def stop(self, *_args): pass
+    watcher = Watcher()
+    package = SimpleNamespace(
+        SnapshotPackageHold=type('SnapshotPackageHold', (Exception,), {}),
+        _reserve_watcher=lambda: watcher, _snapshot=lambda value, _capacity: value,
+        _immutable_prefix=lambda _context: source, _unchanged=lambda *_a, **_k: None,
+        _release_watcher=lambda _watcher: None)
+    monkeypatch.setattr(runtime._PrivateBinding, '_snapshot_support', lambda self: package)
+
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._state, owner._lock, owner._batch_proof = 'STARTING', threading.Lock(), None
+    owner._source_budget = None
+    factory = object()
+    rotator = object.__new__(rotating.RotatingGracefulE5Client)
+    rotator._factory, rotator._snapshot = factory, snapshot['projection_sha256']
+    client = object.__new__(client_module.GracefulE5WorkerClient)
+    client._next_id, client._used_nonces = 1, set()
+    rotator._client = client
+    rotator._worker_nonces, rotator._session_nonces = set(), {'synthetic-nonce'}
+    callback = owner._rotation_source_check
+    rotator._source_check = callback
+    adapter = object.__new__(adapter_module._RotatingFlatAdapter)
+    adapter._rotator = adapter._client = rotator
+    adapter._source_check, adapter._factory = callback, factory
+    adapter._bundle, adapter._manifest = str(tmp_path), 'b' * 64
+    adapter._snapshot = snapshot['projection_sha256']
+    adapter._call_state, adapter._timeout = threading.local(), 10
+    handler = runtime._FlatRequestHandler(binding, snapshot, 'codex-lead-1', (), rotator,
+                                          adapter, factory, 1, None)
+    owner._factory, owner._client, owner._rotation_anchor = factory, rotator, rotator
+    owner._rotation_type, owner._adapter = type(rotator), adapter
+    owner._generation = (binding, snapshot, handler)
+    vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+
+    def build(encoder=None, owner_handler=handler):
+        return runtime._build_flat_memory_immutable(
+            binding, adapter.passage if encoder is None else encoder, b'encoder', 'c' * 64,
+            None, None, owner_handler=owner_handler)
+    owner._lock.acquire()
+    handler._lock.acquire()
+    try:
+        yield SimpleNamespace(runtime=runtime, adapter_module=adapter_module, client_module=client_module,
+            owner=owner, handler=handler, adapter=adapter, rotator=rotator, callback=callback,
+            binding=binding, snapshot=snapshot, projection=projection, checks=checks, fault=fault,
+            vector=vector, build=build, monkeypatch=monkeypatch)
+    finally:
+        handler._lock.release()
+        owner._lock.release()
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_owner_batch_source_fence_call_count_and_identity(owner_batch_fixture, enabled):
+    case = owner_batch_fixture
+    def request(self, operation, texts):
+        assert operation == 'refresh'
+        proof = case.owner._batch_proof
+        if enabled:
+            assert type(proof) is case.runtime._OwnerBatchProof
+            assert proof.owner is case.owner and proof.binding is case.binding
+            assert proof.snapshot is case.owner._snapshot is case.handler._snapshot
+            assert proof.generation is case.owner._generation
+        else:
+            assert proof is None
+        case.callback()
+        case.rotator._client._next_id += 1  # synthetic one-frame transport
+        case.rotator._client._used_nonces.add('synthetic-nonce')
+        case.callback()
+        return case.vector * len(texts)
+    case.monkeypatch.setattr(case.adapter_module._RotatingFlatAdapter, '_request', request)
+    memory = case.build(owner_handler=case.handler if enabled else None)
+    assert case.checks.count('source') == (3 if enabled else 5)  # includes final build checkpoint
+    assert memory.ids == ('synthetic',)
+    assert case.owner._batch_proof is None
+
+
+def test_generic_batch_keeps_original_outer_source_checks(owner_batch_fixture):
+    case = owner_batch_fixture
+    memory = case.build(encoder=lambda texts: case.vector * len(texts), owner_handler=None)
+    assert case.checks.count('source') == 3  # before, after and final
+    assert memory.ids == ('synthetic',)
+    assert case.owner._batch_proof is None
+
+
+@pytest.mark.parametrize('fault', ['callback', 'callback_self', 'callback_func', 'owner',
+                                    'snapshot', 'state', 'factory', 'adapter'])
+def test_invalid_owner_batch_graph_never_activates_proof(owner_batch_fixture, fault):
+    case = owner_batch_fixture
+    if fault == 'callback':
+        case.rotator._source_check = lambda: 'a' * 64
+    elif fault == 'callback_self':
+        other = object.__new__(case.runtime._SingleManifestOwner)
+        callback = other._rotation_source_check
+        case.rotator._source_check = case.adapter._source_check = callback
+    elif fault == 'callback_func':
+        from types import MethodType
+        callback = MethodType(lambda _self: 'a' * 64, case.owner)
+        case.rotator._source_check = case.adapter._source_check = callback
+    elif fault == 'owner':
+        case.owner._handler = object()
+    elif fault == 'snapshot':
+        case.owner._snapshot = dict(case.snapshot)
+    elif fault == 'state':
+        case.owner._state = 'READY'
+    elif fault == 'factory':
+        case.rotator._factory = object()
+    else:
+        case.adapter._source_check = lambda: 'a' * 64
+    assert case.runtime._owner_batch_proof(case.handler, case.binding, case.snapshot,
+                                           case.adapter.passage, 1) is None
+    assert case.owner._batch_proof is None
+
+
+def test_invalid_owner_graph_falls_back_to_full_outer_checks(owner_batch_fixture):
+    case = owner_batch_fixture
+    case.owner._state = 'READY'
+    def request(self, _operation, texts):
+        assert case.owner._batch_proof is None
+        case.callback()
+        case.rotator._client._next_id += 1
+        case.rotator._client._used_nonces.add('synthetic-nonce')
+        case.callback()
+        return case.vector * len(texts)
+    case.monkeypatch.setattr(case.adapter_module._RotatingFlatAdapter, '_request', request)
+    assert case.build().ids == ('synthetic',)
+    assert case.checks.count('source') == 5
+
+
+@pytest.mark.parametrize('when', ['before', 'after', 'callback_swap', 'one_check', 'no_frame'])
+def test_owner_batch_refuses_source_change_or_incomplete_proof(owner_batch_fixture, when):
+    case = owner_batch_fixture
+    def request(self, _operation, texts):
+        if when == 'before':
+            case.fault['source'] = True
+        case.callback()
+        if when == 'after':
+            case.fault['source'] = True
+        elif when == 'callback_swap':
+            case.rotator._source_check = lambda: 'a' * 64
+        if when != 'no_frame':
+            case.rotator._client._next_id += 1
+            case.rotator._client._used_nonces.add('synthetic-nonce')
+        if when != 'one_check':
+            case.callback()
+        return case.vector * len(texts)
+    case.monkeypatch.setattr(case.adapter_module._RotatingFlatAdapter, '_request', request)
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        case.build()
+    assert case.owner._batch_proof is None
+
+
+@pytest.mark.parametrize('post_check', [False, True])
+def test_owner_batch_rotation_requires_post_transport_check(owner_batch_fixture, post_check):
+    case = owner_batch_fixture
+    def request(self, _operation, texts):
+        case.callback()                  # before rotation / transport
+        case.rotator._client = None
+        case.callback()                  # extra rotation fence is not the post check
+        client = object.__new__(case.client_module.GracefulE5WorkerClient)
+        client._next_id = 2              # synthetic one-frame completed response
+        client._used_nonces = {'synthetic-nonce'}
+        case.rotator._client = client
+        if post_check:
+            case.callback()
+        return case.vector * len(texts)
+    case.monkeypatch.setattr(case.adapter_module._RotatingFlatAdapter, '_request', request)
+    if post_check:
+        assert case.build().ids == ('synthetic',)
+        assert case.checks.count('source') == 4  # pre, rotation, post, final
+    else:
+        with pytest.raises(ValueError, match='snapshot_build_refused'):
+            case.build()
+    assert case.owner._batch_proof is None
+
+
+def test_owner_batch_first_worker_source_fences(owner_batch_fixture):
+    case = owner_batch_fixture
+    case.rotator._client = None
+    def request(self, _operation, texts):
+        case.callback()  # initial pre-check occurs before any worker exists
+        client = object.__new__(case.client_module.GracefulE5WorkerClient)
+        client._next_id, client._used_nonces = 2, {'synthetic-nonce'}
+        case.rotator._client = client
+        case.callback()  # post-check follows the synthetic complete frame
+        return case.vector * len(texts)
+    case.monkeypatch.setattr(case.adapter_module._RotatingFlatAdapter, '_request', request)
+    assert case.build().ids == ('synthetic',)
+    assert case.checks.count('source') == 3
+    assert case.owner._batch_proof is None
+
+
+@pytest.mark.parametrize('signal', ['interrupt', 'cancel', 'group'])
+def test_owner_batch_proof_acquisition_cancellation_clears_owner(owner_batch_fixture, signal):
+    import asyncio
+    case = owner_batch_fixture
+    def cancel(_self, **_kwargs):
+        if signal == 'interrupt':
+            raise KeyboardInterrupt('synthetic')
+        if signal == 'cancel':
+            raise asyncio.CancelledError('synthetic')
+        raise BaseExceptionGroup('synthetic', [KeyboardInterrupt('synthetic')])
+    case.monkeypatch.setattr(case.runtime._OwnerBatchProof, 'validate', cancel)
+    with pytest.raises(BaseException) as caught:
+        case.runtime._owner_batch_proof(case.handler, case.binding, case.snapshot, case.adapter.passage, 1)
+    assert isinstance(caught.value, (KeyboardInterrupt, asyncio.CancelledError, BaseExceptionGroup))
+    assert case.owner._batch_proof is None
+
+
+def test_owner_batch_proof_rejects_other_thread_and_stale_generation(owner_batch_fixture):
+    import threading
+    case = owner_batch_fixture
+    proof = case.runtime._owner_batch_proof(case.handler, case.binding, case.snapshot, case.adapter.passage, 1)
+    assert proof is not None
+    proof.activate()
+    observed = []
+    def foreign_thread():
+        try:
+            proof.validate()
+        except ValueError:
+            observed.append('refused')
+    thread = threading.Thread(target=foreign_thread)
+    thread.start()
+    thread.join()
+    assert observed == ['refused']
+    case.owner._generation = tuple(list(case.owner._generation))
+    with pytest.raises(ValueError, match='owner_batch_proof_invalid'):
+        proof.validate()
+    proof.close()
+    assert case.owner._batch_proof is None
+
+
+def test_owner_batch_cancellation_during_source_fence_clears_proof(owner_batch_fixture):
+    case = owner_batch_fixture
+    def cancel(_self, _frozen, **_kwargs):
+        raise KeyboardInterrupt('synthetic')
+    case.monkeypatch.setattr(case.runtime._PrivateBinding, '_immutable_checkpoint', cancel)
+    def request(self, _operation, texts):
+        case.callback()
+        pytest.fail('interrupted source fence must not return')
+    case.monkeypatch.setattr(case.adapter_module._RotatingFlatAdapter, '_request', request)
+    with pytest.raises(KeyboardInterrupt):
+        case.build()
+    assert case.owner._batch_proof is None
+
+
+def test_owner_batch_cancellation_after_registration_clears_proof(owner_batch_fixture):
+    case = owner_batch_fixture
+    original = case.runtime._OwnerBatchProof.validate
+    def cancel_after_registration(proof, *, registered=True):
+        if registered:
+            raise KeyboardInterrupt('synthetic after registration')
+        return original(proof, registered=False)
+    case.monkeypatch.setattr(case.runtime._OwnerBatchProof, 'validate', cancel_after_registration)
+    with pytest.raises(KeyboardInterrupt):
+        case.build()
+    assert case.owner._batch_proof is None
+
+
+@pytest.mark.parametrize('coalesce', [False, True])
+@pytest.mark.parametrize('force_rotation', [False, True])
+def test_owner_batch_real_client_four_frames_on_synthetic_pipes(owner_batch_fixture, coalesce, force_rotation):
+    """Real rotator/client protocol; synthetic pipes, source and owner graph, no E5."""
+    import time
+    from test_wd_mind_e5_client import response
+    from test_wd_mind_e5_lifecycle import Job, Process
+    from test_wd_mind_e5_rotating_client import request as make_request
+    from tools import wd_mind_e5_client as e5
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    from tools import wd_mind_e5_rotating_client as rotation
+
+    case = owner_batch_fixture
+    case.projection['messages']['records'] = [
+        {'record_id': 'synthetic-%02d' % index, 'stored_text': 'work'} for index in range(16)]
+    case.snapshot['projection_bytes'] = reader._serialized(case.projection)
+    case.monkeypatch.setattr(rotation, '_BULK_NONCE_LIMIT', 1 if force_rotation else 8)
+    processes, frame_checks = [], []
+
+    def factory(*, owner_sink, call_deadline):
+        process = Process(response(0, 0))
+        processes.append(process)
+        class Input:
+            def write(self, packet):
+                body = json.loads(packet[4:].decode('ascii'))
+                assert int.from_bytes(packet[:4], 'little') == len(packet) - 4
+                frame = response(body['id'], len(body['texts']), nonce=bytes.fromhex(body['nonce']),
+                                 digest=bytes.fromhex(body['request_sha256']))
+                with process.stdout.condition:
+                    process.stdout.data.extend(frame)
+                    process.stdout.condition.notify_all()
+                return len(packet)
+            def flush(self): pass
+            def close(self): process.finish(0)  # synthetic pipe; no OS process
+        process.stdin = Input()
+        worker_owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=e5.BULK_CONTRACT_SHA256)
+        owner_sink(worker_owner)
+        worker_owner.set_job(Job())
+        worker_owner.bind(process)
+        client = e5.GracefulE5WorkerClient(worker_owner, timeout=29.99,
+            encoder_binding_sha256='1' * 64, bulk_contract_sha256=e5.BULK_CONTRACT_SHA256)
+        worker_owner.mark_ready()
+        return {'status': 'READY', 'owner': worker_owner, 'client': client,
+                'bulk_contract_sha256': e5.BULK_CONTRACT_SHA256}
+
+    rotator = rotation.RotatingGracefulE5Client(factory=factory, encoder_binding_sha256='1' * 64,
+        snapshot_sha256=case.snapshot['projection_sha256'], source_check=case.callback,
+        shutdown_timeout=2, call_timeout=30, bulk_contract_sha256=e5.BULK_CONTRACT_SHA256)
+    case.owner._factory = case.handler._factory = case.adapter._factory = factory
+    case.owner._client = case.owner._rotation_anchor = case.handler._rotator = rotator
+    case.owner._rotation_type = type(rotator)
+    case.adapter._client = case.adapter._rotator = rotator
+    case.adapter._source_check = case.callback
+    case.rotator = rotator
+
+    def forward(_self, operation, texts):
+        assert operation == 'refresh'
+        assert (case.owner._batch_proof is not None) is coalesce
+        result = rotator.encode_supervised(make_request(2, texts=tuple(texts)),
+            frame_check=lambda: frame_checks.append(True), call_deadline=time.monotonic() + 30)
+        return result['vector_bytes']
+    case.monkeypatch.setattr(case.adapter_module._RotatingFlatAdapter, '_request', forward)
+    try:
+        if force_rotation:
+            rotator.encode_supervised(make_request(1), call_deadline=time.monotonic() + 30)
+            case.checks.clear()
+        memory = case.build(owner_handler=case.handler if coalesce else None)
+        assert len(memory.ids) == 16
+        assert len(frame_checks) == 8
+        assert len(processes) == (2 if force_rotation else 1)
+        assert case.checks.count('source') == ((4 if force_rotation else 3) if coalesce
+                                               else (6 if force_rotation else 5))
+        assert case.owner._batch_proof is None
+    finally:
+        if rotator.owner is not None:
+            rotator.close(timeout=2)
+
+
 def test_cached_vectors_match_screened_records_and_ignore_new_records(monkeypatch):
     import struct
     from tools import wd_mind_full_runtime as runtime

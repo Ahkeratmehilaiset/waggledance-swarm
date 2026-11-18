@@ -1511,14 +1511,16 @@ def _abandon_local_candidate_state(state):
                 interrupted = exc
 
 
-def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
+def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, control=None):
     """Read candidates as proposals; only locally rederived results may leave."""
     pending = None
     interrupted = None
     try:
         _reap_local_candidate_pending()
         names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
-        if len(argv) != 11 or argv[0] != '--mind-local-candidate-read':
+        controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')
+        if (len(argv) != 11 or argv[0] not in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled')
+                or (controlled and control is None) or (not controlled and control is not None)):
             raise ValueError('args')
         pairs = list(zip(argv[1::2], argv[2::2]))
         if len(pairs) != 5 or {key for key, _ in pairs} != names:
@@ -1567,6 +1569,22 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
                         or received.get('sender_authentication') != 'UNKNOWN'
                         or received.get('source_verification') != 'UNVERIFIED'):
                     raise ValueError('candidate')
+                if controlled:
+                    # READY carries only a one-use nonce. No source text is
+                    # resolved before the owning controller signals GO+EOF.
+                    ready = json.dumps({'schema':'wd.mind-controlled-read-ready.v1',
+                        'authority':'none', 'nonce':nonce}, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+                    if len(ready) > 1024 or output.write(ready) != len(ready):
+                        raise ValueError('ready')
+                    output.flush()
+                    signal = control.read(65)
+                    if signal != b'G' + nonce.encode('ascii') or control.read(1) != b'':
+                        raise ValueError('control')
+                    if time.monotonic() >= deadline:
+                        raise ValueError('deadline')
+                    with state['result_lock']:
+                        if state['abandoned'] or time.monotonic() >= deadline:
+                            raise ValueError('abandoned')
                 result = state['resolver'].resolve(ipc_bytes=received.get('candidate_frame'),
                     expected_nonce=nonce, lane=lane, scope=scope, deadline_monotonic=deadline)
                 # Recheck the external approved policy after reading source
@@ -1630,10 +1648,12 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    if '--mind-local-candidate-read' in argv:
+    if '--mind-local-candidate-read' in argv or '--mind-local-candidate-read-controlled' in argv:
         pin = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         root = str(Path(__file__).absolute().parents[2])
-        return _local_candidate_entry(argv, sys.stdout.buffer, sys.stderr.buffer, root, pin)
+        controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')
+        return _local_candidate_entry(argv, sys.stdout.buffer, sys.stderr.buffer, root, pin,
+                                      control=sys.stdin.buffer if controlled else None)
     if '--mind-consumer-child' in argv:
         # The reserved stderr handle is input, not diagnostics. Never read or
         # write either inherited handle until parent authority is implemented.

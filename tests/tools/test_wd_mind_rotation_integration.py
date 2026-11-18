@@ -2,6 +2,7 @@
 import hashlib
 import json
 import subprocess
+from wd_mind_owned_compat import run_owned
 import sys
 from pathlib import Path
 
@@ -76,6 +77,20 @@ anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=
     operator_approval_reference_sha256='b'*64)
 factory = runtime._ManifestWorkerFactory(root, manifest, {}, pathlib.Path(root) / 'synthetic.lock',
     30.0, 0.0, e5.BULK_CONTRACT_SHA256)
+# Synthetic identity only; these tests exercise worker/rotator behavior,
+# not the OS reservation. Other tests cover the real Windows reservation.
+from tools import wd_mind_runtime_child as child
+guard = object.__new__(child._LocalOwnerReservation)
+guard.fd = 1
+guard._check = lambda: None
+guard._read = lambda: child._OWNER_RESERVATION_MAGIC + b'R'
+admission = child._LocalAdmission(guard)
+identity = object.__new__(child._LocalManifestQuery)
+admission.bind_owner(identity)
+factory._admission, factory._admission_owner = admission, identity
+admission.bind_factory(identity, factory)
+# Confined to the synthetic subprocess; never changes production defaults.
+runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
 runtime_hash = hashlib.sha256((pathlib.Path(root) / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
 processes, jobs, trace = [], [], []
 checks = {'source': 0, 'policy': 0}
@@ -178,7 +193,7 @@ finally:
                                  'policy_mutation', 'tamper_pin'])
 def test_pinned_rotation_and_owned_hold(synthetic_bundle, mode):
     digest, policy_sha = _prepared_bundle(synthetic_bundle)
-    result = subprocess.run([sys.executable, '-c', SCRIPT, str(synthetic_bundle['bundle']),
+    result = run_owned([sys.executable, '-c', SCRIPT, str(synthetic_bundle['bundle']),
         digest, policy_sha, str(ROOT / 'tests/tools'), mode, str(synthetic_bundle['source'])],
         capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr

@@ -6,6 +6,7 @@ live bridge or persists embeddings; it does not test owner/host restart.
 import hashlib
 import json
 import subprocess
+from wd_mind_owned_compat import run_owned
 import sys
 from pathlib import Path
 
@@ -40,10 +41,24 @@ anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=
     operator_approval_reference_sha256='b'*64)
 factory = runtime._ManifestWorkerFactory(str(root), manifest, {}, root / 'synthetic.lock',
     30.0, 0.0, e5.BULK_CONTRACT_SHA256)
+# Synthetic identity only; these tests exercise worker/rotator behavior,
+# not the OS reservation. Other tests cover the real Windows reservation.
+from tools import wd_mind_runtime_child as child
+guard = object.__new__(child._LocalOwnerReservation)
+guard.fd = 1
+guard._check = lambda: None
+guard._read = lambda: child._OWNER_RESERVATION_MAGIC + b'R'
+admission = child._LocalAdmission(guard)
+identity = object.__new__(child._LocalManifestQuery)
+admission.bind_owner(identity)
+factory._admission, factory._admission_owner = admission, identity
+admission.bind_factory(identity, factory)
+# Confined to the synthetic subprocess; never changes production defaults.
+runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
 runtime_hash = hashlib.sha256((root / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
 processes, jobs, operations = [], [], {'passage': 0, 'query': 0}
 
-def synthetic_factory(self, *, owner_sink):
+def synthetic_factory(self, *, owner_sink, call_deadline=None):
     assert lifecycle._active is None
     assert all(process.poll() == 0 for process in processes)
     assert all(job.closed for job in jobs)
@@ -208,7 +223,7 @@ def test_incremental_refresh_uses_only_verified_memory(synthetic_bundle, case):
     digest, policy_sha = _prepared_bundle(synthetic_bundle)
     source = synthetic_bundle['source']
     source.write_bytes(b'\n'.join(source.read_bytes().splitlines()[:5]) + b'\n')
-    result = subprocess.run([sys.executable, '-B', '-c', SCRIPT, str(synthetic_bundle['bundle']),
+    result = run_owned([sys.executable, '-B', '-c', SCRIPT, str(synthetic_bundle['bundle']),
         digest, policy_sha, str(ROOT / 'tests/tools'), str(source), case],
         capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr

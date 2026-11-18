@@ -35,6 +35,20 @@ class ReservationAdminRefused(ValueError):
     """Fixed refusal: never print host process details or paths."""
 
 
+class _ProcessObservationRefused(ReservationAdminRefused):
+    """Fixed aggregate only; no process identifiers, names or paths."""
+    _FIELDS = ('open_denied', 'open_other', 'image_unverified', 'handle_close_uncertain')
+
+    def __init__(self, counts):
+        if (type(counts) is not dict or set(counts) != set(self._FIELDS)
+                or any(type(counts[key]) is not int or not 0 <= counts[key] <= 0xffffffff
+                       for key in self._FIELDS) or not any(counts.values())):
+            raise ValueError('invalid_observation_counts')
+        self.counts = {key: counts[key] for key in self._FIELDS}
+        super().__init__('host_observation_unavailable;' +
+                         ';'.join(key + '=' + str(self.counts[key]) for key in self._FIELDS))
+
+
 class _AdminReason(Exception):
     """Internal fixed-token branch, never constructed from host exception text."""
 
@@ -184,6 +198,7 @@ def _windows_process_images():
     kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     kernel.GetExitCodeProcess.restype = wintypes.BOOL
     items = []
+    counts = {key: 0 for key in _ProcessObservationRefused._FIELDS}
     for pid, parent, name in _process_snapshot(kernel):
         process = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
         if not process:
@@ -194,19 +209,32 @@ def _windows_process_images():
                 continue
             if error == 87 and all(other_pid != pid for other_pid, _, _ in _process_snapshot(kernel)):
                 continue
-            raise ValueError('process_access')
+            counts['open_denied' if error == 5 else 'open_other'] += 1
+            continue
         try:
             try:
                 path = _image_or_proven_exited(kernel, process)
             except _ImageUnavailable:
-                if not _verified_kernel_process(process, pid, parent, name):
-                    raise
+                try:
+                    known_kernel_process = _verified_kernel_process(process, pid, parent, name)
+                except Exception:
+                    known_kernel_process = False
+                if known_kernel_process is not True:
+                    counts['image_unverified'] += 1
+                continue
+            except Exception:
+                counts['image_unverified'] += 1
                 continue
             if path is not None:
                 items.append((pid, path))
         finally:
-            if not kernel.CloseHandle(process):
-                raise ValueError('process_handle_close')
+            try:
+                if not kernel.CloseHandle(process):
+                    counts['handle_close_uncertain'] += 1
+            except Exception:
+                counts['handle_close_uncertain'] += 1
+    if any(counts.values()):
+        raise _ProcessObservationRefused(counts) from None
     return tuple(items)
 
 
@@ -216,6 +244,8 @@ def _observe_windows():
         raise ReservationAdminRefused('host_observation_unavailable')
     try:
         return _windows_kernel_boot_ns(), _windows_process_images()
+    except _ProcessObservationRefused:
+        raise
     except Exception:
         raise ReservationAdminRefused('host_observation_unavailable') from None
 
@@ -569,6 +599,8 @@ def _validate_observation(boot_ns, processes, interpreter_root, interpreter, mar
 def _checked_observe(observe):
     try:
         return observe()
+    except _ProcessObservationRefused:
+        raise
     except Exception:
         raise _AdminReason('HOST_OBSERVATION_UNAVAILABLE') from None
 
@@ -859,6 +891,8 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
                 # The wrapped guard error does not reveal whether write began.
                 raise _AdminReason('RESET_PUBLICATION_UNCERTAIN') from None
             fd = None
+    except _ProcessObservationRefused:
+        raise
     except _AdminReason as exc:
         reason = str(exc)
         raise ReservationAdminRefused(reason if reason in _REASONS else 'ADMIN_REFUSED') from None

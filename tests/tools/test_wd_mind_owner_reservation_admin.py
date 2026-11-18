@@ -1003,6 +1003,94 @@ def test_synthetic_process_snapshot_requires_own_pid_and_complete_enumeration(mo
     assert closed == [111]
 
 
+def test_synthetic_observer_counts_all_uninspectable_processes_without_details(monkeypatch):
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    visited, closed = [], []
+    class Kernel:
+        def __init__(self):
+            self.OpenProcess = Function(self.open)
+            self.QueryFullProcessImageNameW = Function(lambda *_: 0)
+            self.GetExitCodeProcess = Function(lambda *_: 0)
+            self.CloseHandle = Function(self.close)
+        def open(self, _access, _inherit, pid):
+            visited.append(pid)
+            if pid in (101, 102):
+                ctypes.set_last_error(5 if pid == 101 else 31)
+                return 0
+            return 1000 + pid
+        def close(self, handle):
+            closed.append(handle)
+            return handle != 1105
+    kernel = Kernel()
+    monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *_a, **_kw: kernel)
+    monkeypatch.setattr(admin, '_process_snapshot', lambda _kernel:
+                        tuple((pid, 4, 'synthetic-private-name') for pid in range(101, 106)))
+    def image(_kernel, handle):
+        if handle in (1103, 1104):
+            raise admin._ImageUnavailable()
+        return 'C:\\synthetic-private-path\\image.exe'
+    monkeypatch.setattr(admin, '_image_or_proven_exited', image)
+    monkeypatch.setattr(admin, '_verified_kernel_process', lambda *_args: False)
+    monkeypatch.setattr(admin, '_windows_kernel_boot_ns', lambda: 1)
+    with pytest.raises(admin.ReservationAdminRefused) as caught:
+        admin._checked_observe(admin._observe_windows)
+    assert caught.value.counts == {'open_denied': 1, 'open_other': 1,
+                                   'image_unverified': 2, 'handle_close_uncertain': 1}
+    assert visited == [101, 102, 103, 104, 105]
+    assert closed == [1103, 1104, 1105]
+    assert 'synthetic-private' not in str(caught.value)
+    assert all(str(pid) not in str(caught.value) for pid in visited)
+
+
+def test_synthetic_marker_preserves_only_fixed_aggregate_observer_refusal(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    counts = {'open_denied': 2, 'open_other': 1, 'image_unverified': 0, 'handle_close_uncertain': 0}
+    def refused():
+        raise admin._ProcessObservationRefused(counts)
+    with pytest.raises(admin.ReservationAdminRefused) as caught:
+        admin._marker(root, runtime, operation='create', observe=refused)
+    assert caught.value.counts == counts
+    assert str(caught.value) == ('host_observation_unavailable;open_denied=2;open_other=1;'
+                                 'image_unverified=0;handle_close_uncertain=0')
+    assert not marker.exists()
+    assert 'synthetic-private' not in str(caught.value)
+
+
+def test_synthetic_failed_second_snapshot_refuses_without_inventing_counts(monkeypatch):
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    class Kernel:
+        OpenProcess = Function(lambda *_: (ctypes.set_last_error(87), 0)[1])
+        QueryFullProcessImageNameW = Function(lambda *_: 0)
+        GetExitCodeProcess = Function(lambda *_: 0)
+    snapshots = []
+    def snapshot(_kernel):
+        snapshots.append(1)
+        if len(snapshots) == 1:
+            return ((123, 4, 'synthetic-private-name'),)
+        raise ValueError('synthetic-private-snapshot')
+    monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *_a, **_kw: Kernel())
+    monkeypatch.setattr(admin, '_process_snapshot', snapshot)
+    monkeypatch.setattr(admin, '_windows_kernel_boot_ns', lambda: 1)
+    with pytest.raises(admin.ReservationAdminRefused, match='^host_observation_unavailable$') as caught:
+        admin._observe_windows()
+    assert len(snapshots) == 2
+    assert not hasattr(caught.value, 'counts')
+    assert 'synthetic-private' not in str(caught.value)
+
+
+@pytest.mark.parametrize('counts', [None, {}, {'private': 1},
+    {'open_denied': True, 'open_other': 0, 'image_unverified': 0, 'handle_close_uncertain': 0},
+    {'open_denied': -1, 'open_other': 0, 'image_unverified': 0, 'handle_close_uncertain': 0},
+    {'open_denied': 0, 'open_other': 0, 'image_unverified': 0, 'handle_close_uncertain': 0}])
+def test_observation_counts_require_fixed_nonempty_nonnegative_integers(counts):
+    with pytest.raises(ValueError, match='^invalid_observation_counts$'):
+        admin._ProcessObservationRefused(counts)
+
+
 def test_observer_refuses_inaccessible_process_image(monkeypatch):
     monkeypatch.setattr(admin, '_windows_kernel_boot_ns', lambda: 123)
     monkeypatch.setattr(admin, '_windows_process_images', lambda: (_ for _ in ()).throw(PermissionError()))
@@ -1142,7 +1230,7 @@ def test_synthetic_open_failure_only_error_87_with_second_absence_is_skipped(
         assert admin._windows_process_images() == ()
         assert len(snapshots) == 2
     else:
-        with pytest.raises(ValueError, match='process_access'):
+        with pytest.raises(ValueError, match='host_observation_unavailable'):
             admin._windows_process_images()
         assert len(snapshots) == (2 if error == 87 else 1)
 
@@ -1162,7 +1250,7 @@ def test_synthetic_idle_pid_zero_skips_only_documented_open_error(monkeypatch, e
     if allowed:
         assert admin._windows_process_images() == ()
     else:
-        with pytest.raises(ValueError, match='process_access'):
+        with pytest.raises(ValueError, match='host_observation_unavailable'):
             admin._windows_process_images()
     assert len(snapshots) == 1
 
@@ -1194,7 +1282,7 @@ def test_synthetic_image_failure_uses_same_open_handle_for_kernel_facts(monkeypa
     monkeypatch.setattr(admin, '_verified_kernel_process', verify_kernel)
     if verify: assert admin._windows_process_images() == ()
     else:
-        with pytest.raises(ValueError, match='image_access'): admin._windows_process_images()
+        with pytest.raises(ValueError, match='host_observation_unavailable'): admin._windows_process_images()
     assert observed == [('image', 999), ('exit', 999), ('facts', 999), ('close', 999)]
 
 

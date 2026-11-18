@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from wd_mind_owned_compat import run_owned
 import sys
 
 import pytest
@@ -11,6 +12,67 @@ import pytest
 from tools import wd_mind_content_query_readonly as reader
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+_SYNTHETIC_ADMISSION_SCRIPT = r'''
+def _synthetic_factory_admission():
+    # Inert unit-test reservation, as in _synthetic_admitted_factory.
+    # No native handle is opened/closed; this is not OS admission proof.
+    from tools import wd_mind_runtime_child as child
+    guard = object.__new__(child._LocalOwnerReservation)
+    guard.fd = 1
+    guard._check = lambda: None
+    guard._read = lambda: child._OWNER_RESERVATION_MAGIC + b'R'
+    admission = child._LocalAdmission(guard)
+    owner = object.__new__(child._LocalManifestQuery)
+    admission.bind_owner(owner)
+    return admission, owner
+
+def _bind_synthetic_factory_admission(factory, admission=None, owner=None):
+    if admission is None:
+        admission, owner = _synthetic_factory_admission()
+    admission.assert_owner(owner)
+    factory._admission, factory._admission_owner = admission, owner
+    admission.bind_factory(owner, factory)
+    return factory
+'''
+
+
+_SYNTHETIC_QUERY_GATE_SCRIPT = r'''
+def _observe_synthetic_query_gate(runtime, enabled):
+    # This runs only in a fresh synthetic subprocess, never in production.
+    assert runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is False
+    if enabled:
+        runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
+    observed = []
+    original = runtime._SingleManifestOwner._candidate_request
+
+    def checked(owner, request, *, located):
+        if enabled:
+            # Real start() must complete prewarm; do not fabricate its state.
+            assert owner._prewarm_generation is owner._generation
+            assert owner._retained is not None
+            assert owner._handler._retained is owner._retained
+            result = original(owner, request, located=located)
+            observed.append('prewarmed_candidate')
+            return result
+        try:
+            original(owner, request, located=located)
+        except runtime.FullRuntimeRefused:
+            assert owner.status()['state'] == 'READY'
+            observed.append('gate_off_refused')
+            raise
+        raise AssertionError('default OFF gate accepted a candidate')
+
+    runtime._SingleManifestOwner._candidate_request = checked
+    return observed
+'''
+
+
+@pytest.fixture
+def synthetic_startup_query_gate_on():
+    """Opt in only the synthetic child; its real start() must prewarm."""
+    return 'synthetic_gate_on_prewarm'
 
 
 def test_cached_vectors_match_screened_records_and_ignore_new_records(monkeypatch):
@@ -703,7 +765,18 @@ def test_parent_bootstrap_take_traced_interrupts_never_expose_values():
 
 @pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
 def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle, fault):
+    _single_adapter_case(synthetic_bundle, fault, 'gate_off')
+
+
+@pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
+def test_gate_on_single_adapter_symbol_and_manifest_pins_without_rotator(
+        synthetic_bundle, fault, synthetic_startup_query_gate_on):
+    _single_adapter_case(synthetic_bundle, fault, synthetic_startup_query_gate_on)
+
+
+def _single_adapter_case(synthetic_bundle, fault, query_gate):
     """Import real bundle bytes; no model process or fake adapter is started."""
+    assert query_gate in ('gate_off', 'synthetic_gate_on_prewarm')
     bundle = synthetic_bundle['bundle']
     import datetime
     source = synthetic_bundle['source']
@@ -725,7 +798,7 @@ def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundl
     raw = canonical(manifest)
     path.write_bytes(raw)
     pin = hashlib.sha256(raw).hexdigest()
-    script = r'''
+    script = _SYNTHETIC_ADMISSION_SCRIPT + _SYNTHETIC_QUERY_GATE_SCRIPT + r'''
 import hashlib, pathlib, sys, types
 root, pin = pathlib.Path(sys.argv[1]), sys.argv[2]
 sys.path.insert(0, str(root / 'tools-bootstrap'))
@@ -749,6 +822,8 @@ assert type(single) is adapter._SingleFlatAdapter
 # This part uses the real bundled runtime, source binding and adapter. Only
 # process launch and vector construction are synthetic; no model is started.
 from tools import wd_mind_full_runtime as runtime
+query_gate_on = sys.argv[5] == 'synthetic_gate_on_prewarm'
+gate_observed = _observe_synthetic_query_gate(runtime, query_gate_on)
 policy = b'{"identifiers":["synthetic-private-marker-52"],"schema":"wd.mind-identifier-policy.v1"}'
 binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin,
     identifier_policy_bytes=policy, expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
@@ -789,7 +864,8 @@ original_provider = runtime._require_trusted_parent_export
 def synthetic_entry_provider(*, owner, stream, bootstrap):
     assert owner is None and stream is None and bootstrap is control_buffer
 runtime._require_trusted_parent_export = synthetic_entry_provider
-runtime.create_manifest_worker_factory = lambda **kwargs: factory
+runtime.create_manifest_worker_factory = lambda **kwargs: _bind_synthetic_factory_admission(
+    factory, admission=kwargs.get('_admission'), owner=kwargs.get('_admission_owner'))
 entry = runtime.prepare_manifest_bound_owner(**entry_args)
 runtime._require_trusted_parent_export = original_provider
 assert entry['state'] == 'PREPARED_NOT_RUNNING' and entry['authority'] == 'none'
@@ -901,8 +977,21 @@ expected = metadata_raw + b''.join(value for _, value in blocks)
 assert count == len(payloads)-1 and total == len(expected) and digest == hashlib.sha256(expected).digest()
 assert b''.join(payloads) == expected
 assert prepared.status()['state'] == 'DISCARDED' and prepared.status()['total_bytes'] == 0
-response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
-    'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'})
+request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
+    'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'}
+if not query_gate_on:
+    try:
+        wrapper.candidates(request)
+        raise AssertionError('default OFF gate must refuse')
+    except runtime.FullRuntimeRefused:
+        pass
+    assert gate_observed == ['gate_off_refused']
+    assert wrapper.status()['state'] == 'READY'
+    assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
+    print('synthetic_default_gate_off_refused')
+    raise SystemExit(0)
+response = wrapper.candidates(request)
+assert gate_observed == ['prewarmed_candidate']
 assert response['status'] == 'CANDIDATES' and len(response['candidates']) == 1, repr(response)
 assert response['candidates'][0]['source_event_sha256'] == sys.argv[3]
 memory = wrapper._handler._memory
@@ -919,17 +1008,34 @@ assert wrapper.status()['state'] == 'HOLD'
 assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
 print('synthetic_adapter_manifest_verified')
 '''
-    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin, event_sha, fault],
+    proc = run_owned([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin, event_sha, fault, query_gate],
                           cwd=bundle, capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
+    if query_gate == 'synthetic_gate_on_prewarm':
+        assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
+    else:
+        assert proc.stdout.strip() == 'synthetic_default_gate_off_refused'
+        assert proc.stderr == ''
 
 
 @pytest.mark.parametrize(('lane_name', 'expected_scope'), [
     ('codex-lead-1', 'own'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
 def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle, lane_name, expected_scope):
+    _owner_child_role_case(synthetic_bundle, lane_name, expected_scope, 'gate_off')
+
+
+@pytest.mark.parametrize(('lane_name', 'expected_scope'), [
+    ('codex-lead-1', 'own'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
+])
+def test_gate_on_owner_child_role_runs_in_separate_synthetic_process(
+        synthetic_bundle, lane_name, expected_scope, synthetic_startup_query_gate_on):
+    _owner_child_role_case(synthetic_bundle, lane_name, expected_scope, synthetic_startup_query_gate_on)
+
+
+def _owner_child_role_case(synthetic_bundle, lane_name, expected_scope, query_gate):
     """Real role + pinned snapshot; model, parent trust and worker are fixtures."""
+    assert query_gate in ('gate_off', 'synthetic_gate_on_prewarm')
     import datetime
     import struct
     bundle, source = synthetic_bundle['bundle'], synthetic_bundle['source']
@@ -955,12 +1061,14 @@ def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle, l
     lane = lane_name.encode('ascii')
     mct = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + nonce + channel + bytes.fromhex(policy_sha) + policy
     control = b'MCO1' + bytes.fromhex(pin) + bytes.fromhex(policy_sha) + bytes.fromhex('b'*64) + bytes([len(lane)]) + lane + mct
-    script = r'''
+    script = _SYNTHETIC_ADMISSION_SCRIPT + _SYNTHETIC_QUERY_GATE_SCRIPT + r'''
 import hashlib, os, pathlib, struct, sys, types
 root, pin = pathlib.Path(sys.argv[1]), sys.argv[2]
 sys.path.insert(0, str(root / 'tools-bootstrap'))
 from tools import wd_mind_runtime_child as child, wd_mind_full_runtime as runtime
 from tools import wd_mind_e5_client as client_module, wd_mind_e5_lifecycle as lifecycle
+query_gate_on = sys.argv[3] == 'synthetic_gate_on_prewarm'
+gate_observed = _observe_synthetic_query_gate(runtime, query_gate_on)
 owner = lifecycle._Owner(client_module.BULK_CONTRACT_SHA256)
 owner.resources.process = types.SimpleNamespace(pid=1)
 owner.resources.job = object()
@@ -984,15 +1092,24 @@ def launch(self, *, owner_sink, call_deadline=None):
     owner_sink(owner)
     return {'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
 runtime._ManifestWorkerFactory.__call__ = launch
-runtime.create_manifest_worker_factory = lambda **kwargs: factory
+runtime.create_manifest_worker_factory = lambda **kwargs: _bind_synthetic_factory_admission(
+    factory, admission=kwargs.get('_admission'), owner=kwargs.get('_admission_owner'))
 runtime._require_trusted_parent_export = lambda **kwargs: None  # Synthetic fixture only.
 child._require_verified_parent_spawn = lambda: None  # Synthetic fixture only.
 os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH'] = pin
-raise SystemExit(child._fixed_child_main(['--mind-owner-child']))
+result = child._fixed_child_main(['--mind-owner-child'])
+# The real child has closed its output streams; verify without emitting data.
+assert gate_observed == (['prewarmed_candidate'] if query_gate_on else ['gate_off_refused'])
+assert result == (0 if query_gate_on else 2)
+raise SystemExit(result)
 '''
-    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin],
+    proc = run_owned([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin, query_gate],
                           cwd=bundle, input=control, capture_output=True, timeout=30,
                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    if query_gate == 'gate_off':
+        assert proc.returncode == 2, 'default OFF gate must refuse'
+        assert proc.stdout == b'' and proc.stderr == b''
+        return
     assert proc.returncode == 0, 'synthetic owner process failed'
     assert proc.stdout.startswith(b'MEX1')
     candidate = json.loads(proc.stderr)
@@ -2322,7 +2439,7 @@ def invoke(case, scenario='normal'):
         raw = canonical(manifest)
         manifest_path.write_bytes(raw)
         case = dict(case, digest=hashlib.sha256(raw).hexdigest())
-    code = r'''
+    code = _SYNTHETIC_ADMISSION_SCRIPT + r'''
 import hashlib, io, json, os, pathlib, struct, sys
 sys.path.insert(0, sys.argv[1] + '/tools-bootstrap')
 from tools import wd_mind_full_runtime as runtime
@@ -2385,6 +2502,8 @@ try:
             calls.append(kwargs)
             return {'status':'HOLD','owner':'synthetic-owner','client':None}
         child.start_e5_worker_graceful = fake_start
+        admission, admission_owner = _synthetic_factory_admission()
+        if mode == 'factory_closed_admission': admission._closed = True
         try:
             if mode == 'factory_missing_audit': (synthetic_audit / 'wd-mind-runtime').rmdir()
             if mode == 'factory_bad_origin': child.__file__ = str(pathlib.Path(sys.argv[1]) / 'wrong-child.py')
@@ -2392,7 +2511,10 @@ try:
                 bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2],
                 worker_timeout_seconds=0 if mode == 'factory_bad_timeout' else 5,
                 lock_timeout_seconds=-1 if mode == 'factory_bad_lock_timeout' else 1,
-                bulk_contract_sha256=('0'*64 if mode == 'factory_bad_bulk' else worker_client.BULK_CONTRACT_SHA256))
+                bulk_contract_sha256=('0'*64 if mode == 'factory_bad_bulk' else worker_client.BULK_CONTRACT_SHA256),
+                _admission=None if mode == 'factory_missing_admission' else admission,
+                _admission_owner=(object.__new__(child._LocalManifestQuery)
+                    if mode == 'factory_foreign_admission_owner' else admission_owner))
             if mode == 'factory_asset_mutation':
                 location = json.loads((pathlib.Path(sys.argv[1]) / 'wd-mind-runtime-location.json').read_bytes())
                 (pathlib.Path(location['runtime_root']) / 'model/model.safetensors').write_bytes(b'changed')
@@ -2454,6 +2576,7 @@ try:
         adapter_module.create_single_flat_adapter = lambda **kwargs: SyntheticAdapter()
         factory = runtime._ManifestWorkerFactory(str(root), sys.argv[2], {}, root / 'synthetic.lock', 5, 0,
                                                   client_module.BULK_CONTRACT_SHA256)
+        _bind_synthetic_factory_admission(factory)
         anchor = (runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=str(root),
                     expected_manifest_sha256=sys.argv[2], operator_policy_sha256=hashlib.sha256(policy).hexdigest(),
                     operator_approval_reference_sha256='b'*64)
@@ -3457,7 +3580,7 @@ try:
 except Exception:
     print(json.dumps({'result':'refused'}))
 '''
-    proc = subprocess.run([sys.executable, '-B', '-', str(case['bundle']), case['digest'],
+    proc = run_owned([sys.executable, '-B', '-', str(case['bundle']), case['digest'],
                            str(case['source']), scenario], cwd=case['bundle'], input=code, capture_output=True, text=True,
                           timeout=30, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     assert proc.returncode == 0, proc.stderr
@@ -3482,7 +3605,8 @@ def test_manifest_worker_factory_uses_exact_bindings_and_preserves_hold(syntheti
 
 @pytest.mark.parametrize('scenario', ['factory_disabled', 'factory_missing_audit',
     'factory_asset_mutation', 'factory_manifest_mutation', 'factory_bad_origin', 'factory_bad_timeout',
-    'factory_bad_lock_timeout', 'factory_bad_bulk', 'factory_audit_removed', 'factory_lock_changed'])
+    'factory_bad_lock_timeout', 'factory_bad_bulk', 'factory_audit_removed', 'factory_lock_changed',
+    'factory_missing_admission', 'factory_foreign_admission_owner', 'factory_closed_admission'])
 def test_manifest_worker_factory_refuses_before_spawn(synthetic_bundle, scenario):
     assert invoke(synthetic_bundle, scenario) == {'result':'refused','calls':0}
 

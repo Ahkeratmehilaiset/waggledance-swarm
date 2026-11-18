@@ -1330,6 +1330,8 @@ def test_rotating_owner_retains_current_worker_and_closes_cooperatively(tmp_path
     """The optional route must retain the rotating owner through every outcome."""
     import types
     runtime, adapter_module, binding, factory, old_launches = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     checks, rotators = [], []
     monkeypatch.setattr(runtime._PrivateBinding, '_immutable_checkpoint', lambda self, frozen: checks.append('source'))
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: checks.append('policy'))
@@ -1498,6 +1500,8 @@ def test_single_owner_close_releases_prelaunch_cancellation(tmp_path, monkeypatc
 @pytest.mark.parametrize('operation', ['candidate', 'query'])
 def test_single_owner_without_operator_anchor_cannot_return_candidates(tmp_path, monkeypatch, operation):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -1528,6 +1532,8 @@ def test_single_owner_without_operator_anchor_cannot_return_candidates(tmp_path,
 def _refresh_generation_test_owner(monkeypatch, tmp_path):
     """Synthetic orchestration only; this fixture does not verify source pins."""
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -1552,6 +1558,8 @@ def _direct_query_test_owner(monkeypatch, tmp_path):
     """Synthetic orchestration; not evidence of an authenticated caller or live source."""
     from types import SimpleNamespace
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -2009,6 +2017,8 @@ def test_single_owner_close_reports_verifier_ownership_when_worker_exited(tmp_pa
 def test_single_owner_worker_close_cancellation_preserves_hold(tmp_path, monkeypatch, mode):
     import traceback
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -2032,6 +2042,8 @@ def test_single_owner_worker_close_cancellation_preserves_hold(tmp_path, monkeyp
 def test_single_owner_worker_status_cancellation_preserves_hold(tmp_path, monkeypatch, mode):
     import traceback
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -2431,6 +2443,8 @@ def test_changed_request_cannot_hide_simultaneous_factory_failure(tmp_path, monk
 
 def test_single_manifest_owner_never_reports_ready_when_owner_status_raises(tmp_path, monkeypatch):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -4443,6 +4457,8 @@ def test_cancelled_single_owner_retains_later_conflicting_factory_owner(tmp_path
 def test_export_cancellation_never_exposes_inner_secret_traceback(tmp_path, monkeypatch, signal_name):
     import asyncio, traceback
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -4471,6 +4487,8 @@ def test_export_cancellation_never_exposes_inner_secret_traceback(tmp_path, monk
 def test_export_cancellation_subclass_constructor_never_runs_again(tmp_path, monkeypatch, signal_name):
     import asyncio
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -4496,6 +4514,8 @@ def test_export_cancellation_subclass_constructor_never_runs_again(tmp_path, mon
 def test_export_cancellation_never_touches_untrusted_signal_attributes(tmp_path, monkeypatch, signal_name):
     import asyncio
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    # Orchestration fixture has no real source snapshot; ON prewarm is tested separately.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,

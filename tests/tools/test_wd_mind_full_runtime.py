@@ -721,6 +721,7 @@ def test_runtime_refuses_unverified_audit_before_reading_manifest(monkeypatch):
         opened.append(True)
         raise AssertionError('unverified audit must not read the manifest')
     monkeypatch.setattr(runtime, '_AUDIT_WIP_ENABLED', False)
+    monkeypatch.setattr(runtime, '_FIXED_SYNTHETIC_AUDIT_ENABLED', False)
     monkeypatch.setattr(runtime.prefix, '_read_pinned', unexpected_read)
     with pytest.raises(ValueError, match='audit_path_unverified'):
         runtime._load_pinned_vector_cache(binding)
@@ -733,6 +734,14 @@ def test_unverified_audit_gates_default_off_and_use_same_fixed_root():
     assert runtime._AUDIT_WIP_ENABLED is False
     assert vector_cache._AUDIT_WIP_ENABLED is False
     assert runtime._AUDIT_WIP_ROOT == vector_cache._AUDIT_ROOT
+    assert vector_cache._AUDIT_NAMESPACE_PROVEN is False
+
+
+def test_fixed_synthetic_audit_allows_only_named_bundle_before_manifest_check():
+    from tools import wd_mind_full_runtime as runtime
+    runtime._refuse_unverified_audit_bundle(runtime._AUDIT_WIP_ROOT / 'git-bundle-aaaaaaaa-real-pending')
+    with pytest.raises(ValueError, match='audit_path_unverified'):
+        runtime._refuse_unverified_audit_bundle(runtime._AUDIT_WIP_ROOT / 'arbitrary')
 
 
 def test_runtime_refuses_audit_alias_before_reading_manifest(monkeypatch):

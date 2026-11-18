@@ -50,9 +50,11 @@ _AUDIT_IDENTITY = re.compile(r"windows-v1:[0-9a-f]{8}:[0-9a-f]{16}\Z")
 # Namespace ancestry is not yet proved safe against non-admin replacement.
 # This is an internal test seam, not an operator-controlled runtime option.
 _AUDIT_WIP_ENABLED = False
-# The isolated relative-leaf experiment is inert until ancestor namespace
-# ownership, rename semantics and integration are independently proven.
+# This remains false: ancestor namespace safety is not independently proven.
 _AUDIT_NAMESPACE_PROVEN = False
+# Operator accepted UNKNOWN namespace tampering only for the fixed 160-row
+# synthetic experiment. This is not proof and grants no production exception.
+_FIXED_SYNTHETIC_AUDIT_ENABLED = True
 _AUDIT_LEAF = re.compile(r"vectors\.bin(?:\.lock|\.[0-9a-f]{32}\.tmp)?\Z")
 
 
@@ -224,9 +226,9 @@ class _Native:
             self.kernel.CloseHandle(handle)
             raise
 
-    def open_relative(self, parent, name, disposition, access, share, *, directory=False, missing_ok=False):
-        """Inert audit-only leaf experiment; ancestor proof is still required."""
-        if _AUDIT_NAMESPACE_PROVEN is not True:
+    def open_relative(self, parent, name, disposition, access, share, *, directory=False, missing_ok=False, _audit=None):
+        """Audit-only relative leaf; namespace tampering remains UNKNOWN."""
+        if _AUDIT_NAMESPACE_PROVEN is not True and not _fixed_synthetic_audit_directory(_audit, self, parent):
             raise CacheRefused("audit_namespace_unverified")
         if (type(name) is not str or not _AUDIT_LEAF.fullmatch(name) or directory is not False
                 or disposition not in (1, 3) or type(access) is not int or type(share) is not int):
@@ -268,9 +270,9 @@ class _Native:
             self.kernel.CloseHandle(handle)
             raise
 
-    def rename_relative(self, source_handle, parent, name):
+    def rename_relative(self, source_handle, parent, name, *, _audit=None):
         """Experimental NT rename using a held target directory handle."""
-        if _AUDIT_NAMESPACE_PROVEN is not True:
+        if _AUDIT_NAMESPACE_PROVEN is not True and not _fixed_synthetic_audit_directory(_audit, self, parent):
             raise CacheRefused("audit_namespace_unverified")
         if name != _CACHE_NAME:
             raise CacheRefused("audit_leaf")
@@ -407,8 +409,16 @@ class _AuditPermit:
         raise AttributeError("immutable")
 
 
+def _fixed_synthetic_audit_permit(permit):
+    return (_FIXED_SYNTHETIC_AUDIT_ENABLED is True and type(permit) is _AuditPermit
+            and _same_path(permit.bundle.parent, _AUDIT_ROOT)
+            and _AUDIT_BUNDLE_NAME.fullmatch(permit.bundle.name) is not None
+            and type(permit.manifest_pin) is str and _HEX.fullmatch(permit.manifest_pin) is not None
+            and type(permit.source_identity) is str and _AUDIT_IDENTITY.fullmatch(permit.source_identity) is not None)
+
+
 def _audit_permit(bundle, manifest_pin, manifest_bytes, source_path, prefix_sha, offset, source_identity):
-    if _AUDIT_WIP_ENABLED is not True:
+    if _AUDIT_WIP_ENABLED is not True and _FIXED_SYNTHETIC_AUDIT_ENABLED is not True:
         raise CacheRefused("audit_path_unverified")
     bundle = Path(bundle)
     if (not _same_path(bundle.parent, _AUDIT_ROOT) or not _AUDIT_BUNDLE_NAME.fullmatch(bundle.name)
@@ -444,7 +454,7 @@ def _audit_for_bundle(bundle, manifest_pin, manifest_bytes, args):
         raise CacheRefused("audit_bundle_alias")
     if not lexical_audit:
         return None  # Normal production binding; no audit path is enabled.
-    if _AUDIT_WIP_ENABLED is not True:
+    if _AUDIT_WIP_ENABLED is not True and _FIXED_SYNTHETIC_AUDIT_ENABLED is not True:
         raise CacheRefused("audit_path_unverified")
     if type(args) is not dict:
         raise CacheRefused("audit_binding")
@@ -573,9 +583,9 @@ class _Directory:
         if self.audit is None:
             valid = _same_path(path, _CACHE_ROOT)
         else:
-            if _AUDIT_WIP_ENABLED is not True:
+            if _AUDIT_WIP_ENABLED is not True and _FIXED_SYNTHETIC_AUDIT_ENABLED is not True:
                 raise CacheRefused("audit_path_unverified")
-            if _AUDIT_NAMESPACE_PROVEN is not True:
+            if _AUDIT_NAMESPACE_PROVEN is not True and not _fixed_synthetic_audit_permit(self.audit):
                 raise CacheRefused("audit_namespace_unverified")
             valid = type(self.audit) is _AuditPermit and _same_path(path, _AUDIT_CACHE_ROOT)
         if not valid:
@@ -611,6 +621,16 @@ class _Directory:
             self.handles.clear()
 
 
+def _fixed_synthetic_audit_directory(directory, native, parent):
+    return (type(directory) is _Directory and directory.native is native
+            and _same_path(directory.path, _AUDIT_CACHE_ROOT)
+            and bool(directory.handles) and directory.handles[-1] == parent
+            and type(directory.scope) is _AuditScope
+            and directory.scope.permit is directory.audit
+            and directory.scope.source is not None and directory.scope.manifest is not None
+            and _fixed_synthetic_audit_permit(directory.audit))
+
+
 def _plain_path(path):
     if not isinstance(path, (str, Path)):
         raise CacheRefused("path")
@@ -639,12 +659,12 @@ def _fd(native, path, disposition, access, share, flags, *, missing_ok=False):
 
 
 def _audit_fd(directory, path, disposition, access, share, flags, *, missing_ok=False):
-    """Experimental leaf open relative to held parent; never used by production."""
+    """Synthetic audit leaf open relative to held parent; never production."""
     import msvcrt
     if directory.audit is None or not directory.handles:
         raise CacheRefused("audit_namespace_unverified")
     handle = directory.native.open_relative(directory.handles[-1], path.name, disposition,
-                                            access, share, missing_ok=missing_ok)
+                                            access, share, missing_ok=missing_ok, _audit=directory)
     if handle is None:
         return None
     try:
@@ -736,7 +756,8 @@ def write_cache(path, binding, rows, *, _audit=None):
                         output.write(block)
                     output.flush()
                     os.fsync(output.fileno())
-                    directory.native.rename_relative(msvcrt.get_osfhandle(output.fileno()), directory.handles[-1], path.name)
+                    directory.native.rename_relative(msvcrt.get_osfhandle(output.fileno()), directory.handles[-1],
+                                                     path.name, _audit=directory)
                 return
             if os.path.lexists(path):
                 # A pre-existing link or a broadly readable file must not be

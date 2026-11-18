@@ -1347,9 +1347,12 @@ class _PrivateVectorCache:
 _CACHE_MODULE_LOCK = threading.Lock()
 _CACHE_MODULE_ATTESTATION = None
 # Audit namespace ancestry has not been proved safe. No environment/config
-# value may enable this WIP test seam in the runtime.
+# value may enable the broader WIP seam in the runtime.
 _AUDIT_WIP_ENABLED = False
 _AUDIT_WIP_ROOT = Path(r'C:\Python\project2\.codex-audit\pr2179-real-e5-160-20261117')
+# Operator accepts namespace tampering as UNKNOWN for this fixed synthetic
+# experiment only; this is neither a production switch nor proof of safety.
+_FIXED_SYNTHETIC_AUDIT_ENABLED = True
 
 
 def _refuse_unverified_audit_bundle(bundle):
@@ -1360,7 +1363,13 @@ def _refuse_unverified_audit_bundle(bundle):
     inside = (selected == root or selected.startswith(root + os.sep)
               or real_selected == real_root or real_selected.startswith(real_root + os.sep))
     if inside and _AUDIT_WIP_ENABLED is not True:
-        raise ValueError('audit_path_unverified')
+        candidate = Path(bundle)
+        exact = (candidate.is_absolute() and '..' not in candidate.parts
+                 and os.path.normcase(os.path.normpath(str(candidate.parent))) == root
+                 and re.fullmatch(r'git-bundle-[0-9a-f]{8}-real-pending', candidate.name) is not None
+                 and selected == real_selected)
+        if _FIXED_SYNTHETIC_AUDIT_ENABLED is not True or not exact:
+            raise ValueError('audit_path_unverified')
 
 
 def _load_pinned_vector_cache(binding):

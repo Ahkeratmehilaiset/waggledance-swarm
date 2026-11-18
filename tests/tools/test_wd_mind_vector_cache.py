@@ -287,6 +287,24 @@ def test_audit_cache_real_acl_cold_warm_and_production_root_unchanged(audit_cach
     assert loaded.rows == rows()
 
 
+def test_accepted_unknown_namespace_opens_only_bound_synthetic_audit(audit_cache_case, monkeypatch):
+    case = audit_cache_case
+    monkeypatch.setattr(cache, '_AUDIT_WIP_ENABLED', False)
+    monkeypatch.setattr(cache, '_AUDIT_NAMESPACE_PROVEN', False)
+    assert cache._FIXED_SYNTHETIC_AUDIT_ENABLED is True
+    with pytest.raises(cache.CacheRefused, match='cache_root'):
+        cache.preflight(case['path'])
+    assert cache.preflight(case['path'], _audit=case['permit']) == 'MISSING'
+    cache.write_cache(case['path'], case['binding'], rows(), _audit=case['permit'])
+    assert cache.load_cache(case['path'], case['binding'], lambda *_: True,
+                            _audit=case['permit']).rows == rows()
+    # A permit by itself must not authorize native operations on an arbitrary
+    # held handle; only the bound, live audit directory can supply it.
+    native = object.__new__(cache._Native)
+    with pytest.raises(cache.CacheRefused, match='audit_namespace_unverified'):
+        native.open_relative(None, 'vectors.bin', 3, 0x80000000, 1, _audit=case['permit'])
+
+
 def test_audit_cache_cold_warm_rejects_absolute_leaf_operations(audit_cache_case, monkeypatch):
     case = audit_cache_case
     original_replace, original_lexists = os.replace, os.path.lexists
@@ -339,6 +357,7 @@ def test_unverified_audit_gate_refuses_before_any_cache_source_or_manifest_open(
     case = audit_cache_case
     opened = []
     monkeypatch.setattr(cache, '_AUDIT_WIP_ENABLED', False)
+    monkeypatch.setattr(cache, '_FIXED_SYNTHETIC_AUDIT_ENABLED', False)
     def unexpected_open(*args, **kwargs):
         opened.append(True)
         raise AssertionError('unverified audit must not open files')
@@ -353,6 +372,7 @@ def test_unverified_audit_gate_refuses_before_any_cache_source_or_manifest_open(
 def test_unverified_namespace_refuses_before_any_open(audit_cache_case, monkeypatch, operation):
     case = audit_cache_case
     monkeypatch.setattr(cache, '_AUDIT_NAMESPACE_PROVEN', False)
+    monkeypatch.setattr(cache, '_FIXED_SYNTHETIC_AUDIT_ENABLED', False)
     opened = []
 
     def unexpected_open(*args, **kwargs):
@@ -426,8 +446,12 @@ def test_audit_grant_refuses_unbound_source_or_bundle(audit_cache_case, fault):
 
 @pytest.mark.parametrize('fault', ['source_content', 'source_identity', 'source_acl', 'source_hardlink',
                                   'cache_parent_acl', 'cache_target_acl', 'manifest_content'])
-def test_audit_revalidates_actual_inputs_before_cache_io(audit_cache_case, fault):
+@pytest.mark.parametrize('namespace_mode', ['synthetic_proven', 'accepted_unknown'])
+def test_audit_revalidates_actual_inputs_before_cache_io(audit_cache_case, monkeypatch, fault, namespace_mode):
     case = audit_cache_case
+    if namespace_mode == 'accepted_unknown':
+        monkeypatch.setattr(cache, '_AUDIT_WIP_ENABLED', False)
+        monkeypatch.setattr(cache, '_AUDIT_NAMESPACE_PROVEN', False)
     if fault == 'source_content':
         case['source'].write_bytes(b't' * 38400)
     elif fault == 'source_identity':

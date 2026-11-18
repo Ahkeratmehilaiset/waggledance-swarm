@@ -1010,6 +1010,21 @@ _LOCAL_START_TYPES = frozenset(('ValueError', 'TypeError', 'RuntimeError', 'OSEr
     'FileNotFoundError', 'PermissionError', 'TimeoutError', 'KeyboardInterrupt',
     'GeneratorExit', 'CancelledError', 'FullRuntimeRefused', 'FullRuntimeCancellationUnknown',
     'BaseExceptionGroup', 'ExceptionGroup', 'LaunchRefused', 'UNKNOWN'))
+_LOCAL_WORKER_HINTS = frozenset(('arguments', 'model_pin', 'offline_environment',
+    'reader_mutex', 'library_import', 'model_load', 'serving', 'UNKNOWN'))
+
+
+def _safe_worker_diagnostic(value):
+    if type(value) is not tuple or len(value) != 2:
+        return ('UNKNOWN', None)
+    hint, code = value
+    if type(hint) is not str or hint not in _LOCAL_WORKER_HINTS:
+        return ('UNKNOWN', None)
+    if hint != 'UNKNOWN':
+        return (hint, None) if code is None else ('UNKNOWN', None)
+    if code is None or (type(code) is int and 0 <= code <= 0xffffffff and code not in (20,21,22,23,24,25,29)):
+        return ('UNKNOWN', code)
+    return ('UNKNOWN', None)
 
 def _local_exception_type(exc):
     pairs = ((ValueError, 'ValueError'), (TypeError, 'TypeError'), (RuntimeError, 'RuntimeError'),
@@ -1220,6 +1235,26 @@ class _LocalManifestQuery:
                 failure = None
         safe = _validated_start_failure(failure)
         return {'reason': safe['reason'], 'exception_type': safe['exception_type'], 'authority': 'none'}
+
+    def worker_exit_diagnostic(self):
+        if not self._lock.acquire(blocking=False):
+            return ('UNKNOWN', None)
+        try:
+            owner = self._owner
+        finally:
+            self._lock.release()
+        if owner is None:
+            return ('UNKNOWN', None)
+        try:
+            value = _safe_worker_diagnostic(owner.worker_exit_diagnostic())
+        except BaseException:
+            return ('UNKNOWN', None)
+        if not self._lock.acquire(blocking=False):
+            return ('UNKNOWN', None)
+        try:
+            return value if self._owner is owner else ('UNKNOWN', None)
+        finally:
+            self._lock.release()
 
     def close(self):
         self._cancel.set()
@@ -2333,7 +2368,8 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
                                  policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
                                  _admission=None, _host_start_gate=None, _host_stop=None,
-                                 _host_owner_start_inflight=None, include_start_diagnostics=False):
+                                 _host_owner_start_inflight=None, include_start_diagnostics=False,
+                                 include_worker_stage_diagnostics=False):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2371,7 +2407,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
 
     def emit_diagnostic():
         nonlocal last_diagnostic, diagnostic_count
-        if include_start_diagnostics is not True or diagnostic_count >= 2 or startup_reported_ready:
+        if (include_start_diagnostics is not True and include_worker_stage_diagnostics is not True) or diagnostic_count >= 2 or startup_reported_ready:
             return
         value = start_failure
         if adapter is not None:
@@ -2386,10 +2422,24 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 pass
         safe = _validated_start_failure(value)
         key = (safe['reason'], safe['exception_type'])
-        if key == last_diagnostic or (last_diagnostic is not None and last_diagnostic != ('UNKNOWN', 'UNKNOWN')):
-            return
-        record = {'schema':'wd.mind-local-owner-start-diagnostic.v1', 'reason':key[0],
-                  'exception_type':key[1], 'authority':'none'}
+        if include_worker_stage_diagnostics is True:
+            hint, exit_code = 'UNKNOWN', None
+            if adapter is not None:
+                try: hint, exit_code = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
+                except BaseException: pass
+            key = key + (hint, exit_code)
+            if (key == last_diagnostic or (last_diagnostic is not None and
+                    ((last_diagnostic[2] != 'UNKNOWN' or last_diagnostic[3] is not None) or
+                     (hint == 'UNKNOWN' and exit_code is None)))):
+                return
+            record = {'schema':'wd.mind-local-owner-start-diagnostic.v2', 'reason':key[0],
+                      'exception_type':key[1], 'worker_exit_stage_hint':key[2], 'worker_exit_code':key[3],
+                      'authority':'none'}
+        else:
+            if key == last_diagnostic or (last_diagnostic is not None and last_diagnostic != ('UNKNOWN', 'UNKNOWN')):
+                return
+            record = {'schema':'wd.mind-local-owner-start-diagnostic.v1', 'reason':key[0],
+                      'exception_type':key[1], 'authority':'none'}
         raw = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
         if len(raw) > 1024:
             raise ValueError('diagnostic_size')
@@ -2509,7 +2559,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         if failed:
             try: emit('HOLD')
             except BaseException: pass
-            if include_start_diagnostics is True and not startup_reported_ready:
+            if (include_start_diagnostics is True or include_worker_stage_diagnostics is True) and not startup_reported_ready:
                 try:
                     diagnostic_thread = threading.Thread(target=diagnostic_worker,
                         name='mind-owner-start-diagnostic', daemon=False)
@@ -2736,8 +2786,10 @@ def _fixed_child_main(argv):
     """Route fixed parent and owner flags; other inputs refuse."""
     if argv and argv[0] == '--mind-local-query':
         return 2  # Before manifest loading, admission, or other side effects.
-    diagnostic_optin = bool(argv and argv[-1] == '--start-diagnostics')
-    if diagnostic_optin:
+    diagnostic_flag = argv[-1] if argv and argv[-1] in ('--start-diagnostics', '--start-diagnostics-v2') else None
+    diagnostic_optin = diagnostic_flag == '--start-diagnostics'
+    worker_diagnostic_optin = diagnostic_flag == '--start-diagnostics-v2'
+    if diagnostic_flag:
         if not argv or argv[0] != '--mind-local-candidate-owner': return 2
         argv = argv[:-1]
     local_owner = (len(argv) == 5 and argv[0] == '--mind-local-candidate-owner'
@@ -2756,15 +2808,17 @@ def _fixed_child_main(argv):
         bundle = str(Path(__file__).resolve().parents[2])
         if __name__ == '__main__':
             canonical = _load_pinned_canonical_child(Path(bundle), expected)
-            return canonical._fixed_child_main(argv + (['--start-diagnostics'] if diagnostic_optin else []))
+            return canonical._fixed_child_main(argv + ([diagnostic_flag] if diagnostic_flag else []))
         if local_owner_path:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],
-                policy_sha256=argv[4], approval_reference_sha256=argv[6], include_start_diagnostics=diagnostic_optin)
+                policy_sha256=argv[4], approval_reference_sha256=argv[6], include_start_diagnostics=diagnostic_optin,
+                include_worker_stage_diagnostics=worker_diagnostic_optin)
         if local_owner:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_sha256=argv[2],
-                approval_reference_sha256=argv[4], include_start_diagnostics=diagnostic_optin)
+                approval_reference_sha256=argv[4], include_start_diagnostics=diagnostic_optin,
+                include_worker_stage_diagnostics=worker_diagnostic_optin)
         if argv == ['--parent-control']:
             return _parent_control_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                                          bundle_root=bundle, expected_manifest_sha256=expected)

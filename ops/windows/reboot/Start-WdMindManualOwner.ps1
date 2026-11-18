@@ -106,6 +106,38 @@ function Update-WdMindManualOwner {
                             }
                             if ($matched) { break }
                         }
+                        if (-not $matched -and $Record.ContainsKey('WorkerDiagnosticsEnabled') -and $Record.WorkerDiagnosticsEnabled) {
+                            $hints=@('arguments','model_pin','offline_environment','reader_mutex','library_import','model_load','serving','UNKNOWN')
+                            $codeText=$null
+                            try {
+                                $decoded=$line | ConvertFrom-Json -ErrorAction Stop
+                                $code=$decoded.worker_exit_code
+                                if($null -eq $code) {$codeText='null'}
+                                elseif(($code -is [int] -or $code -is [long]) -and $code -ge 0 -and $code -le 4294967295) {
+                                    $codeText=([long]$code).ToString([Globalization.CultureInfo]::InvariantCulture)
+                                }
+                            } catch { $codeText=$null }
+                            foreach ($reason in $reasons) {
+                                foreach ($exceptionType in $types) {
+                                    foreach ($hint in $hints) {
+                                        if ($null -eq $codeText -or ($hint -cne 'UNKNOWN' -and $codeText -cne 'null') -or
+                                            ($hint -ceq 'UNKNOWN' -and $codeText -cne 'null' -and $code -in @(20,21,22,23,24,25,29))) {continue}
+                                        $expected='{"authority":"none","exception_type":"'+$exceptionType+'","reason":"'+$reason+
+                                            '","schema":"wd.mind-local-owner-start-diagnostic.v2","worker_exit_code":'+$codeText+
+                                            ',"worker_exit_stage_hint":"'+$hint+'"}'
+                                        if ($line -ceq $expected -and [int]$Record.DiagnosticCount -lt 2) {
+                                            $Record.StartDiagnostic=[pscustomobject]@{schema='wd.mind-local-owner-start-diagnostic.v2';
+                                                reason=$reason;exception_type=$exceptionType;worker_exit_stage_hint=$hint;
+                                                worker_exit_code=$code;authority='none'}
+                                            $Record.DiagnosticCount=[int]$Record.DiagnosticCount+1
+                                            $matched=$true;break
+                                        }
+                                    }
+                                    if ($matched) { break }
+                                }
+                                if ($matched) { break }
+                            }
+                        }
                     }
                     if(-not $matched){throw 'mind_manual_status'}
                 } else {
@@ -139,8 +171,10 @@ function Start-WdMindManualOwner {
           [Parameter(Mandatory)][string] $OperatorPolicyPath, [Parameter(Mandatory)][string] $OperatorPolicySha256,
           [Parameter(Mandatory)][string] $OperatorApprovalReferenceSha256,
           [Parameter(Mandatory)][string] $BridgePythonPath,
-          [Parameter(Mandatory)][string] $BridgePythonSha256, [switch] $IncludeStartupDiagnostics)
+          [Parameter(Mandatory)][string] $BridgePythonSha256, [switch] $IncludeStartupDiagnostics,
+          [switch] $IncludeWorkerStageDiagnostics)
     if (-not $Enabled) { throw 'mind_manual_owner_disabled' }
+    if ($IncludeStartupDiagnostics -and $IncludeWorkerStageDiagnostics) { throw 'mind_manual_diagnostics_option' }
     $policy=$null; $record=$null
     try {
         if(-not [IO.Path]::IsPathRooted($BundleRoot) -or $BundleRoot -match '(^|[\\/])\.\.([\\/]|$)' -or
@@ -183,7 +217,7 @@ function Start-WdMindManualOwner {
             ' tools/wd_mind_runtime_child.py -VerifyPackage --mind-local-candidate-owner --policy-path '+
             (& $quote ([IO.Path]::GetFullPath($OperatorPolicyPath)))+' --policy-sha256 '+
             (& $quote $OperatorPolicySha256.ToLowerInvariant())+' --approval-reference-sha256 '+
-            (& $quote $OperatorApprovalReferenceSha256.ToLowerInvariant())+$(if($IncludeStartupDiagnostics){' --start-diagnostics'}else{''})+'; exit $LASTEXITCODE'
+            (& $quote $OperatorApprovalReferenceSha256.ToLowerInvariant())+$(if($IncludeWorkerStageDiagnostics){' --start-diagnostics-v2'}elseif($IncludeStartupDiagnostics){' --start-diagnostics'}else{''})+'; exit $LASTEXITCODE'
         $info=New-Object Diagnostics.ProcessStartInfo
         $shell=if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'}
         $info.FileName=Join-Path $PSHOME $shell
@@ -207,7 +241,8 @@ function Start-WdMindManualOwner {
         $token=[Guid]::NewGuid().ToString('N')
         $proc=New-Object Diagnostics.Process; $proc.StartInfo=$info
         $record=@{Process=$proc;Manifest=$ExpectedManifestHash.ToLowerInvariant();State='HOLD';ReportedState='';
-            Stopping=$false;Invalid=$false;DiagnosticsEnabled=[bool]$IncludeStartupDiagnostics;DiagnosticCount=0;StartDiagnostic=$null;
+            Stopping=$false;Invalid=$false;DiagnosticsEnabled=[bool]($IncludeStartupDiagnostics -or $IncludeWorkerStageDiagnostics);
+            WorkerDiagnosticsEnabled=[bool]$IncludeWorkerStageDiagnostics;DiagnosticCount=0;StartDiagnostic=$null;
             OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);Line=(New-Object IO.MemoryStream);
             OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false}
         $global:WdMindManualOwnerRecords[$token]=$record

@@ -90,6 +90,20 @@ class RotatingGracefulE5Client:
         primary = () if self._owner is None else (self._owner,)
         return primary + tuple(self._owner_conflicts)
 
+    def worker_exit_diagnostic(self):
+        """Return a fixed untrusted child-code hint without waiting."""
+        if not self._lock.acquire(blocking=False):
+            return ('UNKNOWN', None)
+        try:
+            if self._owner_conflicts or self._owner is None:
+                return ('UNKNOWN', None)
+            try:
+                return self._owner.worker_exit_diagnostic()
+            except BaseException:
+                return ('UNKNOWN', None)
+        finally:
+            self._lock.release()
+
     def status(self):
         """Never wait on an in-flight request; uncertain ownership is HOLD."""
         if not self._lock.acquire(blocking=False):

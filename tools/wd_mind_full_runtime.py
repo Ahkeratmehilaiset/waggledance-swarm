@@ -3326,6 +3326,21 @@ class _SingleManifestOwner:
         finally:
             self._lock.release()
 
+    def worker_exit_diagnostic(self):
+        """Observe the retained worker, without waiting or changing ownership."""
+        if not self._lock.acquire(blocking=False):
+            return ('UNKNOWN', None)
+        try:
+            target = self._client if self._rotation_enabled else self._owner
+            if self._owner_conflicts or target is None:
+                return ('UNKNOWN', None)
+            try:
+                return target.worker_exit_diagnostic()
+            except BaseException:
+                return ('UNKNOWN', None)
+        finally:
+            self._lock.release()
+
     def start(self):
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None

@@ -136,6 +136,39 @@ def _local_adapter():
         'b'*64, 'c'*64, 5, 0, 5, admission=Admission())
 
 
+@pytest.mark.parametrize('code,hint', [(20,('arguments',None)), (21,('model_pin',None)), (22,('offline_environment',None)),
+    (23,('reader_mutex',None)), (24,('library_import',None)), (25,('model_load',None)), (29,('serving',None)),
+    (2,('UNKNOWN',2)), (500,('UNKNOWN',500)), (None,('UNKNOWN',None))])
+def test_worker_hint_through_retained_owner_chain_without_process(code, hint):
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    from tools import wd_mind_e5_rotating_client as rotating
+    worker = lifecycle._Owner()  # Its keeper is constructed but never started.
+    worker._code = code
+    worker._verified_exit_code = code
+    rotator = object.__new__(rotating.RotatingGracefulE5Client)
+    rotator._lock, rotator._owner, rotator._owner_conflicts = threading.Lock(), worker, []
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._lock, owner._rotation_enabled, owner._owner_conflicts = threading.Lock(), True, []
+    owner._client = rotator
+    adapter = _local_adapter()
+    adapter._owner = owner
+    assert adapter.worker_exit_diagnostic() == hint
+    rotator._lock.acquire()
+    try: assert adapter.worker_exit_diagnostic() == ('UNKNOWN', None)
+    finally: rotator._lock.release()
+    rotator._owner_conflicts.append(object())
+    assert adapter.worker_exit_diagnostic() == ('UNKNOWN', None)
+
+
+def test_worker_hint_rejects_untrusted_objects_and_text():
+    assert child._safe_worker_diagnostic('synthetic-private-text') == ('UNKNOWN', None)
+    assert child._safe_worker_diagnostic(None) == ('UNKNOWN', None)
+    assert child._safe_worker_diagnostic(['model_load']) == ('UNKNOWN', None)
+    assert child._safe_worker_diagnostic(('UNKNOWN', True)) == ('UNKNOWN', None)
+    assert child._safe_worker_diagnostic(('UNKNOWN', 2)) == ('UNKNOWN', 2)
+    assert child._safe_worker_diagnostic(('UNKNOWN', 20)) == ('UNKNOWN', None)
+
+
 def test_local_adapter_preowner_diagnostic_is_optin_and_status_unchanged(monkeypatch):
     monkeypatch.setattr(child._LocalManifestQuery, '_check_policy', lambda self: None)
     monkeypatch.setattr(child._LocalManifestQuery, '_check_external_policy', lambda self: None)
@@ -328,6 +361,48 @@ def test_cli_legacy_wire_stays_exact_and_diagnostic_is_optin(monkeypatch, optin)
                 b'"schema":"wd.mind-local-owner-start-diagnostic.v1"}\n') in output.lines
     for raw in output.lines:
         assert len(raw) <= 1024 and private not in raw
+
+
+@pytest.mark.parametrize('hint,expected', [(('model_load',None),('model_load',None)),
+    (('UNKNOWN',2),('UNKNOWN',2)), ('private-secret',('UNKNOWN',None)), (None,('UNKNOWN',None))])
+def test_worker_stage_v2_wire_is_bounded_and_fixed(monkeypatch, hint, expected):
+    control, output, private = _cli_fixture(monkeypatch, delayed=False)
+    output.owner.worker_exit_diagnostic = lambda: hint
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == 2
+    rows = [json.loads(raw) for raw in output.lines]
+    diagnostic = next(row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2')
+    assert diagnostic == {'schema':'wd.mind-local-owner-start-diagnostic.v2', 'reason':'HANDLER_BUILD',
+        'exception_type':'FullRuntimeRefused', 'worker_exit_stage_hint':expected[0],
+        'worker_exit_code':expected[1], 'authority':'none'}
+    for raw in output.lines:
+        assert len(raw) <= 1024 and private not in raw and b'private-secret' not in raw
+
+
+def test_worker_stage_v2_emits_verified_late_code_after_unknown(monkeypatch):
+    control, output, _ = _cli_fixture(monkeypatch, delayed=True)
+    unknown_emitted = threading.Event()
+    original_write = output.write
+    def write(data):
+        n = original_write(data)
+        if b'worker_exit_code' in bytes(data): unknown_emitted.set()
+        return n
+    output.write = write
+    original_close = output.owner.close
+    def close():
+        unknown_emitted.wait(1)
+        return original_close()
+    output.owner.close = close
+    output.owner.worker_exit_diagnostic = lambda: (('model_load', None) if output.close_called.is_set()
+                                                     else ('UNKNOWN', None))
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == 2
+    assert unknown_emitted.is_set()
+    diagnostics = [json.loads(raw) for raw in output.lines
+                   if json.loads(raw)['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
+    assert [d['worker_exit_stage_hint'] for d in diagnostics] == ['UNKNOWN', 'model_load']
 
 
 def test_optin_reports_late_cause_after_hold_without_repeating_v1_hold(monkeypatch):

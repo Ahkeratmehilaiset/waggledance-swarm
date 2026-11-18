@@ -1934,10 +1934,9 @@ def _local_query_source_budget(snapshot):
 class _RetainedFlatQueryState:
     """One owner's verified flat rows and selected-row gate, retained in memory."""
     __slots__ = ('_owner', '_generation', '_handler', '_memory', '_flat', '_snapshot',
-                 '_source_owner', '_records', '_policy_pin', '_binding_pin', '_pid')
+                 '_source_owner', '_records', '_policy_pin', '_binding_pin', '_pid', '_package')
 
     def __init__(self, owner, *, source_budget=None):
-        from tools import wd_mind_content_snapshot_package as package
         generation = owner._generation
         binding, snapshot, handler = generation
         memory = handler._memory
@@ -1948,6 +1947,7 @@ class _RetainedFlatQueryState:
             raise ValueError('retained_binding')
         owner._check_factory()
         owner._check_policy_anchor()
+        package = binding._snapshot_support()
         policy_pin = _local_generation_policy_pin(owner)
         source_args = dict(enabled=True, bundle_root=str(binding._PrivateBinding__bundle),
             expected_manifest_sha256=binding._PrivateBinding__manifest, snapshot=snapshot,
@@ -1967,11 +1967,10 @@ class _RetainedFlatQueryState:
         self._policy_pin = policy_pin
         self._binding_pin = (binding._PrivateBinding__bundle, binding._PrivateBinding__manifest,
                              binding._PrivateBinding__controls)
-        self._pid = os.getpid()
+        self._pid, self._package = os.getpid(), package
         self._controls()
 
     def _controls(self):
-        from tools import wd_mind_content_snapshot_package as package
         owner, memory = self._owner, self._memory
         if (os.getpid() != self._pid or owner._state not in ('READY', 'STARTING')
                 or owner._generation is not self._generation or owner._handler is not self._handler
@@ -1987,6 +1986,9 @@ class _RetainedFlatQueryState:
         owner._check_factory()
         owner._check_policy_anchor()
         self._handler._running_owner()
+        package = owner._binding._snapshot_support()
+        if package is not self._package:
+            raise ValueError('retained_package_changed')
         consumer = self._source_owner
         if (os.path.normcase(os.path.abspath(consumer._root)) != os.path.normcase(os.path.abspath(str(self._binding_pin[0])))
                 or consumer._pin != self._binding_pin[1]

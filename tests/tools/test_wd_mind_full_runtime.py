@@ -460,6 +460,99 @@ def test_snapshot_loader_does_not_publish_partial_module_to_ordinary_import(monk
         tools.__dict__.pop(attr, None)
 
 
+@pytest.mark.parametrize('entry', ['init', 'controls'])
+@pytest.mark.parametrize('tamper', ['missing', 'missing_pyc', 'replaced'])
+def test_retained_snapshot_module_refuses_unverified_import(monkeypatch, tmp_path, entry, tamper):
+    import builtins
+    import importlib
+    import types
+    import tools
+    from tools import wd_mind_full_runtime as runtime
+
+    name, attr = 'tools.wd_mind_content_snapshot_package', 'wd_mind_content_snapshot_package'
+    bundle = tmp_path / 'bundle'
+    relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
+    path = bundle.joinpath(*relative.split('/'))
+    path.parent.mkdir(parents=True)
+    safe = b'from tools import wd_mind_content_query_readonly as reader\n'
+    forged = b'import builtins\nbuiltins._retained_unverified_executed=True\n'
+    width = max(len(safe), len(forged))
+    safe, forged = safe.ljust(width, b' '), forged.ljust(width, b' ')
+    path.write_bytes(safe)
+    manifest = json.dumps({'files': {relative: hashlib.sha256(safe).hexdigest()}}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest(), (), {})
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delattr(tools, attr, raising=False)
+    monkeypatch.setattr(tools, '__path__', [str(path.parent)])
+    monkeypatch.setattr(runtime, '_SNAPSHOT_MODULE_ATTESTATION', None)
+    monkeypatch.setattr(builtins, '_retained_unverified_executed', False, raising=False)
+    importlib.invalidate_caches()
+    trusted = binding._snapshot_support()
+    real_load, load_calls = runtime._PrivateBinding._snapshot_support, []
+    def checked_load(candidate):
+        load_calls.append(candidate)
+        return real_load(candidate)
+    monkeypatch.setattr(runtime._PrivateBinding, '_snapshot_support', checked_load)
+
+    def unverified(*args, **kwargs):
+        builtins._retained_unverified_executed = True
+        raise ValueError('unverified_code_executed')
+
+    if tamper in ('missing', 'missing_pyc'):
+        path.write_bytes(forged)
+        if tamper == 'missing_pyc':
+            os.utime(path, (1700000000, 1700000000))
+            py_compile.compile(str(path), doraise=True)
+            path.write_bytes(safe)
+            os.utime(path, (1700000000, 1700000000))
+        sys.modules.pop(name, None)
+        tools.__dict__.pop(attr, None)
+        importlib.invalidate_caches()
+    else:
+        replacement = types.ModuleType(name)
+        replacement.create_consumer_flat_source_owner = unverified
+        replacement._consumer_bundle_controls = unverified
+        sys.modules[name] = replacement
+        setattr(tools, attr, replacement)
+
+    snapshot = {}
+    memory = runtime._PrivateFlatMemory(binding, snapshot, b'manifest', (), b'vectors', b'encoder')
+    handler = object.__new__(runtime._FlatRequestHandler)
+    handler._binding, handler._snapshot, handler._memory = binding, snapshot, memory
+    handler._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
+    owner = types.SimpleNamespace(_generation=(binding, snapshot, handler), _handler=handler,
+                                  _binding=binding, _snapshot=snapshot, _state='READY',
+                                  _check_factory=lambda: None, _check_policy_anchor=lambda: None)
+    monkeypatch.setattr(runtime, '_refresh_handler_matches_owner', lambda *args: True)
+    monkeypatch.setattr(runtime, '_local_generation_policy_pin', lambda owner: 'a' * 64)
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_running_owner', lambda handler: None)
+    state = object.__new__(runtime._RetainedFlatQueryState)
+    state._owner, state._generation, state._handler, state._memory = owner, owner._generation, handler, memory
+    state._flat, state._snapshot, state._policy_pin = handler._frozen_flat, snapshot, 'a' * 64
+    state._binding_pin, state._pid = (bundle, hashlib.sha256(manifest).hexdigest(), ()), os.getpid()
+    state._source_owner = types.SimpleNamespace(_root=str(bundle), _pin=hashlib.sha256(manifest).hexdigest(),
+        _gate=types.SimpleNamespace(_manifest_pin=hashlib.sha256(manifest).hexdigest()),
+        _controls=None, _snapshot=snapshot)
+    if '_package' in runtime._RetainedFlatQueryState.__slots__:
+        state._package = trusted
+    try:
+        with pytest.raises((ValueError, AttributeError)) as refused:
+            if entry == 'init':
+                runtime._RetainedFlatQueryState(owner)
+            else:
+                state._controls()
+        assert load_calls == [binding]
+        if tamper == 'replaced':
+            assert str(refused.value) == 'watcher_unverified_preload'
+        if tamper == 'missing_pyc' and entry == 'controls':
+            assert str(refused.value) == 'retained_package_changed'
+        assert not builtins._retained_unverified_executed
+    finally:
+        sys.modules.pop(name, None)
+        tools.__dict__.pop(attr, None)
+
+
 def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_path):
     import types
     import tools

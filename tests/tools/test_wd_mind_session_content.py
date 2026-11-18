@@ -575,6 +575,7 @@ def test_local_candidate_cli_timeout_retains_work_without_kill(monkeypatch, tmp_
 
 
 def test_late_prefix_budget_refusal_does_not_replace_timeout(monkeypatch, tmp_path):
+    from test_wd_mind_full_runtime import _drain_synthetic_race_worker
     entered, release = threading.Event(), threading.Event()
     def delayed(**_):
         entered.set()
@@ -596,10 +597,12 @@ def test_late_prefix_budget_refusal_does_not_replace_timeout(monkeypatch, tmp_pa
     finally:
         release.set()
         for worker, state in [pending for pending in session._LOCAL_CANDIDATE_PENDING if id(pending) not in before]:
-            assert worker.ident is not None, 'uncertain worker start remains in HOLD'
-            worker.join(5)
-            assert not worker.is_alive() and state['reason'] is None, 'worker still retained in HOLD'
-            session._LOCAL_CANDIDATE_PENDING.remove((worker, state))
+            try:
+                _drain_synthetic_race_worker(worker, state['worker_done'], release, threading.Event(), attempted=True)
+            finally:
+                if state['worker_done'].is_set() and worker.ident is not None and not worker.is_alive():
+                    session._LOCAL_CANDIDATE_PENDING.remove((worker, state))
+            assert state['reason'] is None
 
 
 def test_local_candidate_cli_preserves_uncertain_query_owner(monkeypatch, tmp_path):

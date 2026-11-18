@@ -1329,16 +1329,235 @@ def test_observer_converts_boot_and_preserves_image(monkeypatch):
     assert processes == ((12345, 'C:\\safe\\python.exe'),)
 
 
-def test_cli_rejects_injected_root_and_proof():
-    with pytest.raises(SystemExit):
-        admin.main(['reset', '--bundle-root', 'C:\\b', '--manifest-sha256', 'a' * 64,
-                    '--marker-root', 'C:\\elsewhere'])
+def test_cli_rejects_injected_root_and_proof(capsys):
+    assert admin.main(['reset', '--bundle-root', 'C:\\synthetic-private', '--manifest-sha256', 'a' * 64,
+                       '--marker-root', 'C:\\elsewhere']) == 2
+    assert capsys.readouterr().err.strip() == 'owner_marker_invalid_input'
+
+
+@pytest.mark.parametrize('argv', [
+    ['create', '--source-commit', 'A'*40, '--manifest-sha256', 'b'*64],
+    ['create', '--source-commit', 'a'*40, '--source-commit', 'b'*40],
+    ['create', '--source-commit', 'a'*40, '--manifest-sha256', 'b'*64, '--source-commit', 'c'*40],
+    ['create', '--source-commit', 'a'*40, '--manifest-sha256', 'synthetic-private'],
+])
+def test_synthetic_entry_rejects_malformed_commit_pins_without_echo(argv, capsys):
+    assert admin.main(argv) == 2
+    assert capsys.readouterr().err.strip() == 'owner_marker_invalid_input'
+
+
+@pytest.mark.parametrize('operation', ['create', 'reset'])
+def test_synthetic_exact_commit_entry_stays_disabled_before_any_binding(monkeypatch, capsys, operation):
+    def unexpected(*_args, **_kwargs): pytest.fail('disabled entry reached a binding or live path')
+    monkeypatch.setattr(admin, '_current_binding', unexpected)
+    monkeypatch.setattr(admin, '_production_marker', unexpected)
+    assert admin.main([operation, '--source-commit', 'a'*40, '--manifest-sha256', 'b'*64]) == 2
+    assert capsys.readouterr().err.strip() == 'owner_marker_production_route_unavailable'
+
+
+def test_synthetic_entry_context_is_bound_thread_local_and_cleared(monkeypatch):
+    import threading
+    source, pin = 'a'*40, 'b'*64
+    root = admin._BUNDLE_STORE / source
+    events = []
+    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', lambda _root: events.append('loader'))
+    monkeypatch.setattr(admin, '_current_binding', lambda bundle, digest:
+                        (events.append(('binding', bundle, digest)) or
+                         ({'interpreter_status':'VERIFIED'}, lambda: None)))
+    def fake_marker(*, operation, bundle_root, manifest_sha256):
+        assert operation == 'create' and bundle_root == str(root) and manifest_sha256 == pin
+        admin._require_production_activation()
+        result = []
+        def other_thread():
+            try: admin._require_production_activation()
+            except admin.ReservationAdminRefused: result.append('refused')
+        worker = threading.Thread(target=other_thread)
+        worker.start()
+        worker.join(3)
+        assert not worker.is_alive() and result == ['refused']
+        events.append('marker')
+    monkeypatch.setattr(admin, '_production_marker', fake_marker)
+    with pytest.raises(admin.ReservationAdminRefused): admin._require_production_activation()
+    assert admin.main(['create', '--source-commit', source, '--manifest-sha256', pin]) == 0
+    with pytest.raises(admin.ReservationAdminRefused): admin._require_production_activation()
+    assert events == ['loader', ('binding', str(root), pin), 'loader', 'marker']
+
+
+def test_synthetic_direct_entry_cannot_start_without_verified_loader(monkeypatch, capsys):
+    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
+    monkeypatch.setattr(admin, '_current_binding', lambda *_: pytest.fail('unverified loader reached binding'))
+    assert admin.main(['create', '--source-commit', 'a'*40, '--manifest-sha256', 'b'*64]) == 2
+    assert capsys.readouterr().err.strip() == 'owner_marker_production_route_unavailable'
+    with pytest.raises(admin.ReservationAdminRefused): admin._require_production_activation()
+
+
+@pytest.mark.parametrize('change', ['operation', 'bundle', 'manifest'])
+def test_synthetic_context_rejects_changed_arguments_before_open(monkeypatch, change):
+    source, pin = 'a'*40, 'b'*64
+    bundle = str(admin._BUNDLE_STORE / source)
+    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
+    admin._PRODUCTION_CONTEXT.value = admin._ProductionContext('create', bundle, pin)
+    try:
+        monkeypatch.setattr(admin, '_current_binding', lambda *_: pytest.fail('changed entry reached binding'))
+        args = {'operation':'create', 'bundle_root':bundle, 'manifest_sha256':pin}
+        args[{'operation':'operation', 'bundle':'bundle_root', 'manifest':'manifest_sha256'}[change]] = {
+            'operation':'reset', 'bundle':'synthetic-other-root', 'manifest':'c'*64}[change]
+        with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+            admin._production_marker(**args)
+    finally:
+        del admin._PRODUCTION_CONTEXT.value
+
+
+@pytest.mark.parametrize('fault', [RuntimeError, KeyboardInterrupt])
+def test_synthetic_context_is_cleared_even_if_entry_interrupted(monkeypatch, fault):
+    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', lambda _root: None)
+    monkeypatch.setattr(admin, '_current_binding', lambda *_:
+                        ({'interpreter_status':'VERIFIED'}, lambda: None))
+    def fail(**_kwargs): raise fault('synthetic-private')
+    monkeypatch.setattr(admin, '_production_marker', fail)
+    args = ['reset', '--source-commit', 'a'*40, '--manifest-sha256', 'b'*64]
+    if fault is KeyboardInterrupt:
+        with pytest.raises(KeyboardInterrupt): admin.main(args)
+    else:
+        assert admin.main(args) == 2
+    with pytest.raises(admin.ReservationAdminRefused): admin._require_production_activation()
+
+
+def test_synthetic_context_is_cleared_when_interrupted_immediately_after_assignment(monkeypatch):
+    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', lambda _root: None)
+    monkeypatch.setattr(admin, '_current_binding', lambda *_:
+                        ({'interpreter_status':'VERIFIED'}, lambda: None))
+    monkeypatch.setattr(admin, '_production_marker', lambda **_kwargs: pytest.fail('marker reached'))
+    old_trace = sys.gettrace()
+    observed = []
+    def trace(frame, event, _arg):
+        if (event == 'line' and frame.f_code is admin.main.__code__
+                and getattr(admin._PRODUCTION_CONTEXT, 'value', None) is not None):
+            observed.append('context_set')
+            raise KeyboardInterrupt()
+        return trace
+    try:
+        sys.settrace(trace)
+        with pytest.raises(KeyboardInterrupt):
+            admin.main(['create', '--source-commit', 'a'*40, '--manifest-sha256', 'b'*64])
+    finally:
+        sys.settrace(old_trace)
+    assert observed == ['context_set']
+    assert getattr(admin._PRODUCTION_CONTEXT, 'value', None) is None
+
+
+def test_synthetic_bootstrap_loader_requires_exact_captured_source(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    root = tmp_path / 'synthetic-bundle'
+    path = root / 'tools-bootstrap' / 'tools' / 'wd_mind_owner_reservation_admin.py'
+    path.parent.mkdir(parents=True)
+    source = b'# synthetic captured admin source\n'
+    path.write_bytes(source)
+    bootstrap_source = (REPO / 'tools' / 'wd_mind_admin_bootstrap.py').read_bytes()
+    namespace = {'__name__':'wd_mind_admin_verified_bootstrap', '__file__':'synthetic-bootstrap.py'}
+    exec(compile(bootstrap_source, 'synthetic-bootstrap.py', 'exec'), namespace)
+    loader = namespace['_PinnedFinder']({admin.__name__:(str(path), source, False)})
+    monkeypatch.setattr(admin, '__file__', str(path))
+    monkeypatch.setattr(admin, '__loader__', loader)
+    monkeypatch.setattr(admin, '__spec__', SimpleNamespace(loader=loader))
+    monkeypatch.setattr(sys, 'meta_path', [loader] + list(sys.meta_path))
+    admin._validate_bootstrap_loader(str(root))
+    path.write_bytes(source + b'# changed\n')
+    with pytest.raises(Exception):
+        admin._validate_bootstrap_loader(str(root))
+
+
+def test_synthetic_fixed_entry_create_and_reset_only_fake_root(tmp_path, monkeypatch, capsys):
+    root, runtime, marker = _paths(tmp_path)
+    interpreter = runtime / 'synthetic-interpreter.exe'
+    interpreter.write_bytes(b'synthetic')
+    store = tmp_path / 'synthetic-bundles'
+    commit, pin = 'a'*40, 'b'*64
+    (store / commit).mkdir(parents=True)
+    checks = []
+    def verify(): checks.append('binding')
+    def binding(bundle, expected):
+        assert bundle == str(store / commit) and expected == pin
+        return {'interpreter_status':'VERIFIED', 'interpreter_root':str(runtime),
+                'interpreter':str(interpreter)}, verify
+    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
+    monkeypatch.setattr(admin, '_BUNDLE_STORE', store)
+    monkeypatch.setattr(admin, '_FIXED_PRODUCTION_ROOT', root)
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', lambda _root: None)
+    monkeypatch.setattr(admin, '_current_binding', binding)
+    monkeypatch.setattr(admin, '_observe_windows', lambda: (time.time_ns() - 1_000_000_000, ()))
+    create = ['create', '--source-commit', commit, '--manifest-sha256', pin]
+    reset = ['reset', '--source-commit', commit, '--manifest-sha256', pin]
+    assert admin.main(reset) == 2
+    assert capsys.readouterr().err.strip() == 'owner_marker_marker_missing'
+    assert admin.main(create) == 0
+    capsys.readouterr()
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+    assert admin.main(create) == 2  # Existing marker never overwritten.
+    assert capsys.readouterr().err.strip() == 'owner_marker_marker_exists'
+    with monkeypatch.context() as patch:
+        def sharing_violation(_path): raise ctypes.WinError(32)
+        patch.setattr(child, '_open_owned_marker', sharing_violation)
+        assert admin.main(reset) == 2
+        assert capsys.readouterr().err.strip() == 'owner_marker_marker_lock_unavailable'
+    assert admin.main(reset) == 2   # Clear marker never reset.
+    assert capsys.readouterr().err.strip() == 'owner_marker_marker_not_reserved'
+    _reserved(marker)
+    assert admin.main(reset) == 2  # Same boot cannot authorize reset.
+    assert capsys.readouterr().err.strip() == 'owner_marker_reboot_required'
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
+    old = time.time_ns() - 20_000_000_000
+    os.utime(marker, ns=(old, old))
+    assert admin.main(reset) == 0
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+    marker.write_bytes(b'synthetic-corrupted-marker')
+    os.utime(marker, ns=(old, old))
+    assert admin.main(reset) == 0  # Damaged bytes repair only after the same checks.
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+    assert checks
+    with pytest.raises(admin.ReservationAdminRefused): admin._require_production_activation()
+    assert 'synthetic-interpreter' not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('reason_type', [admin._AdminReason, admin.ReservationAdminRefused])
+def test_synthetic_production_reset_reports_publication_and_cleanup_uncertain(
+        tmp_path, monkeypatch, capsys, reason_type):
+    root, runtime, marker = _paths(tmp_path)
+    interpreter = runtime / 'synthetic-interpreter.exe'
+    interpreter.write_bytes(b'synthetic')
+    marker.write_bytes(b'invalid marker')
+    store = tmp_path / 'synthetic-bundles'
+    commit, pin = 'a' * 40, 'b' * 64
+    (store / commit).mkdir(parents=True)
+    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
+    monkeypatch.setattr(admin, '_BUNDLE_STORE', store)
+    monkeypatch.setattr(admin, '_FIXED_PRODUCTION_ROOT', root)
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', lambda _root: None)
+    monkeypatch.setattr(admin, '_current_binding', lambda *_: (
+        {'interpreter_status': 'VERIFIED', 'interpreter_root': str(runtime),
+         'interpreter': str(interpreter)}, lambda: None))
+    def failed_repair(*_args, **_kwargs):
+        raise reason_type('RESET_PUBLICATION_UNCERTAIN')
+    monkeypatch.setattr(admin, '_repair_production_marker', failed_repair)
+    original_abandon = child._LocalOwnerReservation.abandon
+    def failed_cleanup(guard):
+        original_abandon(guard)
+        raise OSError('synthetic cleanup uncertainty')
+    monkeypatch.setattr(child._LocalOwnerReservation, 'abandon', failed_cleanup)
+    assert admin.main(['reset', '--source-commit', commit, '--manifest-sha256', pin]) == 2
+    assert capsys.readouterr().err.strip() == (
+        'owner_marker_reset_publication_uncertain;cleanup_uncertain')
 
 
 def test_production_entry_and_root_refuse_before_mutation(tmp_path, monkeypatch, capsys):
     root, runtime, marker = _paths(tmp_path)
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)
-    assert admin.main(['create', '--bundle-root', 'C:\\b', '--manifest-sha256', 'a' * 64]) == 2
+    assert admin.main(['create', '--source-commit', 'a' * 40, '--manifest-sha256', 'a' * 64]) == 2
     assert capsys.readouterr().err.strip() == 'owner_marker_production_route_unavailable'
     with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
         admin._marker(root, runtime, operation='create', observe=_clear())

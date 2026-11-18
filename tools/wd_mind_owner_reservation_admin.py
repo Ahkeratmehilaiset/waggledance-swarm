@@ -14,7 +14,6 @@ always refuses.  The CLI has no synthetic-path or proof overrides.
 """
 from __future__ import annotations
 
-import argparse
 import contextlib
 import ctypes
 from ctypes import wintypes
@@ -25,7 +24,9 @@ from pathlib import Path
 import re
 import secrets
 import sys
+import threading
 import time
+import types
 
 from tools import wd_mind_absent_generation_prefix_readonly as absent
 from tools import wd_mind_runtime_child as child
@@ -69,6 +70,17 @@ _SYNTHETIC_ROOT = _TEST_REPOSITORY / '.codex-audit' / 'marker-admin-synthetic-te
 _FIXED_PRODUCTION_ROOT = Path(r'C:\Python\project2\.codex-audit')
 _SYNTHETIC_SCOPE = object()
 _PRODUCTION_SCOPE = object()
+# Keep off until the complete pinned operator route receives its own review.
+_PRODUCTION_ENTRY_ENABLED = False
+_PRODUCTION_CONTEXT = threading.local()
+
+
+class _ProductionContext:
+    """Accidental-call guard only; this is not caller or human authentication."""
+    __slots__ = ('operation', 'bundle', 'manifest')
+
+    def __init__(self, operation, bundle, manifest):
+        self.operation, self.bundle, self.manifest = operation, bundle, manifest
 
 
 class _TimeInfo(ctypes.Structure):
@@ -304,8 +316,11 @@ def _assert_synthetic_root(root):
 
 
 def _require_production_activation():
-    """Non-overridable through CLI: no live operation is enabled in this draft."""
-    raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    """Require the local guarded entry; same-user Python remains UNKNOWN."""
+    context = getattr(_PRODUCTION_CONTEXT, 'value', None)
+    if _PRODUCTION_ENTRY_ENABLED is not True or type(context) is not _ProductionContext:
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    return context
 
 
 def _assert_scope_root(root, scope):
@@ -712,7 +727,10 @@ def _repair_synthetic_marker(guard, directory_handle, observe, interpreter_root,
 
 def _repair_production_marker(guard, directory_handle, *, bundle_root, manifest_sha256):
     # No caller-provided root, observer or binding hook reaches this wrapper.
-    _require_production_activation()
+    context = _require_production_activation()
+    if (context.operation != 'reset' or context.bundle != bundle_root
+            or context.manifest != manifest_sha256):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
     location, verify_binding = _current_binding(bundle_root, manifest_sha256)
     if type(location) is not dict or location.get('interpreter_status') != 'VERIFIED':
         raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
@@ -728,7 +746,10 @@ def _production_marker(*, operation, bundle_root, manifest_sha256):
     owner absence proof. Never remove it merely because a process snapshot was
     empty: that snapshot is point-in-time only.
     """
-    _require_production_activation()  # Before opening a pointer or live path.
+    context = _require_production_activation()  # Before opening a pointer or live path.
+    if (context.operation != operation or context.bundle != bundle_root
+            or context.manifest != manifest_sha256):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
     if operation not in ('create', 'reset'):
         raise ReservationAdminRefused('invalid_operation')
     root = _FIXED_PRODUCTION_ROOT
@@ -761,12 +782,23 @@ def _production_marker(*, operation, bundle_root, manifest_sha256):
                 _atomic_reserved(path, directory_handle, b'C', _scope=_PRODUCTION_SCOPE,
                                  verify_binding=verify_binding)
                 return
-            absent._plain(path, directory=False)
+            try:
+                absent._plain(path, directory=False)
+            except FileNotFoundError:
+                raise ReservationAdminRefused('MARKER_MISSING') from None
             path_stat = os.lstat(path)
             # Exactly the owner's share mode denies competing write/delete opens.
-            fd = child._open_owned_marker(path)
+            try:
+                fd = child._open_owned_marker(path)
+            except OSError as exc:
+                if getattr(exc, 'winerror', None) in (32, 33):  # sharing/lock violation
+                    raise ReservationAdminRefused('MARKER_LOCK_UNAVAILABLE') from None
+                raise
             os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+            except OSError:
+                raise ReservationAdminRefused('MARKER_LOCK_UNAVAILABLE') from None
             guard = child._LocalOwnerReservation(root, path, fd,
                 (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
             marker = guard._read()
@@ -793,7 +825,8 @@ def _production_marker(*, operation, bundle_root, manifest_sha256):
             try:
                 guard.abandon()
             except Exception:
-                if isinstance(primary, ReservationAdminRefused) and str(primary) == 'RESET_PUBLICATION_UNCERTAIN':
+                if (isinstance(primary, (_AdminReason, ReservationAdminRefused))
+                        and str(primary) == 'RESET_PUBLICATION_UNCERTAIN'):
                     raise ReservationAdminRefused('RESET_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN') from None
                 raise
             fd = None
@@ -969,13 +1002,77 @@ def _current_binding(bundle_root, manifest_sha256):
     return location, verify
 
 
+def _validate_bootstrap_loader(bundle):
+    """Check the expected pinned loader, without claiming caller authentication."""
+    module = sys.modules.get(__name__)
+    if type(module) is not types.ModuleType or __name__ != 'tools.wd_mind_owner_reservation_admin':
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    spec = getattr(module, '__spec__', None)
+    loader = getattr(spec, 'loader', None)
+    if (loader is None or type(loader).__name__ != '_PinnedFinder'
+            or type(loader).__module__ != 'wd_mind_admin_verified_bootstrap'
+            or not sys.meta_path or sys.meta_path[0] is not loader
+            or getattr(module, '__loader__', None) is not loader):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    blobs = getattr(loader, '_blobs', None)
+    item = blobs.get(__name__) if type(blobs) is dict else None
+    expected = Path(bundle) / 'tools-bootstrap' / 'tools' / 'wd_mind_owner_reservation_admin.py'
+    if (type(item) is not tuple or len(item) != 3 or type(item[0]) is not str
+            or type(item[1]) is not bytes or not 0 < len(item[1]) <= 8 * 1024 * 1024
+            or item[2] is not False or os.path.normcase(os.path.abspath(item[0])) != os.path.normcase(str(expected))
+            or os.path.normcase(os.path.abspath(__file__)) != os.path.normcase(str(expected))):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    if absent._read_pinned(expected, hashlib.sha256(item[1]).hexdigest(), 8 * 1024 * 1024) != item[1]:
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('create', 'reset'))
-    parser.add_argument('--bundle-root', required=True)
-    parser.add_argument('--manifest-sha256', required=True)
-    args = parser.parse_args(argv)
-    print('owner_marker_production_route_unavailable', file=sys.stderr)
+    argv = sys.argv[1:] if argv is None else argv
+    if (type(argv) not in (list, tuple) or len(argv) != 5
+            or any(type(value) is not str for value in argv)
+            or argv[0] not in ('create', 'reset')
+            or set(argv[1::2]) != {'--source-commit', '--manifest-sha256'}):
+        print('owner_marker_invalid_input', file=sys.stderr)
+        return 2
+    args = dict(zip(argv[1::2], argv[2::2]))
+    if (re.fullmatch(r'[0-9a-f]{40}', args['--source-commit']) is None
+            or re.fullmatch(r'[0-9a-fA-F]{64}', args['--manifest-sha256']) is None):
+        print('owner_marker_invalid_input', file=sys.stderr)
+        return 2
+    if _PRODUCTION_ENTRY_ENABLED is not True:
+        print('owner_marker_production_route_unavailable', file=sys.stderr)
+        return 2
+    bundle = str(_BUNDLE_STORE / args['--source-commit'])
+    pin = args['--manifest-sha256'].lower()
+    try:
+        if getattr(_PRODUCTION_CONTEXT, 'value', None) is not None:
+            raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+        _validate_bootstrap_loader(bundle)
+        location, verify_binding = _current_binding(bundle, pin)
+        if (type(location) is not dict or location.get('interpreter_status') != 'VERIFIED'
+                or not callable(verify_binding)):
+            raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+        _validate_bootstrap_loader(bundle)
+        verify_binding()
+        context = _ProductionContext(argv[0], bundle, pin)
+        try:
+            _PRODUCTION_CONTEXT.value = context
+            _production_marker(operation=argv[0], bundle_root=bundle, manifest_sha256=pin)
+        finally:
+            if getattr(_PRODUCTION_CONTEXT, 'value', None) is context:
+                del _PRODUCTION_CONTEXT.value
+        print('owner_marker_' + argv[0] + '_complete')
+        return 0
+    except _ProcessObservationRefused as exc:
+        print(str(exc), file=sys.stderr)
+    except (_AdminReason, ReservationAdminRefused) as exc:
+        reason = str(exc)
+        safe = _REASONS | {'RUNTIME_PROCESS_OBSERVED', 'RUNTIME_IDENTITY_UNKNOWN',
+                           'RESET_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN',
+                           'CREATE_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN'}
+        print('owner_marker_' + (reason.lower() if reason in safe else 'refused'), file=sys.stderr)
+    except Exception:
+        print('owner_marker_refused', file=sys.stderr)
     return 2
 
 

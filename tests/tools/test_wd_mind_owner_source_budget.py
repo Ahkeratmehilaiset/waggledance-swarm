@@ -263,6 +263,115 @@ def test_real_generationless_prewarm_charges_every_source_stream_read(
     assert budget._remaining == limit - sum(size for _, size in reads)
 
 
+@pytest.mark.parametrize('scenario', ['success', 'append', 'shorter', 'prefix_changed', 'bad_request', 'over_budget'])
+def test_synthetic_owner_start_prewarm_then_candidates_account_source_reads(
+        synthetic_checkout_pins, flat_consumer_case, tmp_path, monkeypatch, scenario):
+    """Real owner/prewarm/query with synthetic source, pins and worker doubles.
+
+    This deliberately opts in only inside the test; it does not certify a live
+    model, process boundary, operator policy anchor, or the deployed default.
+    """
+    import json
+
+    package, original, _proposals, old, clock, _response = flat_consumer_case
+    snapshot = dict(old, messages=dict(old['messages']))
+    source = Path(snapshot['messages']['source_path'])
+    sidecar = Path(snapshot['messages']['generation_path'])
+    assert tmp_path.resolve() in source.resolve().parents and tmp_path.resolve() in sidecar.resolve().parents
+    cursor = snapshot['messages']['end_cursor']
+    snapshot['messages']['end_cursor'] = prefix.bridge.BridgeCursor(cursor.offset, cursor.file_identity, None)
+    sidecar.unlink()
+    snapshot['messages']['generation_path'] = str(source.with_name('events.generation.json'))
+    decision = json.loads(snapshot['decision_bytes'])
+    decision['source_prefix']['generation'] = None
+    snapshot['decision_bytes'] = reader._canonical(decision)
+    snapshot['decision_sha256'] = reader._sha(snapshot['decision_bytes'])
+    inputs = {key: value for key, value in snapshot.items()
+              if key not in ('projection_bytes', 'projection_sha256')}
+    snapshot['projection_bytes'] = reader._serialized(reader.rederive_complete_message_projection(**inputs))
+    snapshot['projection_sha256'] = reader._sha(snapshot['projection_bytes'])
+    controls = (str(source), snapshot['messages']['generation_path'], original._controls[2],
+                snapshot['roster_bytes'], snapshot['messages']['policy_bytes'])
+    monkeypatch.setattr(package, '_consumer_bundle_controls', lambda *_args: controls)
+    monkeypatch.setattr(reader.dt, 'datetime', clock)
+    gate = original._gate
+    flat = json.loads(gate._flat_raw)
+    flat['projection_sha256'] = snapshot['projection_sha256']
+    flat_bytes = reader._canonical(flat)
+
+    _, adapter_module, binding, factory, launches = _full_fixtures._single_owner_synthetic(monkeypatch, tmp_path)
+    binding._PrivateBinding__snapshot = snapshot
+    binding._PrivateBinding__bundle = Path(original._root)
+    binding._PrivateBinding__manifest = original._pin
+    binding._PrivateBinding__policy_pin = reader._sha(snapshot['identifier_policy_binding'][0])
+    factory._bundle, factory._manifest = str(original._root), original._pin
+    monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda _self: snapshot)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    class Adapter:
+        def query(self, _text):
+            return [1.0] + [0.0] * 383
+    monkeypatch.setattr(adapter_module, 'create_single_flat_adapter', lambda **_kwargs: Adapter())
+    def build(handler):
+        handler._memory = runtime._PrivateFlatMemory(binding, snapshot, flat_bytes, gate._ids,
+                                                    gate._vectors, gate._encoder)
+        handler._frozen_flat = (flat_bytes, gate._ids, gate._vectors, gate._encoder)
+        return {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', build)
+
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
+        worker_factory=factory, shutdown_timeout=0)
+    reads = _instrument_source_streams(monkeypatch, source)
+    budgets = []
+    original_init = prefix._SourceReadBudget.__init__
+    def budget_init(self, limit):
+        original_init(self, limit)
+        budgets.append((self, limit))
+    monkeypatch.setattr(prefix._SourceReadBudget, '__init__', budget_init)
+    assert owner.start()['state'] == 'READY'
+    assert launches == [True] and len(budgets) == 1
+    prewarm_read = sum(size for _kind, size in reads)
+    assert prewarm_read > 0 and budgets[0][0]._remaining == budgets[0][1] - prewarm_read
+    assert owner._prewarm_generation is owner._generation and owner._source_budget is None
+
+    request = {'schema':'wd.mind-pipe-request.v2', 'query_id':'startup_work_overview',
+               'nonce':'0' * 64, 'lane':'codex-lead-1', 'scope':'shared'}
+    if scenario == 'append':
+        with source.open('ab') as stream:
+            stream.write(b'{"synthetic":"appended"}\n')
+    elif scenario == 'shorter':
+        with source.open('r+b') as stream:
+            stream.truncate(cursor.offset - 1)
+    elif scenario == 'prefix_changed':
+        with source.open('r+b') as stream:
+            first = stream.read(1)
+            stream.seek(0)
+            stream.write(bytes([first[0] ^ 1]))
+    elif scenario == 'bad_request':
+        bad = dict(request, nonce='invalid')
+        with pytest.raises(runtime.FullRuntimeRefused):
+            owner.located_candidates(bad)
+        assert owner.status()['state'] == 'READY' and len(budgets) == 1
+        assert sum(size for _kind, size in reads) == prewarm_read
+    elif scenario == 'over_budget':
+        monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_READ_LIMIT', 1)
+    if scenario in ('shorter', 'prefix_changed', 'over_budget'):
+        with pytest.raises(runtime.FullRuntimeRefused):
+            owner.located_candidates(request)
+        assert owner.status()['state'] == ('READY' if scenario == 'over_budget' else 'HOLD')
+        if scenario == 'over_budget':
+            assert len(budgets) == 1 and sum(size for _kind, size in reads) == prewarm_read
+        owner.close()
+        return
+    result = owner.located_candidates(request)
+    assert result['status'] == 'CANDIDATES' and result['candidates']
+    assert len(budgets) == 2
+    query_read = sum(size for _kind, size in reads) - prewarm_read
+    assert query_read > 0 and budgets[1][0]._remaining == budgets[1][1] - query_read
+    assert owner._source_budget is None and owner.status()['state'] == 'READY'
+    owner.close()
+
+
 def test_real_retained_query_charges_three_prefixes_and_selected_rows(
         synthetic_checkout_pins, flat_consumer_case, monkeypatch):
     import json

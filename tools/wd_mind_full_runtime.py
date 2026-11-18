@@ -1111,8 +1111,10 @@ _CACHE_CONTENT_PATHS = (
     'tools-bootstrap/tools/wd_mind_e5_worker.py',
     'tools-bootstrap/tools/wd_mind_e5_client.py',
     'tools-bootstrap/tools/wd_mind_e5_rotating_client.py',
+    'tools-bootstrap/tools/wd_mind_e5_lifecycle.py',
     'tools-bootstrap/tools/wd_mind_e5_snapshot_adapter.py',
     'tools-bootstrap/tools/wd_mind_runtime_bootstrap.py',
+    'tools-bootstrap/tools/wd_mind_runtime_child.py',
     'tools-bootstrap/tools/wd_mind_runtime_manifest.py',
     'tools-bootstrap/tools/wd_mind_full_runtime.py',
 )

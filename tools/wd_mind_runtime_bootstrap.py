@@ -129,6 +129,12 @@ def main(argv=None):
         verify = _load_verifier()
         verify(root, Path(args.runtime_manifest), args.runtime_manifest_sha256,
                expected_generation=args.runtime_generation, expected_revision=args.runtime_revision)
+        # verify() has already checked the pinned root and every ancestor for
+        # reparse points. Refuse aliases or caller-selected cache destinations.
+        # This does not guard against same-user mutation after verification.
+        if (args.runtime_root != os.path.abspath(args.runtime_root)
+                or os.environ.get("TORCHINDUCTOR_CACHE_DIR") != args.runtime_root):
+            raise ValueError("runtime_cache_mismatch")
         code = root / "assets" / "code"
         site = root / "site"
         model = root / "model"

@@ -2119,3 +2119,45 @@ def test_job_refuses_kill_on_close_before_native_calls(monkeypatch):
     monkeypatch.setattr(child.ctypes, 'WinDLL', lambda *args, **kwargs: pytest.fail('native call forbidden'), raising=False)
     with pytest.raises(child.LaunchRefused): child._Job(kill_on_close=True)
     assert not hasattr(child._Job, 'terminate')
+
+
+def test_child_popen_receives_verified_runtime_cache_and_isolated_environment(
+        staged_graceful, monkeypatch, synthetic_windows_subprocess, synthetic_worker_admission):
+    """Exercise real synthetic pin preflight and capture Popen; no child is spawned."""
+    from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
+    from test_wd_mind_e5_client import response
+    process = OwnedProcess(response(0, 0), on_eof=False)
+    calls = {}
+    class Job(OwnedJob):
+        def __init__(self, *, kill_on_close, _owner=None):
+            assert kill_on_close is False
+            super().__init__()
+        def attach(self, value):
+            assert value is process
+    def popen(argv, **kwargs):
+        calls["env"] = kwargs["env"]
+        return process
+    original_verify = anchor.verify_runtime_process_preflight
+    def recording_verify(*args, **kwargs):
+        result = original_verify(*args, **kwargs)
+        calls["verified_root"] = kwargs["runtime_root"]
+        return result
+    monkeypatch.setattr(anchor, "verify_runtime_process_preflight", recording_verify)
+    monkeypatch.setattr(child, "_Job", Job)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "caller-controlled-synthetic")
+    result = child.start_e5_worker_graceful(enabled=True, **synthetic_worker_admission, **staged_graceful)
+    owner = result["owner"]
+    try:
+        assert result["status"] == "READY"
+        env = calls["env"]
+        assert calls["verified_root"] == staged_graceful["tuple_args"]["runtime-root"]
+        assert env["TORCHINDUCTOR_CACHE_DIR"] == calls["verified_root"]
+        assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "caller-controlled-synthetic"
+        assert env["TEMP"] == env["TMP"] == os.devnull
+        assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
+        for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE",
+                     "HF_ASSETS_CACHE", "SENTENCE_TRANSFORMERS_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "CUDA_CACHE_PATH"):
+            assert env[name] == os.devnull
+    finally:
+        finish(owner, process)

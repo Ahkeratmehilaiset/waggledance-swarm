@@ -12,7 +12,13 @@ import pytest
 from tools import wd_mind_runtime_bootstrap as bootstrap
 
 
+@pytest.fixture(autouse=True)
+def _restore_cache_env(monkeypatch):
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+
+
 def _args(root):
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(root)
     values = {"runtime-root": str(root), "runtime-manifest": str(root.parent / "manifest.json"),
               "runtime-manifest-sha256": "a" * 64, "runtime-generation": "b" * 40,
               "runtime-revision": "c" * 40, "mutex-sha256": "e" * 64, "memory": str(root.parent / "memory"),

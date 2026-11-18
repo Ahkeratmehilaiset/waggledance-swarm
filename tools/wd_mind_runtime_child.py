@@ -1855,6 +1855,20 @@ def _path(value):
         raise LaunchRefused("invalid_path") from None
 
 
+def _worker_environment(runtime_root):
+    """Create an isolated child environment from the verified runtime root."""
+    runtime_cache = os.fspath(_path(runtime_root))
+    if runtime_cache != os.path.abspath(runtime_cache):
+        raise ValueError("runtime_cache_not_canonical")
+    env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
+    env["TORCHINDUCTOR_CACHE_DIR"] = runtime_cache
+    env.update(TEMP=os.devnull, TMP=os.devnull, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+    for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "HF_ASSETS_CACHE",
+                 "SENTENCE_TRANSFORMERS_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "CUDA_CACHE_PATH"):
+        env[name] = os.devnull
+    return env
+
+
 def _validate_audit_write_scope(lock_file, scratch_root):
     """Check the fixed inert sentinel and refuse any requested scratch path."""
     try:
@@ -2220,11 +2234,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
         args.extend(("--worker-sha256", worker_sha, "--weights-sha256", binding["encoder"]["weights_sha256"]))
         if bulk_contract_sha256 is not None:
             args.extend(('--bulk-contract-sha256', bulk_contract_sha256))
-        env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
-        env.update(TEMP=os.devnull, TMP=os.devnull, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
-        for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "HF_ASSETS_CACHE",
-                     "SENTENCE_TRANSFORMERS_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "CUDA_CACHE_PATH"):
-            env[name] = os.devnull
+        env = _worker_environment(tuple_args["runtime-root"])
         if cooperative:
             lifecycle = importlib.import_module("tools.wd_mind_e5_lifecycle")
             if time.monotonic() >= deadline:

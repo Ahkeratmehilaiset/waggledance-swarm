@@ -28,6 +28,19 @@ VECTOR = struct.pack('<384f', 1.0, *([0.0] * 383))
 
 def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
     assert '.codex-audit' in str(tmp_path).lower()
+    # Synthetic checkout seam: retain hash enforcement against this checkout's
+    # exact bytes after verifying any delta is only Windows CRLF conversion.
+    # This is not a test of the shipped bundle's code pins.
+    root = Path(reader.__file__).resolve().parents[1]
+    assert root == Path(__file__).resolve().parents[2]
+    checkout_pins = {}
+    for relative, expected in reader._REQUIRED_CODE.items():
+        raw = (root / relative).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        normalized = hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest()
+        assert digest == expected or normalized == expected
+        checkout_pins[relative] = digest
+    monkeypatch.setattr(reader, '_REQUIRED_CODE', checkout_pins)
     source_dir = tmp_path / 'synthetic-source'
     cache_root = tmp_path / 'synthetic-cache'
     if existing:

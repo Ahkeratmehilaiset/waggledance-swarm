@@ -2407,7 +2407,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
 
     def emit_diagnostic():
         nonlocal last_diagnostic, diagnostic_count
-        if (include_start_diagnostics is not True and include_worker_stage_diagnostics is not True) or diagnostic_count >= 2 or startup_reported_ready:
+        if ((include_start_diagnostics is not True and include_worker_stage_diagnostics is not True)
+                or diagnostic_count >= 2
+                or (startup_reported_ready and include_worker_stage_diagnostics is not True)):
             return
         value = start_failure
         if adapter is not None:
@@ -2421,6 +2423,10 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             except BaseException:
                 pass
         safe = _validated_start_failure(value)
+        # A post-READY worker exit is not a startup failure; only its fixed,
+        # untrusted worker-exit diagnostic may be reported in v2.
+        if startup_reported_ready:
+            safe = {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN'}
         key = (safe['reason'], safe['exception_type'])
         if include_worker_stage_diagnostics is True:
             hint, exit_code = 'UNKNOWN', None
@@ -2463,6 +2469,30 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             pass
         finally:
             diagnostic_done.set()
+
+    def start_diagnostic_worker():
+        nonlocal diagnostic_thread
+        if diagnostic_thread is not None:
+            return
+        try:
+            diagnostic_thread = threading.Thread(target=diagnostic_worker,
+                name='mind-owner-start-diagnostic', daemon=False)
+            diagnostic_thread.start()
+        except BaseException:
+            pass  # A possibly-started thread stays reachable through cleanup.
+
+    def report_verified_worker_exit_during_hold():
+        nonlocal failed
+        if (include_worker_stage_diagnostics is not True or not startup_reported_ready
+                or diagnostic_thread is not None or adapter is None):
+            return
+        try:
+            hint, exit_code = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
+            if hint != 'UNKNOWN' or (exit_code is not None and exit_code != 0):
+                failed = True
+                start_diagnostic_worker()
+        except BaseException:
+            pass  # An unverified observation remains UNKNOWN/HOLD.
 
     def read_stop():
         try:
@@ -2559,17 +2589,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         if failed:
             try: emit('HOLD')
             except BaseException: pass
-            if (include_start_diagnostics is True or include_worker_stage_diagnostics is True) and not startup_reported_ready:
-                try:
-                    diagnostic_thread = threading.Thread(target=diagnostic_worker,
-                        name='mind-owner-start-diagnostic', daemon=False)
-                    diagnostic_thread.start()
-                except BaseException:
-                    pass  # Keep any possibly-started thread reachable through cleanup.
+            if (include_worker_stage_diagnostics is True or
+                    (include_start_diagnostics is True and not startup_reported_ready)):
+                start_diagnostic_worker()
         if service_thread is not None:
             while not service_done.is_set() or service_thread.is_alive():
                 try: emit('HOLD')
                 except BaseException: failed = True
+                report_verified_worker_exit_during_hold()
                 try: service_done.wait(0.25)
                 except BaseException: pass
         if service is not None:
@@ -2582,6 +2609,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     pass
                 try: emit('HOLD')
                 except BaseException: failed = True
+                report_verified_worker_exit_during_hold()
                 try: time.sleep(0.25)
                 except BaseException: pass
         if adapter is not None:
@@ -2595,12 +2623,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     pass
                 try: emit('HOLD')
                 except BaseException: failed = True
+                report_verified_worker_exit_during_hold()
                 try: time.sleep(0.25)
                 except BaseException: pass
         if control_thread is not None:
             while control_thread.is_alive():
                 try: emit('HOLD')
                 except BaseException: failed = True
+                report_verified_worker_exit_during_hold()
                 try: control_thread.join(timeout=0.25)
                 except BaseException: pass
         if diagnostic_thread is not None:

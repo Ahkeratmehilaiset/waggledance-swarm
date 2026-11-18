@@ -555,6 +555,127 @@ def test_postready_service_failure_is_not_labeled_startup_failure(monkeypatch):
         assert raw == _v1_wire(row['state'])
 
 
+@pytest.mark.parametrize('value', [('serving', None), ('UNKNOWN', 99), ('UNKNOWN', None)])
+def test_postready_failure_reports_optin_v2_without_startup_misattribution(monkeypatch, value):
+    control, output, private = _cli_fixture(monkeypatch, delayed=False, post_ready=True)
+    output.owner.worker_exit_diagnostic = lambda: value
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == 2
+    rows = [json.loads(raw) for raw in output.lines]
+    statuses = [row['state'] for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1']
+    assert statuses == ['STARTING', 'READY', 'HOLD', 'STOPPED']
+    diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
+    assert len(diagnostics) == 1
+    assert diagnostics[0] == {'schema':'wd.mind-local-owner-start-diagnostic.v2', 'authority':'none',
+        'reason':'UNKNOWN', 'exception_type':'UNKNOWN', 'worker_exit_stage_hint':value[0],
+        'worker_exit_code':value[1]}
+    assert all(private not in raw for raw in output.lines)
+
+
+def test_postready_v2_reports_late_exit_without_discarding_owner(monkeypatch):
+    control, output, _ = _cli_fixture(monkeypatch, delayed=True, post_ready=True)
+    first_diag = threading.Event()
+    original_write, original_close = output.write, output.owner.close
+    def write(data):
+        count = original_write(data)
+        if b'worker_exit_code' in bytes(data): first_diag.set()
+        return count
+    def close():
+        first_diag.wait(1)
+        return original_close()
+    output.write, output.owner.close = write, close
+    output.owner.worker_exit_diagnostic = lambda: (('serving', None) if output.close_called.is_set()
+                                                     else ('UNKNOWN', None))
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == 2
+    rows = [json.loads(raw) for raw in output.lines]
+    diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
+    assert [row['worker_exit_stage_hint'] for row in diagnostics] == ['UNKNOWN', 'serving']
+    assert output.owner.closes == 2 and first_diag.is_set()
+    assert all(row['reason'] == row['exception_type'] == 'UNKNOWN' for row in diagnostics)
+
+
+def test_postready_v2_clean_stop_emits_no_failure_diagnostic(monkeypatch):
+    from tools import wd_mind_runtime_process as process
+    control, output, _ = _cli_fixture(monkeypatch, delayed=False, post_ready=True)
+    original_write = output.write
+    ready = threading.Event()
+    def write(data):
+        written = original_write(data)
+        if b'"state":"READY"' in bytes(data):
+            ready.set()
+        return written
+    # The input's frame is consumed before the control thread calls read.
+    frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy-never-in-output'))
+                       + b'synthetic-policy-never-in-output')
+    def read_frame_then_stop(size):
+        value = frame.read(size)
+        if value: return value
+        ready.wait(2)
+        return b'S'
+    control.read, output.write = read_frame_then_stop, write
+    class Service:
+        def start(self): pass
+        def status(self): return {'state':'RUNNING'}
+        def close(self, *, timeout): return {'state':'STOPPED'}
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    output.owner.worker_exit_diagnostic = lambda: ('serving', None)
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == 0
+    rows = [json.loads(raw) for raw in output.lines]
+    assert [row['state'] for row in rows] == ['STARTING', 'READY', 'STOPPED']
+
+
+@pytest.mark.parametrize('exit_value,is_failure', [
+    (('serving', None), True), (('UNKNOWN', 99), True), (('UNKNOWN', 2), True),
+    (('UNKNOWN', 0), False), (('UNKNOWN', None), False),
+])
+def test_postready_v2_detects_worker_exit_during_clean_stop_cleanup(monkeypatch, exit_value, is_failure):
+    from tools import wd_mind_runtime_process as process
+    control, output, _ = _cli_fixture(monkeypatch, delayed=True, post_ready=True)
+    ready, diag = threading.Event(), threading.Event()
+    original_write, original_close = output.write, output.owner.close
+    frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy-never-in-output'))
+                       + b'synthetic-policy-never-in-output')
+    def read(size):
+        value = frame.read(size)
+        if value: return value
+        ready.wait(2)
+        return b'S'
+    def write(data):
+        written = original_write(data)
+        raw = bytes(data)
+        if b'"state":"READY"' in raw: ready.set()
+        if b'worker_exit_stage_hint' in raw: diag.set()
+        return written
+    def close():
+        if output.owner.closes and is_failure:
+            diag.wait(1)
+        return original_close()
+    control.read, output.write, output.owner.close = read, write, close
+    output.owner.worker_exit_diagnostic = lambda: (exit_value if output.close_called.is_set()
+                                                     else ('UNKNOWN', None))
+    class Service:
+        def start(self): pass
+        def status(self): return {'state':'RUNNING'}
+        def close(self, *, timeout): return {'state':'STOPPED'}
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == (2 if is_failure else 0)
+    rows = [json.loads(raw) for raw in output.lines]
+    assert [row['state'] for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1'] == [
+        'STARTING', 'READY', 'HOLD', 'STOPPED']
+    diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
+    assert len(diagnostics) == int(is_failure)
+    if is_failure:
+        assert (diagnostics[0]['worker_exit_stage_hint'], diagnostics[0]['worker_exit_code']) == exit_value
+    assert output.owner.closes == 2
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual helper is Windows-specific')
 @pytest.mark.parametrize('shell', ['powershell.exe', 'pwsh.exe'])
 @pytest.mark.parametrize('mode', ['legacy', 'legacy_record', 'valid', 'not_enabled', 'before_hold',

@@ -343,7 +343,9 @@ def test_fixed_local_cli_uses_named_arguments_and_manifest_environment(monkeypat
 @pytest.mark.parametrize('policy_mode', ['frame', 'path'])
 @pytest.mark.parametrize('stop_byte,expected_exit', [(b'S', 0), (b'', 0), (b'X', 2)])
 def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_close(monkeypatch, tmp_path, stop_byte, expected_exit, policy_mode):
+    from tools import wd_mind_full_runtime as runtime
     from tools import wd_mind_runtime_process as process
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     reservation_root = tmp_path / 'synthetic-owner-reservation'
     reservation_root.mkdir()
     marker = reservation_root / child._OWNER_RESERVATION_NAME
@@ -416,8 +418,75 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
     assert policy.decode() not in json.dumps(statuses)
 
 
-def test_candidate_owner_monitor_keeps_service_alive_during_locked_query(monkeypatch):
+@pytest.mark.parametrize('disabled_at', ['entry', 'service_start'])
+def test_local_candidate_owner_never_reports_ready_with_candidate_gate_disabled(monkeypatch, disabled_at):
+    from tools import wd_mind_full_runtime as runtime
     from tools import wd_mind_runtime_process as process
+
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', disabled_at != 'entry')
+    settled = threading.Event()
+    statuses, starts, services, closes = [], [], [], []
+    policy = b'synthetic-private-policy'
+    source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
+
+    class Input:
+        def read(self, size):
+            value = source.read(size)
+            if value:
+                return value
+            assert settled.wait(5)
+            return b'S'
+
+    class Output:
+        def write(self, data):
+            statuses.append(json.loads(bytes(data))['state'])
+            if statuses[-1] in ('READY', 'HOLD'):
+                settled.set()
+            return len(data)
+        def flush(self): pass
+
+    class Owner:
+        _owner = object()
+        def start(self):
+            starts.append(True)
+            return {'state': 'STARTING'}
+        def status(self): return {'state': 'READY', 'owned': True}
+        def close(self):
+            closes.append('owner')
+            return {'state': 'STOPPED', 'owned': False}
+
+    class Service:
+        def start(self):
+            if disabled_at == 'service_start':
+                monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, *, timeout):
+            closes.append('service')
+            return {'state': 'STOPPED'}
+
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Owner())
+    def service_factory(**kwargs):
+        services.append(True)
+        return Service()
+    monkeypatch.setattr(process, 'create_local_candidate_service', service_factory)
+    result = child._local_candidate_owner_entry(control_stream=Input(), output_stream=Output(),
+        bundle_root='synthetic', expected_manifest_sha256='a'*64,
+        policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64)
+
+    assert result == 2
+    if disabled_at == 'entry':
+        assert statuses == ['HOLD', 'STOPPED']
+        assert starts == [] and services == [] and closes == []
+    else:
+        assert statuses == ['STARTING', 'HOLD', 'STOPPED']
+        assert starts == [True] and services == [True]
+        assert closes == ['service', 'owner']
+
+
+def test_candidate_owner_monitor_keeps_service_alive_during_locked_query(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
 
     ready, busy_seen, queries_done = (threading.Event() for _ in range(3))
     policy = b'synthetic-policy'
@@ -504,7 +573,9 @@ def test_fixed_local_candidate_owner_cli_uses_named_pins(monkeypatch):
     assert seen[-1]['policy_path'] == 'C:\\synthetic\\policy.json'
 
 
-def test_local_candidate_owner_rejects_wrong_path_policy_hash(tmp_path):
+def test_local_candidate_owner_rejects_wrong_path_policy_hash(tmp_path, monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     policy = tmp_path / 'policy.json'
     policy.write_bytes(b'synthetic-private-policy')
     output = io.BytesIO()
@@ -557,7 +628,9 @@ def test_candidate_proxy_rechecks_real_external_policy_file(monkeypatch, tmp_pat
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows junction test')
-def test_local_candidate_owner_rejects_policy_through_real_junction(tmp_path):
+def test_local_candidate_owner_rejects_policy_through_real_junction(tmp_path, monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     real = tmp_path / 'real'
     real.mkdir()
     policy = real / 'policy.json'
@@ -576,7 +649,9 @@ def test_local_candidate_owner_rejects_policy_through_real_junction(tmp_path):
     assert result == 2 and raw not in output.getvalue()
 
 
-def test_local_candidate_owner_rejects_missing_manifest_and_reports_hold(tmp_path):
+def test_local_candidate_owner_rejects_missing_manifest_and_reports_hold(tmp_path, monkeypatch, synthetic_local_admission):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     held = threading.Event()
     policy = b'synthetic-private-policy'
     source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
@@ -596,7 +671,8 @@ def test_local_candidate_owner_rejects_missing_manifest_and_reports_hold(tmp_pat
         def flush(self): pass
     result = child._local_candidate_owner_entry(control_stream=Input(), output_stream=Output(),
         bundle_root=str(tmp_path), expected_manifest_sha256='a'*64,
-        policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64)
+        policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64,
+        _admission=synthetic_local_admission)
     assert result == 2
     assert [row['state'] for row in statuses] == ['STARTING', 'HOLD', 'STOPPED']
     assert policy.decode() not in json.dumps(statuses)

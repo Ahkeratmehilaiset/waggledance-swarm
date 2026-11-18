@@ -28,6 +28,10 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
     """No native pipe/model/process: only lifecycle and teardown are real."""
     import multiprocessing.connection as transport
 
+    # This fixture substitutes the index build; it tests teardown, not query
+    # admission or prewarm. Model the enabled gate without claiming either.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self, **kwargs: None)
     root = tmp_path / 'synthetic-reservation'
     root.mkdir()
     marker = root / child._OWNER_RESERVATION_NAME

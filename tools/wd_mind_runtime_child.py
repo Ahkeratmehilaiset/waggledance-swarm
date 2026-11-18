@@ -2406,6 +2406,11 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             service_done.set()
 
     try:
+        # A running pipe cannot answer any candidate request while this gate
+        # is disabled. Refuse before starting an owner or advertising READY.
+        from tools import wd_mind_full_runtime as runtime
+        if runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is not True:
+            raise ValueError('candidate_gate_disabled')
         if policy_path is None:
             policy = _read_local_policy_frame(control_stream, require_eof=False)
         else:
@@ -2461,6 +2466,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     break
                 service_status = service.status()
                 if type(service_status) is not dict or service_status.get('state') != 'RUNNING':
+                    failed = True
+                    break
+                if runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is not True:
                     failed = True
                     break
                 emit('READY')

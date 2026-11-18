@@ -111,6 +111,54 @@ def test_synthetic_eof_does_not_hide_late_service_start_failure(monkeypatch):
     assert states == ['STARTING', 'HOLD', 'STOPPED']
 
 
+@pytest.mark.parametrize('startup_failed', [False, True])
+def test_synthetic_eof_does_not_hide_adapter_failure_during_cleanup(monkeypatch, startup_failed):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    guard = child._LocalOwnerReservation(Path('synthetic'), Path('marker'), 123, (), ())
+    monkeypatch.setattr(guard, '_check', lambda: None)
+    monkeypatch.setattr(guard, '_read', lambda: PREFIX + b'R')
+    admission = child._LocalAdmission(guard)
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1, admission=admission)
+    admission.bind_owner(adapter)
+    release = threading.Event()
+    def prepare(self):
+        assert release.wait(3)
+        if startup_failed:
+            with self._lock:
+                self._state = 'HOLD'
+                self._start_failure = {'reason': 'OWNER_START', 'exception_type': 'ValueError'}
+    monkeypatch.setattr(child._LocalManifestQuery, '_prepare', prepare)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    class Output(io.BytesIO):
+        def write(self, data):
+            if b'"state":"HOLD"' in bytes(data): release.set()
+            return super().write(data)
+    output = Output()
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64, _admission=admission)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == (2 if startup_failed else 0)
+    assert states == ['STARTING', 'HOLD', 'STOPPED']
+
+
+@pytest.mark.parametrize(('reason', 'exception_type', 'expected'), [
+    ('NONE', 'NONE', False), ('UNKNOWN', 'UNKNOWN', None),
+    ('WORKER_SETUP', 'ValueError', True), ('BUSY', 'UNKNOWN', None)])
+def test_completed_adapter_start_failure_evidence_is_tristate(reason, exception_type, expected):
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1)
+    class Owner:
+        def start_diagnostic(self):
+            return {'reason': reason, 'exception_type': exception_type, 'authority': 'none'}
+    adapter._owner = Owner()
+    assert adapter.start_failure_observed() is expected
+
+
 @WINDOWS
 def test_held_reservation_rejects_second_handle_truncation(tmp_path):
     root = _seed(tmp_path / 'synthetic-audit')

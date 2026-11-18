@@ -1291,6 +1291,29 @@ class _LocalManifestQuery:
         safe = _validated_start_failure(failure)
         return {'reason': safe['reason'], 'exception_type': safe['exception_type'], 'authority': 'none'}
 
+    def start_failure_observed(self):
+        """Inspect completed startup after close; unknown is not a clean result."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return None
+            failure, owner, policy_invalid = self._start_failure, self._owner, self._policy_invalid
+        if failure is not None or policy_invalid:
+            return True
+        if owner is None:
+            return False
+        try:
+            value = owner.start_diagnostic()
+            if type(value) is not dict or value.get('authority') != 'none':
+                return None
+            reason = value.get('reason')
+            if reason == 'NONE' and value.get('exception_type') == 'NONE':
+                return False
+            if reason in _LOCAL_START_REASONS and reason not in ('UNKNOWN',):
+                return True
+        except BaseException:
+            pass
+        return None
+
     def worker_exit_diagnostic(self):
         if not self._lock.acquire(blocking=False):
             return ('UNKNOWN', None)
@@ -2705,6 +2728,19 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 report_verified_worker_exit_during_hold()
                 try: time.sleep(0.25)
                 except BaseException: pass
+            # The asynchronous preparation can fail after STOP's last status
+            # poll but before close finishes. Preserve that evidence instead of
+            # returning success merely because resource cleanup succeeded.
+            if type(adapter) is _LocalManifestQuery:
+                try: startup_failed = adapter.start_failure_observed()
+                except BaseException: startup_failed = None
+                if startup_failed is not False:
+                    failed = True
+                    try: emit('HOLD')
+                    except BaseException: pass
+                    if (include_worker_stage_diagnostics is True or
+                            (include_start_diagnostics is True and not startup_reported_ready)):
+                        start_diagnostic_worker()
         if control_thread is not None:
             while control_thread.is_alive():
                 try: emit('HOLD')

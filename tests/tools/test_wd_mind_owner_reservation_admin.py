@@ -1347,8 +1347,10 @@ def test_synthetic_entry_rejects_malformed_commit_pins_without_echo(argv, capsys
 
 
 @pytest.mark.parametrize('operation', ['create', 'reset'])
-def test_synthetic_exact_commit_entry_stays_disabled_before_any_binding(monkeypatch, capsys, operation):
-    def unexpected(*_args, **_kwargs): pytest.fail('disabled entry reached a binding or live path')
+def test_synthetic_exact_commit_entry_rejects_unverified_loader_before_binding(monkeypatch, capsys, operation):
+    def unexpected(*_args, **_kwargs): pytest.fail('unverified entry reached a binding or live path')
+    def refuse_loader(_root): raise admin.ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', refuse_loader)
     monkeypatch.setattr(admin, '_current_binding', unexpected)
     monkeypatch.setattr(admin, '_production_marker', unexpected)
     assert admin.main([operation, '--source-commit', 'a'*40, '--manifest-sha256', 'b'*64]) == 2
@@ -1483,7 +1485,6 @@ def test_synthetic_fixed_entry_create_and_reset_only_fake_root(tmp_path, monkeyp
         assert bundle == str(store / commit) and expected == pin
         return {'interpreter_status':'VERIFIED', 'interpreter_root':str(runtime),
                 'interpreter':str(interpreter)}, verify
-    monkeypatch.setattr(admin, '_PRODUCTION_ENTRY_ENABLED', True)
     monkeypatch.setattr(admin, '_BUNDLE_STORE', store)
     monkeypatch.setattr(admin, '_FIXED_PRODUCTION_ROOT', root)
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)

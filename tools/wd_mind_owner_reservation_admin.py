@@ -1,8 +1,6 @@
-"""Synthetic-only experimental owner-marker administration.
+"""Pinned owner-marker administration candidate, pending review and deployment.
 
-Production entry is disabled pending review, integration and host validation.
-Do not deploy this draft. A command cannot authenticate a human against
-another process using the same account.
+A command cannot authenticate a human against another process using the same account.
 
 This is a cooperating-owner guard, not an authentication boundary.  Process
 enumeration is a point-in-time observation: a legacy or same-user process may
@@ -70,8 +68,8 @@ _SYNTHETIC_ROOT = _TEST_REPOSITORY / '.codex-audit' / 'marker-admin-synthetic-te
 _FIXED_PRODUCTION_ROOT = Path(r'C:\Python\project2\.codex-audit')
 _SYNTHETIC_SCOPE = object()
 _PRODUCTION_SCOPE = object()
-# Keep off until the complete pinned operator route receives its own review.
-_PRODUCTION_ENTRY_ENABLED = False
+# Candidate route still requires the pinned loader and binding; it is not deployed.
+_PRODUCTION_ENTRY_ENABLED = True
 _PRODUCTION_CONTEXT = threading.local()
 
 
@@ -328,8 +326,7 @@ def _assert_scope_root(root, scope):
         return _assert_synthetic_root(root)
     if scope is not _PRODUCTION_SCOPE:
         raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
-    # This check intentionally precedes even a live path lookup. Its future
-    # replacement requires reviewed activation and legacy-owner proof.
+    # Check the entry context before even a live path lookup.
     _require_production_activation()
     path = Path(root)
     expected = _FIXED_PRODUCTION_ROOT
@@ -739,12 +736,10 @@ def _repair_production_marker(guard, directory_handle, *, bundle_root, manifest_
 
 
 def _production_marker(*, operation, bundle_root, manifest_sha256):
-    """Unconditionally disabled fixed-root candidate; not an operator entrypoint.
+    """Fixed-root implementation called only through the pinned entry.
 
-    No caller-supplied root, process observer, or proof hook is admitted. The
-    disabled activation is also a placeholder for the still-missing legacy
-    owner absence proof. Never remove it merely because a process snapshot was
-    empty: that snapshot is point-in-time only.
+    No caller-supplied root, process observer, or proof hook is admitted.
+    Process snapshots are point-in-time only; legacy owner absence is UNKNOWN.
     """
     context = _require_production_activation()  # Before opening a pointer or live path.
     if (context.operation != operation or context.bundle != bundle_root

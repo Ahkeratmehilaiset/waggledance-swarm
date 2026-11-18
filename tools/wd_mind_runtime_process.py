@@ -203,6 +203,8 @@ class _LocalCandidateService:
         self._owner, self._name = owner, pipe_name
         self._listener = self._thread = self._wake_thread = None
         self._listener_closed = False
+        self._listener_closing = False
+        self._pipe_lifecycle_lock = threading.Lock()
         self._listener_creation_unknown = False
         self._uncertain_connection = self._uncertain_wake_connection = None
         self._accept_ownership_unknown = self._wake_ownership_unknown = False
@@ -276,14 +278,16 @@ class _LocalCandidateService:
                 if self._uncertain_connection is not None:
                     break
         finally:
-            try:
-                self._listener.close()
-            except BaseException:
-                self._failed = True
-            else:
-                self._listener_closed = True
-            finally:
-                self._serve_done.set()
+            with self._pipe_lifecycle_lock:
+                self._listener_closing = True
+                try:
+                    self._listener.close()
+                except BaseException:
+                    self._failed = True
+                else:
+                    self._listener_closed = True
+                finally:
+                    self._serve_done.set()
 
     def status(self):
         with self._lock:
@@ -393,14 +397,15 @@ class _LocalCandidateService:
             done.set()
 
     def _wake(self):
-        # A finished listener cannot need waking. This avoids a late connection
-        # attempt after normal shutdown; a later race remains fail-closed below.
-        if self._serve_done.is_set() and self._listener_closed:
-            return
         from multiprocessing.connection import Client
         connection = None
         try:
-            connection = Client(address=self._name, family='AF_PIPE', authkey=None)
+            # Serialize connection construction against listener close. Never
+            # hold the service state lock across a potentially blocking call.
+            with self._pipe_lifecycle_lock:
+                if self._listener_closing:
+                    return
+                connection = Client(address=self._name, family='AF_PIPE', authkey=None)
             connection.close()
         except BaseException:
             # Client may have allocated a native handle even before raising.

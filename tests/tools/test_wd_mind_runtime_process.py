@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -345,6 +346,59 @@ def test_terminal_state_checks_wake_ownership_after_thread_exit(method):
     service._wake_thread = RacingWake()
     result = service.status() if method == 'status' else service.close(timeout=0)
     assert result['state'] == 'HOLD'
+
+
+@pytest.mark.parametrize('first', ['listener', 'client'])
+def test_synthetic_listener_wake_lifecycle_is_serialized_without_blocking_close(monkeypatch, first):
+    import multiprocessing.connection as connection_module
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    entered, release = threading.Event(), threading.Event()
+    listener_called, client_called = threading.Event(), threading.Event()
+    class Listener:
+        def close(self):
+            listener_called.set()
+            if first == 'listener':
+                entered.set()
+                assert release.wait(3)
+    class Connection:
+        def close(self): pass
+    def client(**kwargs):
+        client_called.set()
+        if first == 'client':
+            entered.set()
+            assert release.wait(3)
+        return Connection()
+    monkeypatch.setattr(connection_module, 'Client', client)
+    service._listener = Listener()
+    service._stop.set()
+    service._thread = threading.Thread(target=service._serve)
+    service._wake_done = threading.Event()
+    service._wake_thread = threading.Thread(target=service._wake_then_done, args=(service._wake_done,))
+    t1, t2 = (service._thread, service._wake_thread) if first == 'listener' else (service._wake_thread, service._thread)
+    t1.start()
+    try:
+        assert entered.wait(3)
+        t2.start()
+        # close must not wait for the synthetic resource operation.
+        start = time.monotonic()
+        assert service.close(timeout=0)['state'] == 'HOLD'
+        assert time.monotonic() - start < 1
+        if first == 'listener':
+            assert not client_called.wait(0.1)
+        else:
+            assert not listener_called.wait(0.1)
+        release.set()
+        t1.join(3)
+        t2.join(3)
+        assert not t1.is_alive() and not t2.is_alive()
+        assert listener_called.is_set()
+        assert client_called.is_set() == (first == 'client')
+        assert service.close(timeout=0)['state'] == 'STOPPED'
+    finally:
+        release.set()
+        t1.join(3)
+        if t2.ident is not None:
+            t2.join(3)
 
 
 @pytest.mark.parametrize('outcome', ['clean', 'close_failure', 'constructor_failure'])

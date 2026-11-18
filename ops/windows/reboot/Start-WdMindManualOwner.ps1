@@ -33,48 +33,100 @@ $BridgePythonPath = '<PINNED_PYTHON_PATH>'
 $BridgePythonSha256 = '<PINNED_PYTHON_SHA256>'
 $Operation = '<create_or_reset>'
 function Assert-WdManualUniqueJson([string] $Text) {
-    # Use case-insensitive comparison to match the PowerShell object parser;
-    # still validates full JSON syntax. Never rely on its duplicate-key policy.
-    $stack = New-Object 'System.Collections.Generic.List[object]'
+    # Bounded RFC JSON grammar and decoded-key uniqueness are checked before
+    # ConvertFrom-Json, which otherwise accepts comments and trailing commas.
     if ($Text.Length -gt 4194304) { throw 'manual_json_size' }
-    $keyCount = 0
-    $i = 0
-    while ($i -lt $Text.Length) {
-        $ch = $Text[$i]
-        if ($ch -eq [char]123) {
-            $stack.Add((New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)))
-        } elseif ($ch -eq [char]91) {
-            $stack.Add($null)
-        } elseif ($ch -eq [char]125 -or $ch -eq [char]93) {
-            if ($stack.Count -eq 0) { throw 'manual_json_invalid' }
-            $stack.RemoveAt($stack.Count - 1)
-        } elseif ($ch -eq [char]34) {
-            $start = $i
-            $i++
-            $closed = $false
-            while ($i -lt $Text.Length) {
-                if ($Text[$i] -eq [char]92) { $i += 2; continue }
-                if ($Text[$i] -eq [char]34) { $closed = $true; break }
-                $i++
+    $state = @{ Text=$Text; Pos=0; Keys=0; Tokens=0 }
+    $number = New-Object System.Text.RegularExpressions.Regex ('\G-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')
+    function Skip-JsonWhitespace($s) {
+        while ($s.Pos -lt $s.Text.Length -and $s.Text[$s.Pos] -cin @([char]32,[char]9,[char]10,[char]13)) { $s.Pos++ }
+    }
+    function Read-JsonString($s, [bool] $key) {
+        if ($s.Pos -ge $s.Text.Length -or $s.Text[$s.Pos] -cne [char]34) { throw 'manual_json_invalid' }
+        $start = $s.Pos
+        $s.Pos++
+        $closed = $false
+        while ($s.Pos -lt $s.Text.Length) {
+            $ch = $s.Text[$s.Pos]
+            if ($ch -ceq [char]34) { $s.Pos++; $closed = $true; break }
+            if ([int]$ch -lt 32) { throw 'manual_json_invalid' }
+            if ($ch -ceq [char]92) {
+                $s.Pos++
+                if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+                $escape = $s.Text[$s.Pos]
+                if ($escape -ceq [char]117) {
+                    if ($s.Pos + 4 -ge $s.Text.Length -or
+                        $s.Text.Substring($s.Pos + 1,4) -cnotmatch '\A[0-9a-fA-F]{4}\z') { throw 'manual_json_invalid' }
+                    $s.Pos += 4
+                } elseif ($escape -cnotin @([char]34,[char]92,[char]47,[char]98,[char]102,[char]110,[char]114,[char]116)) {
+                    throw 'manual_json_invalid'
+                }
             }
-            if (-not $closed) { throw 'manual_json_invalid' }
-            $end = $i
-            $next = $i + 1
-            while ($next -lt $Text.Length -and $Text[$next] -in @([char]32,[char]9,[char]10,[char]13)) { $next++ }
-            if ($next -lt $Text.Length -and $Text[$next] -eq [char]58) {
-                if ($stack.Count -eq 0 -or $null -eq $stack[$stack.Count - 1]) { throw 'manual_json_invalid' }
-                $token = $Text.Substring($start, $end - $start + 1)
-                $keyCount++
-                if ($keyCount -gt 16384 -or $token.Length -gt 8192) { throw 'manual_json_size' }
-                $key = ConvertFrom-Json -InputObject ('[' + $token + ']') -ErrorAction Stop
-                if ($key -is [array] -and $key.Count -eq 1) { $key = $key[0] }
-                if ($key -isnot [string] -or -not $stack[$stack.Count - 1].Add($key)) { throw 'manual_json_duplicate' }
+            $s.Pos++
+        }
+        if (-not $closed) { throw 'manual_json_invalid' }
+        if ($key) {
+            $s.Keys++
+            $length = $s.Pos - $start
+            if ($s.Keys -gt 16384 -or $length -gt 8192) { throw 'manual_json_size' }
+            $value = ConvertFrom-Json -InputObject ('[' + $s.Text.Substring($start,$length) + ']') -ErrorAction Stop
+            if ($value -is [array] -and $value.Count -eq 1) { $value = $value[0] }
+            if ($value -isnot [string]) { throw 'manual_json_invalid' }
+            return $value
+        }
+    }
+    function Read-JsonValue($s, [int] $depth) {
+        if ($depth -gt 64) { throw 'manual_json_depth' }
+        Skip-JsonWhitespace $s
+        if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+        $s.Tokens++
+        if ($s.Tokens -gt 262144) { throw 'manual_json_size' }
+        $ch = $s.Text[$s.Pos]
+        if ($ch -ceq [char]34) { Read-JsonString $s $false; return }
+        if ($ch -ceq [char]123) {
+            $s.Pos++
+            $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+            Skip-JsonWhitespace $s
+            if ($s.Pos -lt $s.Text.Length -and $s.Text[$s.Pos] -ceq [char]125) { $s.Pos++; return }
+            while ($true) {
+                Skip-JsonWhitespace $s
+                $key = Read-JsonString $s $true
+                if (-not $keys.Add($key)) { throw 'manual_json_duplicate' }
+                Skip-JsonWhitespace $s
+                if ($s.Pos -ge $s.Text.Length -or $s.Text[$s.Pos] -cne [char]58) { throw 'manual_json_invalid' }
+                $s.Pos++
+                Read-JsonValue $s ($depth + 1)
+                Skip-JsonWhitespace $s
+                if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+                if ($s.Text[$s.Pos] -ceq [char]125) { $s.Pos++; return }
+                if ($s.Text[$s.Pos] -cne [char]44) { throw 'manual_json_invalid' }
+                $s.Pos++
             }
         }
-        if ($stack.Count -gt 64) { throw 'manual_json_depth' }
-        $i++
+        if ($ch -ceq [char]91) {
+            $s.Pos++
+            Skip-JsonWhitespace $s
+            if ($s.Pos -lt $s.Text.Length -and $s.Text[$s.Pos] -ceq [char]93) { $s.Pos++; return }
+            while ($true) {
+                Read-JsonValue $s ($depth + 1)
+                Skip-JsonWhitespace $s
+                if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+                if ($s.Text[$s.Pos] -ceq [char]93) { $s.Pos++; return }
+                if ($s.Text[$s.Pos] -cne [char]44) { throw 'manual_json_invalid' }
+                $s.Pos++
+            }
+        }
+        foreach ($literal in @('true','false','null')) {
+            if ($s.Pos + $literal.Length -le $s.Text.Length -and
+                $s.Text.Substring($s.Pos,$literal.Length) -ceq $literal) { $s.Pos += $literal.Length; return }
+        }
+        $match = $number.Match($s.Text,$s.Pos)
+        if (-not $match.Success) { throw 'manual_json_invalid' }
+        $s.Pos += $match.Length
     }
-    if ($stack.Count -ne 0) { throw 'manual_json_invalid' }
+    Read-JsonValue $state 0
+    Skip-JsonWhitespace $state
+    if ($state.Pos -ne $Text.Length) { throw 'manual_json_invalid' }
     [void](ConvertFrom-Json -InputObject $Text -ErrorAction Stop)
 }
 function Read-BootstrapBounded([string] $Path, [int] $Limit) {
@@ -130,48 +182,100 @@ END-WD-MANUAL-EXTERNAL-BOOTSTRAP #>
 $script:WdMindManualOwnerHelperText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
 
 function Assert-WdManualUniqueJson([string] $Text) {
-    # Use case-insensitive comparison to match the PowerShell object parser;
-    # still validates full JSON syntax. Never rely on its duplicate-key policy.
-    $stack = New-Object 'System.Collections.Generic.List[object]'
+    # Bounded RFC JSON grammar and decoded-key uniqueness are checked before
+    # ConvertFrom-Json, which otherwise accepts comments and trailing commas.
     if ($Text.Length -gt 4194304) { throw 'manual_json_size' }
-    $keyCount = 0
-    $i = 0
-    while ($i -lt $Text.Length) {
-        $ch = $Text[$i]
-        if ($ch -eq [char]123) {
-            $stack.Add((New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)))
-        } elseif ($ch -eq [char]91) {
-            $stack.Add($null)
-        } elseif ($ch -eq [char]125 -or $ch -eq [char]93) {
-            if ($stack.Count -eq 0) { throw 'manual_json_invalid' }
-            $stack.RemoveAt($stack.Count - 1)
-        } elseif ($ch -eq [char]34) {
-            $start = $i
-            $i++
-            $closed = $false
-            while ($i -lt $Text.Length) {
-                if ($Text[$i] -eq [char]92) { $i += 2; continue }
-                if ($Text[$i] -eq [char]34) { $closed = $true; break }
-                $i++
+    $state = @{ Text=$Text; Pos=0; Keys=0; Tokens=0 }
+    $number = New-Object System.Text.RegularExpressions.Regex ('\G-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')
+    function Skip-JsonWhitespace($s) {
+        while ($s.Pos -lt $s.Text.Length -and $s.Text[$s.Pos] -cin @([char]32,[char]9,[char]10,[char]13)) { $s.Pos++ }
+    }
+    function Read-JsonString($s, [bool] $key) {
+        if ($s.Pos -ge $s.Text.Length -or $s.Text[$s.Pos] -cne [char]34) { throw 'manual_json_invalid' }
+        $start = $s.Pos
+        $s.Pos++
+        $closed = $false
+        while ($s.Pos -lt $s.Text.Length) {
+            $ch = $s.Text[$s.Pos]
+            if ($ch -ceq [char]34) { $s.Pos++; $closed = $true; break }
+            if ([int]$ch -lt 32) { throw 'manual_json_invalid' }
+            if ($ch -ceq [char]92) {
+                $s.Pos++
+                if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+                $escape = $s.Text[$s.Pos]
+                if ($escape -ceq [char]117) {
+                    if ($s.Pos + 4 -ge $s.Text.Length -or
+                        $s.Text.Substring($s.Pos + 1,4) -cnotmatch '\A[0-9a-fA-F]{4}\z') { throw 'manual_json_invalid' }
+                    $s.Pos += 4
+                } elseif ($escape -cnotin @([char]34,[char]92,[char]47,[char]98,[char]102,[char]110,[char]114,[char]116)) {
+                    throw 'manual_json_invalid'
+                }
             }
-            if (-not $closed) { throw 'manual_json_invalid' }
-            $end = $i
-            $next = $i + 1
-            while ($next -lt $Text.Length -and $Text[$next] -in @([char]32,[char]9,[char]10,[char]13)) { $next++ }
-            if ($next -lt $Text.Length -and $Text[$next] -eq [char]58) {
-                if ($stack.Count -eq 0 -or $null -eq $stack[$stack.Count - 1]) { throw 'manual_json_invalid' }
-                $token = $Text.Substring($start, $end - $start + 1)
-                $keyCount++
-                if ($keyCount -gt 16384 -or $token.Length -gt 8192) { throw 'manual_json_size' }
-                $key = ConvertFrom-Json -InputObject ('[' + $token + ']') -ErrorAction Stop
-                if ($key -is [array] -and $key.Count -eq 1) { $key = $key[0] }
-                if ($key -isnot [string] -or -not $stack[$stack.Count - 1].Add($key)) { throw 'manual_json_duplicate' }
+            $s.Pos++
+        }
+        if (-not $closed) { throw 'manual_json_invalid' }
+        if ($key) {
+            $s.Keys++
+            $length = $s.Pos - $start
+            if ($s.Keys -gt 16384 -or $length -gt 8192) { throw 'manual_json_size' }
+            $value = ConvertFrom-Json -InputObject ('[' + $s.Text.Substring($start,$length) + ']') -ErrorAction Stop
+            if ($value -is [array] -and $value.Count -eq 1) { $value = $value[0] }
+            if ($value -isnot [string]) { throw 'manual_json_invalid' }
+            return $value
+        }
+    }
+    function Read-JsonValue($s, [int] $depth) {
+        if ($depth -gt 64) { throw 'manual_json_depth' }
+        Skip-JsonWhitespace $s
+        if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+        $s.Tokens++
+        if ($s.Tokens -gt 262144) { throw 'manual_json_size' }
+        $ch = $s.Text[$s.Pos]
+        if ($ch -ceq [char]34) { Read-JsonString $s $false; return }
+        if ($ch -ceq [char]123) {
+            $s.Pos++
+            $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+            Skip-JsonWhitespace $s
+            if ($s.Pos -lt $s.Text.Length -and $s.Text[$s.Pos] -ceq [char]125) { $s.Pos++; return }
+            while ($true) {
+                Skip-JsonWhitespace $s
+                $key = Read-JsonString $s $true
+                if (-not $keys.Add($key)) { throw 'manual_json_duplicate' }
+                Skip-JsonWhitespace $s
+                if ($s.Pos -ge $s.Text.Length -or $s.Text[$s.Pos] -cne [char]58) { throw 'manual_json_invalid' }
+                $s.Pos++
+                Read-JsonValue $s ($depth + 1)
+                Skip-JsonWhitespace $s
+                if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+                if ($s.Text[$s.Pos] -ceq [char]125) { $s.Pos++; return }
+                if ($s.Text[$s.Pos] -cne [char]44) { throw 'manual_json_invalid' }
+                $s.Pos++
             }
         }
-        if ($stack.Count -gt 64) { throw 'manual_json_depth' }
-        $i++
+        if ($ch -ceq [char]91) {
+            $s.Pos++
+            Skip-JsonWhitespace $s
+            if ($s.Pos -lt $s.Text.Length -and $s.Text[$s.Pos] -ceq [char]93) { $s.Pos++; return }
+            while ($true) {
+                Read-JsonValue $s ($depth + 1)
+                Skip-JsonWhitespace $s
+                if ($s.Pos -ge $s.Text.Length) { throw 'manual_json_invalid' }
+                if ($s.Text[$s.Pos] -ceq [char]93) { $s.Pos++; return }
+                if ($s.Text[$s.Pos] -cne [char]44) { throw 'manual_json_invalid' }
+                $s.Pos++
+            }
+        }
+        foreach ($literal in @('true','false','null')) {
+            if ($s.Pos + $literal.Length -le $s.Text.Length -and
+                $s.Text.Substring($s.Pos,$literal.Length) -ceq $literal) { $s.Pos += $literal.Length; return }
+        }
+        $match = $number.Match($s.Text,$s.Pos)
+        if (-not $match.Success) { throw 'manual_json_invalid' }
+        $s.Pos += $match.Length
     }
-    if ($stack.Count -ne 0) { throw 'manual_json_invalid' }
+    Read-JsonValue $state 0
+    Skip-JsonWhitespace $state
+    if ($state.Pos -ne $Text.Length) { throw 'manual_json_invalid' }
     [void](ConvertFrom-Json -InputObject $Text -ErrorAction Stop)
 }
 

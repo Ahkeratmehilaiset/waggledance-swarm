@@ -21,6 +21,23 @@ import pytest
     ('{"\U0001f600":1,"\\ud83d\\ude00":2}', 'REFUSED'),
     ('{"a":', 'REFUSED'),
     ('{"a":true} trailing', 'REFUSED'),
+    ('{"a":1,}', 'REFUSED'),
+    ('{"a":/*comment*/1}', 'REFUSED'),
+    ('{"a":1,/*}{*/"a":2}', 'REFUSED'),
+    ("{'a':1,'a':2}", 'REFUSED'),
+    ('{a:1,a:2}', 'REFUSED'),
+    ('{"a":01}', 'REFUSED'),
+    ('{"a":.5}', 'REFUSED'),
+    ('{"a":0x10}', 'REFUSED'),
+    ('{"a":Infinity}', 'REFUSED'),
+    ('{"a":undefined}', 'REFUSED'),
+    ('{"a":True}', 'REFUSED'),
+    ('{"a":NaN}', 'REFUSED'),
+    ('{"a":+1}', 'REFUSED'),
+    ('{"a":"\\q"}', 'REFUSED'),
+    ('{"a":1,\v"b":2}', 'REFUSED'),
+    ('[1,]', 'REFUSED'),
+    ('{"a":[true,false,null,-1,0.5,1e3,{},[]]}', 'OK'),
     ('[' * 65 + '0' + ']' * 65, 'REFUSED'),
     ('{"' + ('x' * 8192) + '":0}', 'REFUSED'),
 ])
@@ -127,7 +144,8 @@ def test_admin_verified_bytes_closes_package_imports(tmp_path, mode):
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual admin invocation')
 @pytest.mark.parametrize('mode', ['pinned', 'disabled', 'context_tampered', 'helper_tampered', 'pointer_changed_before_child',
-                                  'duplicate_pointer', 'escaped_duplicate_pointer', 'duplicate_manifest'])
+                                  'duplicate_pointer', 'escaped_duplicate_pointer', 'duplicate_manifest',
+                                  'trailing_pointer', 'comment_duplicate_pointer', 'trailing_manifest', 'comment_manifest'])
 def test_manual_admin_route_is_explicit_and_pinned(tmp_path, mode):
     commit = 'a' * 40
     store = tmp_path / 'bundles'
@@ -159,12 +177,16 @@ def test_manual_admin_route_is_explicit_and_pinned(tmp_path, mode):
     manifest = json.dumps({'schema_version': 1, 'source_commit': commit, 'files': files}, separators=(',', ':')).encode()
     if mode == 'duplicate_manifest':
         manifest = manifest.replace(b'"source_commit":', b'"source_commit":"' + commit.encode() + b'","source_commit":', 1)
+    if mode == 'trailing_manifest': manifest = manifest[:-1] + b',}'
+    if mode == 'comment_manifest': manifest = manifest.replace(b'"schema_version":', b'"schema_version":/*x*/', 1)
     (root / 'deployment-manifest.json').write_bytes(manifest)
     pin = hashlib.sha256(manifest).hexdigest()
     pointer_json = json.dumps({'source_commit': commit, 'final_commit': commit, 'active_bundle': str(root),
                                'manifest_sha256': pin, 'final_manifest_sha256': pin})
     if mode == 'duplicate_pointer': pointer_json = pointer_json[:-1] + ',"source_commit":"' + commit + '"}'
     if mode == 'escaped_duplicate_pointer': pointer_json = pointer_json[:-1] + ',"source_\\u0063ommit":"' + commit + '"}'
+    if mode == 'trailing_pointer': pointer_json = pointer_json[:-1] + ',}'
+    if mode == 'comment_duplicate_pointer': pointer_json = pointer_json[:-1] + ',/*}{*/"source_commit":"' + commit + '"}'
     pointer_path.write_text(pointer_json)
     if mode == 'context_tampered':
         context.write_text('throw "synthetic context should not run"')
@@ -199,7 +221,9 @@ try {{ $v=Invoke-WdMindManualReservationAdmin {enabled} -Operation reset -Bundle
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell independent operator bootstrap')
 @pytest.mark.parametrize('mode', ['pinned', 'modified_helper', 'changed_after_capture', 'wrong_commit', 'wrong_pointer_hash',
-                                  'duplicate_pointer', 'escaped_duplicate_pointer', 'nested_duplicate_pointer', 'duplicate_manifest'])
+                                  'duplicate_pointer', 'escaped_duplicate_pointer', 'nested_duplicate_pointer', 'duplicate_manifest',
+                                  'trailing_pointer', 'comment_pointer', 'comment_duplicate_pointer', 'unquoted_duplicate_pointer',
+                                  'singlequoted_duplicate_pointer', 'trailing_manifest', 'comment_manifest'])
 def test_independent_admin_bootstrap_validates_before_helper_execution(tmp_path, mode):
     commit = 'a' * 40
     store, pointer = tmp_path / 'bundles', tmp_path / 'state.json'
@@ -229,6 +253,8 @@ def test_independent_admin_bootstrap_validates_before_helper_execution(tmp_path,
     manifest = json.dumps({'schema_version': 1, 'source_commit': commit, 'files': files}).encode()
     if mode == 'duplicate_manifest':
         manifest = manifest.replace(b'"source_commit":', b'"source_commit":"' + commit.encode() + b'","source_commit":', 1)
+    if mode == 'trailing_manifest': manifest = manifest[:-1] + b',}'
+    if mode == 'comment_manifest': manifest = manifest.replace(b'"schema_version":', b'"schema_version":/*x*/', 1)
     (root / 'deployment-manifest.json').write_bytes(manifest)
     pin = hashlib.sha256(manifest).hexdigest()
     state = {'source_commit': commit, 'final_commit': commit, 'active_bundle': str(root),
@@ -238,6 +264,11 @@ def test_independent_admin_bootstrap_validates_before_helper_execution(tmp_path,
     if mode == 'duplicate_pointer': pointer_json = pointer_json[:-1] + ',"source_commit":"' + commit + '"}'
     if mode == 'escaped_duplicate_pointer': pointer_json = pointer_json[:-1] + ',"source_\\u0063ommit":"' + commit + '"}'
     if mode == 'nested_duplicate_pointer': pointer_json = pointer_json[:-1] + ',"probe":{"x":1,"x":2}}'
+    if mode == 'trailing_pointer': pointer_json = pointer_json[:-1] + ',}'
+    if mode == 'comment_pointer': pointer_json = pointer_json.replace('"source_commit":', '"source_commit":/*x*/', 1)
+    if mode == 'comment_duplicate_pointer': pointer_json = pointer_json[:-1] + ',/*}{*/"source_commit":"' + commit + '"}'
+    if mode == 'unquoted_duplicate_pointer': pointer_json = pointer_json[:-1] + ',source_commit:"' + commit + '"}'
+    if mode == 'singlequoted_duplicate_pointer': pointer_json = pointer_json[:-1] + ",'source_commit':'" + commit + "'}"
     pointer.write_text(pointer_json)
     if mode == 'modified_helper': target.write_text('Write-Output "ATTACK_RAN"\n' + source)
     python = Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs/Python/Python313/python.exe'

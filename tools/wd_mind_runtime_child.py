@@ -1265,41 +1265,8 @@ class _LocalManifestQuery:
         return self._candidate_query(request, 'located_candidates')
 
     def query(self):
-        from tools import wd_mind_full_runtime as runtime
-        try:
-            with self._lock:
-                if (self._state != 'READY' or self._policy_invalid or self._cancel.is_set()
-                        or self._pending_result is not None):
-                    raise ValueError('owner_not_ready')
-            lane = self._metadata['lane']
-            scope = _startup_scope_for_lane(lane)
-            self._check_policy()
-            self._check_external_policy()
-            controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
-            fleet_sha = hashlib.sha256(controls[0]).hexdigest()
-            result = self._owner.query_local(enabled=True, lane=lane, scope=scope,
-                                             query=runtime._STARTUP_PIPE_QUERY)
-            self._check_policy()
-            self._check_external_policy()
-            with self._lock:
-                if self._state != 'READY' or self._cancel.is_set() or self._policy_invalid:
-                    raise ValueError('owner_not_ready')
-            raw = runtime.reader._canonical(result)
-            if not 0 < len(raw) <= 16384:
-                raise ValueError('result_size')
-            # The owner re-reads and screens selected source rows. Validate the
-            # lane-facing envelope and recalculate age at this last boundary.
-            raw = _RetainedParentPair._validated_result(self, raw, fleet_sha)
-            with self._lock:
-                if self._state != 'READY' or self._cancel.is_set() or self._policy_invalid:
-                    raise ValueError('owner_not_ready')
-                self._pending_result = raw
-            return raw
-        except Exception:
-            if self._policy_invalid:
-                with self._lock:
-                    self._state = 'HOLD'
-            raise LaunchRefused('mind_e5_start_refused') from None
+        """Refuse the unbudgeted legacy query before accessing owner state."""
+        raise LaunchRefused('mind_e5_start_refused') from None
 
     def finalize_result(self):
         """Re-read selected source rows after a confirmed stop, before delivery."""
@@ -2349,60 +2316,8 @@ def _read_local_policy_frame(stream, *, require_eof=True):
 
 def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
                        lane, policy_sha256, approval_reference_sha256, _cleanup_evidence=None, _admission=None):
-    """Run one local query; retain uncertain work and write only after STOPPED."""
-    adapter = policy = result = None
-    try:
-        policy = _read_local_policy_frame(control_stream)
-        adapter = create_local_manifest_query(enabled=True, bundle_root=bundle_root,
-            expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
-            expected_identifier_policy_sha256=policy_sha256,
-            operator_approval_reference_sha256=approval_reference_sha256, lane=lane, _admission=_admission)
-        policy = None
-        if adapter.start().get('state') != 'STARTING':
-            raise ValueError('local_start')
-        status = adapter.wait(timeout=300)
-        if status.get('state') != 'READY' or status.get('owned') is not True:
-            raise ValueError('local_not_ready')
-        result = adapter.query()
-        if type(result) is not bytes or not 0 < len(result) <= 16384:
-            raise ValueError('local_result')
-    except BaseException:
-        result = None
-    finally:
-        policy = None
-        if adapter is not None:
-            # Preserve the process while a thread or worker remains uncertain;
-            # never kill or treat HOLD as an exit.
-            while True:
-                try:
-                    closed = adapter.close()
-                    if (type(closed) is dict and closed.get('state') == 'STOPPED'
-                            and closed.get('owned') is False):
-                        break
-                except BaseException:
-                    pass
-                try:
-                    time.sleep(0.25)
-                except BaseException:
-                    pass  # Keep the process holding uncertain ownership.
-        if _cleanup_evidence is not None:
-            _cleanup_evidence['clean'] = True
-    if result is None:
-        return 2
-    try:
-        # Closing a worker may take arbitrarily long. The selected rows and
-        # approval descriptor must still match after that wait.
-        result = adapter.finalize_result()
-        offset = 0
-        while offset < len(result):
-            count = output_stream.write(memoryview(result)[offset:])
-            if type(count) is not int or not 0 < count <= len(result) - offset:
-                raise ValueError('local_write')
-            offset += count
-        output_stream.flush()
-        return 0
-    except BaseException:
-        return 2
+    """Refuse the unbudgeted entry before reading or starting an owner."""
+    return 2
 
 
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
@@ -2703,6 +2618,8 @@ def _parent_control_entry(*, control_stream, output_stream, bundle_root, expecte
 
 def _guarded_local_entry(entry, **kwargs):
     """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
+    if entry is _local_query_entry:
+        return 2  # The closed route must not reserve or change the owner marker.
     guard = _reserve_local_owner(_AUDIT_ROOT)
     cleanup_evidence = {'clean': False}
     admission = _LocalAdmission(guard, cleanup_evidence)
@@ -2806,10 +2723,9 @@ def _load_pinned_canonical_child(bundle, expected_manifest_sha256):
 
 
 def _fixed_child_main(argv):
-    """Route fixed parent, owner and local-query flags; all other inputs refuse."""
-    local = (len(argv) == 7 and argv[0] == '--mind-local-query'
-             and argv[1] == '--policy-sha256' and argv[3] == '--approval-reference-sha256'
-             and argv[5] == '--lane' and _HEX.fullmatch(argv[2]) and _HEX.fullmatch(argv[4]))
+    """Route fixed parent and owner flags; other inputs refuse."""
+    if argv and argv[0] == '--mind-local-query':
+        return 2  # Before manifest loading, admission, or other side effects.
     diagnostic_optin = bool(argv and argv[-1] == '--start-diagnostics')
     if diagnostic_optin:
         if not argv or argv[0] != '--mind-local-candidate-owner': return 2
@@ -2821,7 +2737,7 @@ def _fixed_child_main(argv):
                         and argv[1] == '--policy-path' and argv[3] == '--policy-sha256'
                         and argv[5] == '--approval-reference-sha256'
                         and _HEX.fullmatch(argv[4]) and _HEX.fullmatch(argv[6]))
-    if argv not in (['--mind-owner-child'], ['--parent-control']) and not local and not local_owner and not local_owner_path:
+    if argv not in (['--mind-owner-child'], ['--parent-control']) and not local_owner and not local_owner_path:
         return 2
     try:
         expected = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
@@ -2839,11 +2755,6 @@ def _fixed_child_main(argv):
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_sha256=argv[2],
                 approval_reference_sha256=argv[4], include_start_diagnostics=diagnostic_optin)
-        if local:
-            _startup_scope_for_lane(argv[6])
-            return _guarded_local_entry(_local_query_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
-                bundle_root=bundle, expected_manifest_sha256=expected, lane=argv[6],
-                policy_sha256=argv[2], approval_reference_sha256=argv[4])
         if argv == ['--parent-control']:
             return _parent_control_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                                          bundle_root=bundle, expected_manifest_sha256=expected)

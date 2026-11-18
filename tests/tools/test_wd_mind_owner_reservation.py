@@ -147,8 +147,6 @@ finally:
 
 @WINDOWS
 @pytest.mark.parametrize('entry_name,args', [
-    ('_local_query_entry', ['--mind-local-query', '--policy-sha256', 'b'*64,
-        '--approval-reference-sha256', 'c'*64, '--lane', 'codex-lead-1']),
     ('_local_candidate_owner_entry', ['--mind-local-candidate-owner', '--policy-sha256', 'b'*64,
         '--approval-reference-sha256', 'c'*64]),
 ])
@@ -222,3 +220,25 @@ def test_reparse_ancestor_refuses(tmp_path):
     with pytest.raises(child.LaunchRefused):
         child._reserve_local_owner(alias)
     assert (real / MARKER).read_bytes() == PREFIX + b'C'
+
+
+@WINDOWS
+@pytest.mark.parametrize('state', [b'C', b'R'])
+def test_closed_local_query_does_not_reserve_or_change_marker(tmp_path, monkeypatch, state):
+    root = _seed(tmp_path / 'audit', state=state)
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    def unexpected(*args, **kwargs):
+        raise AssertionError('closed route attempted admission or source I/O')
+    monkeypatch.setattr(child, '_reserve_local_owner', unexpected)
+    monkeypatch.setattr(child, '_LocalAdmission', unexpected)
+    monkeypatch.setattr(child, 'create_local_manifest_query', unexpected)
+    class Untouchable:
+        def read(self, *args):
+            raise AssertionError('closed route attempted input')
+    output = io.BytesIO()
+    assert child._guarded_local_entry(child._local_query_entry,
+        control_stream=Untouchable(), output_stream=output, bundle_root='synthetic',
+        expected_manifest_sha256='a'*64, lane='codex-lead-1', policy_sha256='b'*64,
+        approval_reference_sha256='c'*64) == 2
+    assert (root / MARKER).read_bytes() == PREFIX + state
+    assert output.getvalue() == b''

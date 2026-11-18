@@ -1830,6 +1830,26 @@ def _startup_owner_source_budget(snapshot):
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
 
 
+def _prewarm_source_budget(snapshot):
+    """Include temporary readline reservation headroom in addition to 5 prefix passes."""
+    offset = snapshot['messages']['end_cursor'].offset
+    if type(offset) is not int or offset <= 0:
+        raise ValueError('source_budget')
+    if 5 * offset + 4 * 1024 * 1024 + 1 > _STARTUP_PREWARM_SOURCE_READ_LIMIT:
+        raise _StartupSourceBudgetRefused('source_budget')
+    return prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
+
+
+def _local_query_source_budget(snapshot):
+    """Preflight two selected-row resolutions plus query and rotation reads."""
+    offset = snapshot['messages']['end_cursor'].offset
+    if type(offset) is not int or offset <= 0:
+        raise ValueError('source_budget')
+    if 3 * offset + 6 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
+        raise _StartupSourceBudgetRefused('source_budget')
+    return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
+
+
 class _RetainedFlatQueryState:
     """One owner's verified flat rows and selected-row gate, retained in memory."""
     __slots__ = ('_owner', '_generation', '_handler', '_memory', '_flat', '_snapshot',
@@ -2841,7 +2861,7 @@ class _SingleManifestOwner:
                 # follows the existing rollback-to-HOLD path below.
                 self._retained = None
                 self._state = 'STARTING'
-                self._source_budget = prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
+                self._source_budget = _prewarm_source_budget(self._snapshot)
                 self._ensure_retained_locked(source_budget=self._source_budget)
                 self._prewarm_generation = self._generation
                 self._source_budget = None
@@ -2906,12 +2926,25 @@ class _SingleManifestOwner:
             query.encode('utf-8')
         except UnicodeEncodeError:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        # The legacy in-process API is closed until all source accounting is enabled.
+        if not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         output, pending, checking, generation = None, None, False, None
         try:
             if self._state != 'READY' or type(self._handler) is not _FlatRequestHandler:
                 raise ValueError('owner_not_ready')
+            checking = True
+            if (self._prewarm_generation is not self._generation or self._retained is None
+                    or self._handler._retained is not self._retained):
+                raise ValueError('prewarm_unavailable')
+            # Preflight refusal does not damage a healthy owner. No source read yet.
+            try:
+                self._source_budget = _local_query_source_budget(self._snapshot)
+            except _StartupSourceBudgetRefused:
+                checking = False  # A known size limit is not source corruption.
+                raise
             checking = True
             generation = self._generation
             self._check_factory()
@@ -2943,7 +2976,8 @@ class _SingleManifestOwner:
                     raise ValueError('selected_reference')
                 proposals.append({'ref_sha256':hit['ref_sha256'], 'doc_id_sha256':hit['doc_id_sha256'],
                                   'source_event_sha256':reference['sha256']})
-            verified = (retained._source_owner.resolve(proposals=proposals, lane=lane, scope=scope)['results']
+            verified = (retained._source_owner.resolve(proposals=proposals, lane=lane, scope=scope,
+                                                      source_budget=self._source_budget)['results']
                         if proposals else [])
             if len(verified) != len(hits):
                 raise ValueError('selected_count')
@@ -2973,7 +3007,7 @@ class _SingleManifestOwner:
                     'event_age_seconds_upper_bound':math.ceil(age)})
                 selected_records.append(record)
             context = retained._controls()
-            retained._prefix(context)
+            retained._prefix(context, source_budget=self._source_budget)
             self._handler._running_owner()
             self._check_factory()
             self._check_policy_anchor()
@@ -3002,6 +3036,10 @@ class _SingleManifestOwner:
                 if self._handler is not None:
                     self._handler._retained = None
         finally:
+            # A HOLD may retain an uncertain callback. Keep its budget alive
+            # until owner shutdown is proven rather than enabling unbounded I/O.
+            if self._state == 'READY':
+                self._source_budget = None
             generation = None
             self._lock.release()
         if pending is not None:
@@ -3311,7 +3349,7 @@ class _SingleManifestOwner:
                 self._check_factory()
                 if _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
                     stage = 'SOURCE_PREWARM'
-                    self._source_budget = prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
+                    self._source_budget = _prewarm_source_budget(self._snapshot)
                     self._ensure_retained_locked(source_budget=self._source_budget)
                     self._prewarm_generation = self._generation
                     self._source_budget = None
@@ -3572,6 +3610,7 @@ class _SingleManifestOwner:
                         self._retained = None
                         if self._handler is not None:
                             self._handler._retained = None
+                        self._source_budget = None
                         self._state = 'STOPPED'
                         return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
                 except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
@@ -3603,6 +3642,7 @@ class _SingleManifestOwner:
                     self._retained = None
                     if self._handler is not None:
                         self._handler._retained = None
+                    self._source_budget = None
                     self._state = 'STOPPED'
                     return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):

@@ -1393,11 +1393,22 @@ def test_single_owner_without_operator_anchor_cannot_return_candidates(tmp_path,
     assert owner.start()['state'] == 'READY'
     request = {'schema':'wd.mind-pipe-request.v2','query_id':'startup_work_overview',
                'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'}
-    with pytest.raises(runtime.FullRuntimeRefused):
+    def attempt():
         if operation == 'candidate':
-            owner.located_candidates(request)
-        else:
-            owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
+            return owner.located_candidates(request)
+        return owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
+    # Default-off refuses without touching a healthy owner.
+    with pytest.raises(runtime.FullRuntimeRefused):
+        attempt()
+    assert owner.status() == {'state':'READY', 'owned':True, 'authority':'none'}
+    # Synthetic setup only: expose the distinct missing-anchor check.
+    from types import SimpleNamespace
+    owner._snapshot['messages'] = {'end_cursor':SimpleNamespace(offset=100)}
+    owner._prewarm_generation = owner._generation
+    owner._retained = owner._handler._retained = object()
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        attempt()
     assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
     assert owner._retained is None and owner._handler._retained is None
 
@@ -1454,7 +1465,12 @@ def _direct_query_test_owner(monkeypatch, tmp_path):
     source_owner = SimpleNamespace(resolve=lambda **kwargs: {'results':[{
         'text':source['stored_text'], 'source_event_sha256':source['source_reference']['sha256']}]})
     retained = SimpleNamespace(_source_owner=source_owner, _records={record_id:record},
-                               _controls=lambda:None, _prefix=lambda context:None)
+                               _controls=lambda:None, _prefix=lambda context, **kwargs:None)
+    # Synthetic orchestration only; real generation prewarm has separate tests.
+    owner._snapshot['messages'] = {'end_cursor':SimpleNamespace(offset=100)}
+    owner._prewarm_generation = owner._generation
+    owner._retained = owner._handler._retained = retained
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: retained)
     hit = dict(source, source_agent='codex-lead-1', source_time_utc=record['time_utc'],
                source_valid_until_utc=None, event_age_seconds_upper_bound=1)
@@ -1510,7 +1526,7 @@ def test_single_owner_direct_query_accepts_over_2000_valid_characters(tmp_path, 
 def test_single_owner_direct_query_refuses_source_expiry_during_final_checks(tmp_path, monkeypatch):
     runtime, owner, _, record, _, _ = _direct_query_test_owner(monkeypatch, tmp_path)
     retained = owner._ensure_retained_locked()
-    def expire(context):
+    def expire(context, *, source_budget=None):
         record['provenance']['valid_until_utc'] = '2020-01-01T00:00:00Z'
     retained._prefix = expire
     with pytest.raises(runtime.FullRuntimeRefused):

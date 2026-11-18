@@ -208,61 +208,69 @@ def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, t
     assert next(row[1] for row in calls if type(row) is tuple and row[0] == 'factory')['bulk_contract_sha256'] == client.BULK_CONTRACT_SHA256
     assert next(row[1] for row in calls if type(row) is tuple and row[0] == 'owner')['worker_rotation'] is True
     assert next(row[1] for row in calls if type(row) is tuple and row[0] == 'owner')['vector_cache_enabled'] is True
-    answer = json.loads(adapter.query())
-    assert answer['lane'] == lane and answer['fleet_sha256'] == fleet_sha
-    assert answer['authority'] == 'none' and answer['sender_authentication'] == 'UNKNOWN'
-    assert answer['current_status_freshness'] == 'UNKNOWN'
-    assert answer['results'][0]['event_age_seconds_upper_bound'] >= 86400
-    assert {'enabled': True, 'lane': lane, 'scope': scope, 'query': runtime._STARTUP_PIPE_QUERY} in calls
+    before = list(calls)
+    with pytest.raises(child.LaunchRefused): adapter.query()
+    assert calls == before and child._startup_scope_for_lane(lane) == scope
     assert adapter.close() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
     assert adapter.status()['owned'] is True
 
 
 @pytest.mark.parametrize('when', ['before_query', 'during_query'])
 def test_local_query_rejects_real_approval_descriptor_mutation(monkeypatch, tmp_path, when, synthetic_local_admission):
+    # The owner double applies the real pinned approval check on both sides of
+    # located_candidates; real-source tests cover the non-double owner.
     from tools import wd_mind_full_runtime as runtime
     policy = b'synthetic-policy'
     policy_sha = hashlib.sha256(policy).hexdigest()
     approval_sha = 'c' * 64
-    descriptor_name = 'wd-mind-identifier-policy-approval.json'
-    descriptor = json.dumps({'schema': 'wd.mind-identifier-policy-approval.v1',
-        'identifier_policy_sha256': policy_sha, 'approval_reference_sha256': approval_sha}).encode()
-    descriptor_path = tmp_path / descriptor_name
+    name = 'wd-mind-identifier-policy-approval.json'
+    descriptor = json.dumps({'schema':'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256':policy_sha, 'approval_reference_sha256':approval_sha}).encode()
+    descriptor_path = tmp_path / name
     descriptor_path.write_bytes(descriptor)
-    manifest = json.dumps({'schema_version': 1, 'files': {descriptor_name: hashlib.sha256(descriptor).hexdigest()}}).encode()
+    manifest = json.dumps({'schema_version':1, 'files':{name:hashlib.sha256(descriptor).hexdigest()}}).encode()
     (tmp_path / 'deployment-manifest.json').write_bytes(manifest)
     manifest_sha = hashlib.sha256(manifest).hexdigest()
-    controls = (b'synthetic-fleet', b'synthetic-roster', b'synthetic-policy')
     calls = []
     def mutate():
-        descriptor_path.write_bytes(descriptor.replace(b'"c' + b'c' * 63, b'"d' + b'c' * 63))
+        descriptor_path.write_bytes(descriptor.replace(b'"c' + b'c'*63, b'"d' + b'c'*63))
         assert descriptor_path.read_bytes() != descriptor
+    def check():
+        return runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=str(tmp_path),
+            expected_manifest_sha256=manifest_sha, operator_policy_sha256=policy_sha,
+            operator_approval_reference_sha256=approval_sha)
     class Owner:
-        def start(self): return {'state': 'READY', 'owned': True, 'authority': 'none'}
-        def status(self): return {'state': 'READY', 'owned': True, 'authority': 'none'}
-        def close(self): return {'state': 'HOLD', 'owned': True, 'authority': 'none'}
-        def query_local(self, **kwargs):
-            calls.append('query')
-            if when == 'during_query': mutate()
-            result = _verified_parent_result(timestamp=(datetime.now(timezone.utc)-timedelta(days=1)).isoformat(), age=1)
-            result['fleet_sha256'] = hashlib.sha256(controls[0]).hexdigest()
-            return result
+        state = 'READY'
+        def start(self): return self.status()
+        def status(self): return {'state':self.state, 'owned':True, 'authority':'none'}
+        def close(self): return {'state':'HOLD', 'owned':True, 'authority':'none'}
+        def located_candidates(self, request):
+            if self.state != 'READY': raise ValueError('owner_held')
+            try:
+                check()
+                calls.append('query')
+                if when == 'during_query': mutate()
+                check()
+            except Exception:
+                self.state = 'HOLD'
+                raise
+            return {'synthetic':'candidate'}
     monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: object())
     monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: object())
     monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: Owner())
-    monkeypatch.setattr(runtime, '_bundle_inputs', lambda root, pin: controls)
     adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
         expected_manifest_sha256=manifest_sha, identifier_policy_bytes=policy,
         expected_identifier_policy_sha256=policy_sha, operator_approval_reference_sha256=approval_sha,
         lane='codex-lead-1', _admission=synthetic_local_admission)
     assert adapter.start()['state'] == 'STARTING'
     assert adapter.wait(timeout=5)['state'] == 'READY'
+    request = {'synthetic':'request'}
     if when == 'before_query': mutate()
-    with pytest.raises(child.LaunchRefused): adapter.query()
+    with pytest.raises(child.LaunchRefused): adapter.located_candidates(request)
     assert calls == ([] if when == 'before_query' else ['query'])
     assert adapter.status()['state'] == 'HOLD'
-    descriptor_path.write_bytes(descriptor)  # Restoring bytes must not revive invalidated state.
-    with pytest.raises(child.LaunchRefused): adapter.query()
+    descriptor_path.write_bytes(descriptor)
+    with pytest.raises(child.LaunchRefused): adapter.located_candidates(request)
 
 
 @pytest.mark.parametrize('raw', [b'', b'MCL2\x00\x00\x00\x01x', b'MCL1\x00\x00\x00\x00',
@@ -277,67 +285,33 @@ def test_local_policy_frame_accepts_exact_bounded_bytes():
 
 
 @pytest.mark.parametrize('query_ok', [True, False])
-def test_local_cli_buffers_until_owner_is_confirmed_stopped(monkeypatch, query_ok):
-    writes, events = [], []
-    class Owner:
-        def __init__(self): self.closes = 0
-        def start(self): return {'state':'STARTING'}
-        def wait(self, *, timeout): return {'state':'READY', 'owned':True}
-        def query(self):
-            if not query_ok: raise ValueError('private')
-            return b'{"synthetic":true}'
-        def close(self):
-            self.closes += 1
-            if self.closes == 1: return {'state':'HOLD', 'owned':True}
-            events.append('stopped')
-            return {'state':'STOPPED', 'owned':False}
-        def finalize_result(self):
-            assert events == ['stopped']
-            return b'{"synthetic":true}'
-    class Output:
-        def write(self, data):
-            assert events == ['stopped']
-            writes.append(bytes(data))
-            return len(data)
-        def flush(self): pass
-    owner = Owner()
-    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: owner)
-    monkeypatch.setattr(child.time, 'sleep', lambda _: None)
-    status = child._local_query_entry(control_stream=io.BytesIO(b'MCL1\x00\x00\x00\x03abc'),
-        output_stream=Output(), bundle_root='synthetic', expected_manifest_sha256='a'*64,
-        lane='codex-lead-1', policy_sha256='b'*64, approval_reference_sha256='c'*64)
-    assert status == (0 if query_ok else 2)
-    assert writes == ([b'{"synthetic":true}'] if query_ok else [])
-    assert events == ['stopped']
-
-
-def test_local_cli_discards_whole_result_if_post_close_validation_fails(monkeypatch):
-    class Owner:
-        def start(self): return {'state':'STARTING'}
-        def wait(self, *, timeout): return {'state':'READY', 'owned':True}
-        def query(self): return b'{"synthetic":true}'
-        def close(self): return {'state':'STOPPED', 'owned':False}
-        def finalize_result(self): raise child.LaunchRefused('mind_e5_start_refused')
+def test_closed_local_cli_never_reads_policy_or_starts_owner(monkeypatch, query_ok):
+    def unexpected(**kwargs): raise AssertionError('owner must not start')
+    monkeypatch.setattr(child, 'create_local_manifest_query', unexpected)
     output = io.BytesIO()
-    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Owner())
-    status = child._local_query_entry(control_stream=io.BytesIO(b'MCL1\x00\x00\x00\x03abc'),
-        output_stream=output, bundle_root='synthetic', expected_manifest_sha256='a'*64,
+    status = child._local_query_entry(control_stream=io.BytesIO(b'synthetic-secret'),
+        output_stream=output, bundle_root='unused', expected_manifest_sha256='a'*64,
         lane='codex-lead-1', policy_sha256='b'*64, approval_reference_sha256='c'*64)
     assert status == 2 and output.getvalue() == b''
 
 
-def test_fixed_local_cli_uses_named_arguments_and_manifest_environment(monkeypatch):
-    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a'*64)
-    monkeypatch.setattr(child, '_guarded_local_entry', lambda entry, **kwargs: entry(**kwargs))
+def test_closed_local_cli_never_emits_output(monkeypatch):
+    def unexpected(**kwargs): raise AssertionError('owner must not start')
+    monkeypatch.setattr(child, 'create_local_manifest_query', unexpected)
+    output = io.BytesIO()
+    status = child._local_query_entry(control_stream=io.BytesIO(b'synthetic-secret'),
+        output_stream=output, bundle_root='unused', expected_manifest_sha256='a'*64,
+        lane='codex-lead-1', policy_sha256='b'*64, approval_reference_sha256='c'*64)
+    assert status == 2 and output.getvalue() == b''
+
+
+def test_closed_local_cli_refuses_before_admission(monkeypatch):
     seen = []
-    monkeypatch.setattr(child, '_local_query_entry', lambda **kwargs: seen.append(kwargs) or 0)
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda *args, **kwargs: seen.append(True))
     args = ['--mind-local-query', '--policy-sha256', 'b'*64,
             '--approval-reference-sha256', 'c'*64, '--lane', 'codex-lead-1']
-    assert child._fixed_child_main(args) == 0
-    assert seen[0]['lane'] == 'codex-lead-1'
-    assert seen[0]['policy_sha256'] == 'b'*64 and seen[0]['approval_reference_sha256'] == 'c'*64
-    assert seen[0]['expected_manifest_sha256'] == 'a'*64
-    assert child._fixed_child_main(args[:-1]) == 2
+    assert child._fixed_child_main(args) == 2 and child._fixed_child_main(args[:-1]) == 2
+    assert seen == []
 
 
 @pytest.mark.parametrize('policy_mode', ['frame', 'path'])

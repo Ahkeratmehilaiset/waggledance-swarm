@@ -565,3 +565,50 @@ def test_rotation_uses_real_cooperative_pumps_and_protocol(monkeypatch):
             process.finish(0)
         if client.owner is not None:
             client.close(timeout=2)
+
+
+def test_byte_boundary_rotation_preserves_distinct_passages_once(monkeypatch):
+    """A reduced byte budget exercises rotation, not a real 64 MiB worker."""
+    cap = 79 + 79 + 3 * 1536
+    monkeypatch.setattr(rotation, 'BULK_STDOUT_BYTES', cap)
+    monkeypatch.setattr(rotation, 'GracefulE5WorkerClient', FakeClient)
+    original = FakeClient.encode_supervised
+    observed = []
+
+    def vector(text):
+        return hashlib.sha256(text.encode('utf-8')).digest() * 48
+
+    def checked_encode(self, value, *, frame_check=None, call_deadline=None):
+        observed.append((self.owner, tuple(value['passages'])))
+        result = original(self, value, frame_check=frame_check, call_deadline=call_deadline)
+        result['vector_bytes'] = b''.join(vector(text) for text in value['passages'])
+        return result
+
+    monkeypatch.setattr(FakeClient, 'encode_supervised', checked_encode)
+
+    class CheckedFactory(Factory):
+        def __call__(self, *, owner_sink=None, call_deadline):
+            assert all(owner.closed == 1 and owner.owned is False for owner in self.owners)
+            return super().__call__(owner_sink=owner_sink, call_deadline=call_deadline)
+
+    factory = CheckedFactory()
+    client = create(factory)
+    groups = [tuple('passage: synthetic-id-%02d' % n for n in range(start, start + 3))
+              for start in (0, 3, 6)]
+    try:
+        responses = []
+        for number, group in enumerate(groups, start=1):
+            responses.append(client.encode_supervised(request(number, group))['vector_bytes'])
+            assert client._used_bytes == cap
+        assert len(factory.owners) == 3
+        assert [owner for owner, _ in observed] == factory.owners
+        assert [group for _, group in observed] == groups
+        flattened = [text for _, group in observed for text in group]
+        assert flattened == [text for group in groups for text in group]
+        assert len(flattened) == len(set(flattened)) == 9
+        assert responses == [b''.join(vector(text) for text in group) for group in groups]
+        assert all(owner.closed == 1 and owner.owned is False for owner in factory.owners[:-1])
+        assert factory.owners[-1].owned is True
+    finally:
+        client.close(timeout=1)
+    assert all(owner.closed == 1 and owner.owned is False for owner in factory.owners)

@@ -1191,15 +1191,10 @@ child._verified_parent_child_command=lambda **kw: (sys.executable,'-I','-S','-B'
 os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH']=pin
 raise SystemExit(child._fixed_child_main(['--parent-control']))
 '''
-    proc = subprocess.Popen([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin], cwd=bundle,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        creationflags=subprocess.CREATE_NO_WINDOW)
-    try:
-        stdout, _ = proc.communicate(input=raw, timeout=30)
-    except subprocess.TimeoutExpired:
-        pytest.fail('synthetic parent remains held after deadline; no process was killed')
+    proc = run_owned([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin], cwd=bundle,
+        input=raw, capture_output=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
     assert proc.returncode == 0, 'synthetic parent process failed'
-    result = json.loads(stdout)
+    result = json.loads(proc.stdout)
     assert result['lane'] == 'codex-lead-1' and result['results'][0]['source_event_sha256'] == 'a'*64
 
 

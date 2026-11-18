@@ -12,6 +12,10 @@
     a verified shutdown.
     The bundled candidate CLI obtains the shared OS reservation itself.
     Live packaging and production startup have not been verified.
+    The owner-reservation admin is review-only and still disabled. Its operator
+    bootstrap is the independent command below; never dot-source the helper by
+    filename for that route. Replace all angle-bracket inputs from approved
+    external evidence and run the reviewed command directly in PowerShell.
 .EXAMPLE
     . (Join-Path $BundleRoot 'Start-WdMindManualOwner.ps1')
     $owner = Start-WdMindManualOwner -Enabled -BundleRoot $BundleRoot `
@@ -21,6 +25,59 @@
     Get-WdMindManualOwnerStatus -Owner $owner
     Stop-WdMindManualOwner -Owner $owner
 #>
+<# BEGIN-WD-MANUAL-EXTERNAL-BOOTSTRAP
+$ErrorActionPreference = 'Stop'
+$ExpectedCommit = '<EXACT_COMMIT>'
+$ExpectedManifestHash = '<EXACT_MANIFEST_SHA256>'
+$BridgePythonPath = '<PINNED_PYTHON_PATH>'
+$BridgePythonSha256 = '<PINNED_PYTHON_SHA256>'
+$Operation = '<create_or_reset>'
+function Read-BootstrapBounded([string] $Path, [int] $Limit) {
+    $current = [IO.Path]::GetFullPath($Path)
+    while ($current) {
+        if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'manual_bootstrap_refused' }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if (-not $parent -or $parent -ceq $current) { break }
+        $current = $parent
+    }
+    $stream = [IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        if ($stream.Length -lt 1 -or $stream.Length -gt $Limit) { throw 'manual_bootstrap_refused' }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $count = $stream.Read($bytes,$offset,$bytes.Length-$offset)
+            if ($count -le 0) { throw 'manual_bootstrap_refused' }
+            $offset += $count
+        }
+        if ($stream.ReadByte() -ne -1) { throw 'manual_bootstrap_refused' }
+        return ,$bytes
+    } finally { $stream.Dispose() }
+}
+if ($ExpectedCommit -cnotmatch '\A[0-9a-f]{40}\z' -or $ExpectedManifestHash -cnotmatch '\A[0-9a-fA-F]{64}\z') { throw 'manual_bootstrap_refused' }
+$BundleRoot = Join-Path 'C:\Python\wd-reboot-bundles' $ExpectedCommit
+$utf8 = New-Object Text.UTF8Encoding($false,$true)
+$pointer = $utf8.GetString((Read-BootstrapBounded 'C:\Python\WD_REBOOT_STATE_CURRENT.json' 65536)).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+if ($pointer.source_commit -cne $ExpectedCommit -or $pointer.final_commit -cne $ExpectedCommit -or
+    -not [string]::Equals([string]$pointer.active_bundle, $BundleRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals([string]$pointer.manifest_sha256, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals([string]$pointer.final_manifest_sha256, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase)) { throw 'manual_bootstrap_refused' }
+$manifestBytes = Read-BootstrapBounded (Join-Path $BundleRoot 'deployment-manifest.json') 4194304
+$sha = [Security.Cryptography.SHA256]::Create()
+try { $manifestHash = [BitConverter]::ToString($sha.ComputeHash($manifestBytes)).Replace('-','') }
+finally { $sha.Dispose() }
+if ($manifestBytes.Length -gt 4194304 -or $manifestHash -ine $ExpectedManifestHash) { throw 'manual_bootstrap_refused' }
+$manifest = $utf8.GetString($manifestBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+if ($manifest.schema_version -ne 1 -or $manifest.source_commit -cne $ExpectedCommit) { throw 'manual_bootstrap_refused' }
+$helperBytes = Read-BootstrapBounded (Join-Path $BundleRoot 'Start-WdMindManualOwner.ps1') 8388608
+$sha = [Security.Cryptography.SHA256]::Create()
+try { $helperHash = [BitConverter]::ToString($sha.ComputeHash($helperBytes)).Replace('-','') }
+finally { $sha.Dispose() }
+if ($helperBytes.Length -gt 8388608 -or $helperHash -ine [string]$manifest.files.'Start-WdMindManualOwner.ps1') { throw 'manual_bootstrap_refused' }
+. ([scriptblock]::Create($utf8.GetString($helperBytes).TrimStart([char]0xFEFF)))
+Invoke-WdMindManualReservationAdmin -Enabled -Operation $Operation -BundleRoot $BundleRoot -ExpectedCommit $ExpectedCommit `
+    -ExpectedManifestHash $ExpectedManifestHash -BridgePythonPath $BridgePythonPath -BridgePythonSha256 $BridgePythonSha256
+END-WD-MANUAL-EXTERNAL-BOOTSTRAP #>
 $script:WdMindManualOwnerHelperText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
 
 function Read-WdMindManualPinnedBytes {
@@ -82,11 +139,31 @@ def read(path, digest, limit):
 
 try:
     root = pathlib.Path(sys.argv[1])
-    expected, operation = sys.argv[2:4]
-    if not root.is_absolute() or operation not in ('create', 'reset'): raise ValueError('input')
+    expected, operation, commit = sys.argv[2:5]
+    pointer_path = pathlib.Path(r'C:\Python\WD_REBOOT_STATE_CURRENT.json')
+    bundle_store = pathlib.Path(r'C:\Python\wd-reboot-bundles')
+    if (not root.is_absolute() or operation not in ('create', 'reset') or
+            not re.fullmatch('[0-9a-f]{40}', commit) or
+            os.path.normcase(os.path.abspath(root)) != os.path.normcase(os.path.abspath(bundle_store / commit))): raise ValueError('input')
+    pointer_before = os.lstat(pointer_path)
+    if (not stat.S_ISREG(pointer_before.st_mode) or pointer_before.st_nlink != 1 or
+            getattr(pointer_before, 'st_file_attributes', 0) & 0x400 or pointer_before.st_size > 65536): raise ValueError('pointer')
+    with open(pointer_path, 'rb') as stream:
+        pointer_open = os.fstat(stream.fileno())
+        pointer_raw = stream.read(65537)
+        pointer_after = os.fstat(stream.fileno())
+    if ((pointer_before.st_dev, pointer_before.st_ino) != (pointer_open.st_dev, pointer_open.st_ino) or
+        (pointer_open.st_dev, pointer_open.st_ino, pointer_open.st_size) != (pointer_after.st_dev, pointer_after.st_ino, pointer_after.st_size) or
+        len(pointer_raw) != pointer_open.st_size): raise ValueError('pointer')
+    pointer = json.loads(pointer_raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    if (type(pointer) is not dict or pointer.get('source_commit') != commit or pointer.get('final_commit') != commit or
+        type(pointer.get('manifest_sha256')) is not str or pointer['manifest_sha256'].lower() != expected.lower() or
+        type(pointer.get('final_manifest_sha256')) is not str or pointer['final_manifest_sha256'].lower() != expected.lower() or
+        type(pointer.get('active_bundle')) is not str or
+        os.path.normcase(os.path.abspath(pointer['active_bundle'])) != os.path.normcase(os.path.abspath(root))): raise ValueError('pointer')
     raw = read(root / 'deployment-manifest.json', expected, 4 * 1024 * 1024)
     manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
-    if type(manifest) is not dict or manifest.get('schema_version') != 1 or type(manifest.get('files')) is not dict: raise ValueError('manifest')
+    if type(manifest) is not dict or manifest.get('schema_version') != 1 or manifest.get('source_commit') != commit or type(manifest.get('files')) is not dict: raise ValueError('manifest')
     files = manifest['files']
     definition_raw = read(root / 'bridge-code-files.json', files['bridge-code-files.json'], 4 * 1024 * 1024)
     definition = json.loads(definition_raw.decode('utf-8-sig'), object_pairs_hook=unique)
@@ -118,6 +195,7 @@ try:
             if package: module.__path__ = []
             exec(compile(data, path, 'exec'), module.__dict__)
     sys.meta_path.insert(0, Pinned())
+    if pointer_path.read_bytes() != pointer_raw: raise ValueError('pointer changed')
     from tools import wd_mind_owner_reservation_admin as admin
     code = admin.main([operation, '--bundle-root', str(root), '--manifest-sha256', expected])
     if type(code) is not int: raise ValueError('exit')
@@ -131,14 +209,40 @@ function Invoke-WdMindManualReservationAdmin {
     [CmdletBinding()]
     param([switch] $Enabled, [Parameter(Mandatory)][ValidateSet('create','reset')][string] $Operation,
           [Parameter(Mandatory)][string] $BundleRoot, [Parameter(Mandatory)][string] $ExpectedManifestHash,
+          [Parameter(Mandatory)][string] $ExpectedCommit,
           [Parameter(Mandatory)][string] $BridgePythonPath, [Parameter(Mandatory)][string] $BridgePythonSha256)
     if (-not $Enabled) { throw 'mind_manual_admin_disabled' }
     try {
+        if ($ExpectedCommit -cnotmatch '\A[0-9a-f]{40}\z') { throw 'commit' }
         $root = [IO.Path]::GetFullPath($BundleRoot).TrimEnd('\\')
+        $expectedRoot = Join-Path 'C:\Python\wd-reboot-bundles' $ExpectedCommit
+        if (-not [string]::Equals($root, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'bundle' }
+        $pointerPath = 'C:\Python\WD_REBOOT_STATE_CURRENT.json'
+        $pointerStream = [IO.File]::Open($pointerPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {
+            if ($pointerStream.Length -lt 1 -or $pointerStream.Length -gt 65536) { throw 'pointer_size' }
+            $firstPointer = New-Object byte[] ([int]$pointerStream.Length)
+            $offset = 0
+            while ($offset -lt $firstPointer.Length) {
+                $count = $pointerStream.Read($firstPointer,$offset,$firstPointer.Length-$offset)
+                if ($count -le 0) { throw 'pointer_read' }
+                $offset += $count
+            }
+            if ($pointerStream.ReadByte() -ne -1) { throw 'pointer_changed' }
+        } finally { $pointerStream.Dispose() }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $pointerHash = [BitConverter]::ToString($sha.ComputeHash($firstPointer)).Replace('-','') }
+        finally { $sha.Dispose() }
+        $pointerBytes = Read-WdMindManualPinnedBytes $pointerPath $pointerHash 65536
+        $pointer = [Text.Encoding]::UTF8.GetString($pointerBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+        if ($pointer.source_commit -cne $ExpectedCommit -or $pointer.final_commit -cne $ExpectedCommit -or
+            -not [string]::Equals([string]$pointer.active_bundle, $expectedRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string]$pointer.manifest_sha256, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string]$pointer.final_manifest_sha256, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase)) { throw 'pointer' }
         $manifestPath = Join-Path $root 'deployment-manifest.json'
         $utf8 = New-Object Text.UTF8Encoding($false,$true)
         $manifest = $utf8.GetString((Read-WdMindManualPinnedBytes $manifestPath $ExpectedManifestHash 4194304)).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
-        if ($manifest.schema_version -ne 1 -or $null -eq $manifest.files) { throw 'manifest' }
+        if ($manifest.schema_version -ne 1 -or $manifest.source_commit -cne $ExpectedCommit -or $null -eq $manifest.files) { throw 'manifest' }
         foreach ($name in @('Start-WdMindManualOwner.ps1','BridgeCodeContext.ps1','bridge-code-files.json')) {
             $pin = $manifest.files.PSObject.Properties[$name]
             if ($null -eq $pin -or $pin.Value -isnot [string]) { throw 'pin' }
@@ -151,7 +255,8 @@ function Invoke-WdMindManualReservationAdmin {
         . ([scriptblock]::Create($utf8.GetString($contextBytes).TrimStart([char]0xFEFF)))
         $package = Get-WdBridgeCodePackageDefinition -Path (Join-Path $root 'bridge-code-files.json')
         [void](Assert-WdBridgeCodePackageIntegrity -BundleRoot $root -Deployment $manifest -Definition $package.Definition)
-        & $BridgePythonPath -I -S -B -c $script:WdMindAdminVerifiedBytes $root $ExpectedManifestHash $Operation
+        [void](Read-WdMindManualPinnedBytes $pointerPath $pointerHash 65536)
+        & $BridgePythonPath -I -S -B -c $script:WdMindAdminVerifiedBytes $root $ExpectedManifestHash $Operation $ExpectedCommit
         return [int]$LASTEXITCODE
     } catch { throw 'mind_manual_admin_refused' }
 }

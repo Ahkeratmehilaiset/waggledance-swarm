@@ -11,12 +11,18 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize('mode', ['pinned', 'tampered_dependency', 'unlisted_dependency', 'wrong_manifest', 'real_disabled'])
+@pytest.mark.parametrize('mode', ['pinned', 'tampered_dependency', 'unlisted_dependency', 'wrong_manifest', 'real_disabled',
+                                  'wrong_commit', 'wrong_pointer_commit', 'wrong_pointer_hash', 'duplicate_pointer', 'different_bundle'])
 def test_admin_verified_bytes_closes_package_imports(tmp_path, mode):
     helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
     text = helper.read_text(encoding='utf-8')
     trampoline = text.split("$script:WdMindAdminVerifiedBytes = @'\n", 1)[1].split("\n'@", 1)[0]
-    root = tmp_path / 'bundle'
+    commit = 'a' * 40
+    store = tmp_path / 'bundles'
+    pointer_path = tmp_path / 'state.json'
+    root = store / commit
+    trampoline = trampoline.replace(r"r'C:\Python\WD_REBOOT_STATE_CURRENT.json'", repr(str(pointer_path)))
+    trampoline = trampoline.replace(r"r'C:\Python\wd-reboot-bundles'", repr(str(store)))
     code = root / 'tools-bootstrap/tools'
     code.mkdir(parents=True)
     sources = {
@@ -43,14 +49,23 @@ def test_admin_verified_bytes_closes_package_imports(tmp_path, mode):
     definition = json.dumps({'python_files': list(sources)}, separators=(',', ':')).encode()
     (root / 'bridge-code-files.json').write_bytes(definition)
     files['bridge-code-files.json'] = hashlib.sha256(definition).hexdigest()
-    manifest = json.dumps({'schema_version': 1, 'files': files}, separators=(',', ':')).encode()
+    manifest = json.dumps({'schema_version': 1, 'source_commit': commit, 'files': files}, separators=(',', ':')).encode()
     (root / 'deployment-manifest.json').write_bytes(manifest)
     pin = hashlib.sha256(manifest).hexdigest()
     if mode == 'tampered_dependency':
         (code / 'dependency.py').write_bytes(b'raise AssertionError("tampered ran")\n')
     if mode == 'wrong_manifest':
         pin = '0' * 64
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', trampoline, str(root), pin, 'reset'],
+    pointer = {'source_commit': commit, 'final_commit': commit, 'active_bundle': str(root),
+               'manifest_sha256': pin, 'final_manifest_sha256': pin}
+    if mode == 'wrong_pointer_commit': pointer['final_commit'] = 'b' * 40
+    if mode == 'wrong_pointer_hash': pointer['manifest_sha256'] = '0' * 64
+    if mode == 'different_bundle': pointer['active_bundle'] = str(store / ('b' * 40))
+    raw_pointer = json.dumps(pointer, separators=(',', ':'))
+    if mode == 'duplicate_pointer': raw_pointer = raw_pointer[:-1] + ',"source_commit":"' + commit + '"}'
+    pointer_path.write_text(raw_pointer)
+    argument_commit = 'b' * 40 if mode == 'wrong_commit' else commit
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', trampoline, str(root), pin, 'reset', argument_commit],
                             capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 2
     assert result.stdout.strip() == ('SYNTHETIC 37' if mode == 'pinned' else '')
@@ -58,16 +73,23 @@ def test_admin_verified_bytes_closes_package_imports(tmp_path, mode):
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual admin invocation')
-@pytest.mark.parametrize('mode', ['pinned', 'disabled', 'context_tampered', 'helper_tampered'])
+@pytest.mark.parametrize('mode', ['pinned', 'disabled', 'context_tampered', 'helper_tampered', 'pointer_changed_before_child'])
 def test_manual_admin_route_is_explicit_and_pinned(tmp_path, mode):
-    root = tmp_path / 'bundle'
-    root.mkdir()
+    commit = 'a' * 40
+    store = tmp_path / 'bundles'
+    root = store / commit
+    root.mkdir(parents=True)
+    pointer_path = tmp_path / 'state.json'
     helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
     helper_copy = root / helper.name
-    helper_copy.write_bytes(helper.read_bytes())
+    helper_text = helper.read_text().replace(r'C:\Python\wd-reboot-bundles', str(store)).replace(
+        r'C:\Python\WD_REBOOT_STATE_CURRENT.json', str(pointer_path))
+    helper_copy.write_text(helper_text)
     context = root / 'BridgeCodeContext.ps1'
+    mutate = ("[IO.File]::WriteAllText('" + str(pointer_path).replace("'", "''") + "','{}')"
+              if mode == 'pointer_changed_before_child' else '')
     context.write_text("function Get-WdBridgeCodePackageDefinition { param($Path) @{Definition=@{}} }\n"
-                       "function Assert-WdBridgeCodePackageIntegrity { param($BundleRoot,$Deployment,$Definition) }\n")
+                       "function Assert-WdBridgeCodePackageIntegrity { param($BundleRoot,$Deployment,$Definition) " + mutate + " }\n")
     sources = {'tools/__init__.py': b'', 'tools/wd_mind_owner_reservation_admin.py':
                b'def main(argv):\n print("SYNTHETIC_ROUTE")\n return 2\n'}
     files = {}
@@ -80,8 +102,11 @@ def test_manual_admin_route_is_explicit_and_pinned(tmp_path, mode):
     (root / 'bridge-code-files.json').write_bytes(definition)
     for name in (helper.name, context.name, 'bridge-code-files.json'):
         files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
-    manifest = json.dumps({'schema_version': 1, 'files': files}, separators=(',', ':')).encode()
+    manifest = json.dumps({'schema_version': 1, 'source_commit': commit, 'files': files}, separators=(',', ':')).encode()
     (root / 'deployment-manifest.json').write_bytes(manifest)
+    pin = hashlib.sha256(manifest).hexdigest()
+    pointer_path.write_text(json.dumps({'source_commit': commit, 'final_commit': commit, 'active_bundle': str(root),
+                                       'manifest_sha256': pin, 'final_manifest_sha256': pin}))
     if mode == 'context_tampered':
         context.write_text('throw "synthetic context should not run"')
     elif mode == 'helper_tampered':
@@ -94,9 +119,9 @@ def test_manual_admin_route_is_explicit_and_pinned(tmp_path, mode):
     shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
     script = f"""
 $ErrorActionPreference='Stop'
-. '{quote(helper)}'
+. '{quote(helper_copy)}'
 try {{ $v=Invoke-WdMindManualReservationAdmin {enabled} -Operation reset -BundleRoot '{quote(root)}' `
- -ExpectedManifestHash '{hashlib.sha256(manifest).hexdigest()}' -BridgePythonPath '{quote(python)}' `
+ -ExpectedCommit '{commit}' -ExpectedManifestHash '{pin}' -BridgePythonPath '{quote(python)}' `
  -BridgePythonSha256 '{hashlib.sha256(python.read_bytes()).hexdigest()}'
  Write-Output ('RESULT='+$v) }} catch {{ Write-Output ('ERROR='+$_.Exception.Message) }}
 """
@@ -111,6 +136,67 @@ try {{ $v=Invoke-WdMindManualReservationAdmin {enabled} -Operation reset -Bundle
         assert ('ERROR=mind_manual_admin_disabled' if mode == 'disabled' else
                 'ERROR=mind_manual_admin_refused') in proc.stdout
         assert 'SYNTHETIC_ROUTE' not in proc.stdout
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell independent operator bootstrap')
+@pytest.mark.parametrize('mode', ['pinned', 'modified_helper', 'changed_after_capture', 'wrong_commit', 'wrong_pointer_hash'])
+def test_independent_admin_bootstrap_validates_before_helper_execution(tmp_path, mode):
+    commit = 'a' * 40
+    store, pointer = tmp_path / 'bundles', tmp_path / 'state.json'
+    root = store / commit
+    root.mkdir(parents=True)
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    original = helper.read_text()
+    source = original.replace(r'C:\Python\wd-reboot-bundles', str(store)).replace(
+        r'C:\Python\WD_REBOOT_STATE_CURRENT.json', str(pointer))
+    target = root / helper.name
+    target.write_text(source)
+    (root / 'BridgeCodeContext.ps1').write_text(
+        "function Get-WdBridgeCodePackageDefinition { param($Path) @{Definition=@{}} }\n"
+        "function Assert-WdBridgeCodePackageIntegrity { param($BundleRoot,$Deployment,$Definition) }\n")
+    sources = {'tools/__init__.py': b'', 'tools/wd_mind_owner_reservation_admin.py':
+               b'def main(argv):\n print("SYNTHETIC_ROUTE")\n return 2\n'}
+    files = {}
+    for relative, data in sources.items():
+        path = root / 'tools-bootstrap' / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        files['tools-bootstrap/' + relative] = hashlib.sha256(data).hexdigest()
+    (root / 'bridge-code-files.json').write_text(json.dumps({'python_files': list(sources)}))
+    for name in (helper.name, 'BridgeCodeContext.ps1', 'bridge-code-files.json'):
+        files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
+    manifest = json.dumps({'schema_version': 1, 'source_commit': commit, 'files': files}).encode()
+    (root / 'deployment-manifest.json').write_bytes(manifest)
+    pin = hashlib.sha256(manifest).hexdigest()
+    state = {'source_commit': commit, 'final_commit': commit, 'active_bundle': str(root),
+             'manifest_sha256': pin, 'final_manifest_sha256': pin}
+    if mode == 'wrong_pointer_hash': state['final_manifest_sha256'] = '0' * 64
+    pointer.write_text(json.dumps(state))
+    if mode == 'modified_helper': target.write_text('Write-Output "ATTACK_RAN"\n' + source)
+    python = Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs/Python/Python313/python.exe'
+    if not python.is_file(): pytest.skip('trusted test interpreter is not available')
+    bootstrap = original.split('<# BEGIN-WD-MANUAL-EXTERNAL-BOOTSTRAP\n', 1)[1].split('\nEND-WD-MANUAL-EXTERNAL-BOOTSTRAP #>', 1)[0]
+    bootstrap = bootstrap.replace(r'C:\Python\wd-reboot-bundles', str(store)).replace(
+        r'C:\Python\WD_REBOOT_STATE_CURRENT.json', str(pointer))
+    bootstrap = bootstrap.replace('<EXACT_COMMIT>', 'b' * 40 if mode == 'wrong_commit' else commit)
+    bootstrap = bootstrap.replace('<EXACT_MANIFEST_SHA256>', pin).replace('<PINNED_PYTHON_PATH>', str(python))
+    bootstrap = bootstrap.replace('<PINNED_PYTHON_SHA256>', hashlib.sha256(python.read_bytes()).hexdigest())
+    bootstrap = bootstrap.replace('<create_or_reset>', 'reset')
+    if mode == 'changed_after_capture':
+        replacement = "[IO.File]::WriteAllText('" + str(target).replace("'", "''") + "','Write-Output ATTACK_RAN')\n"
+        bootstrap = bootstrap.replace('. ([scriptblock]::Create($utf8.GetString($helperBytes)',
+                                      replacement + '. ([scriptblock]::Create($utf8.GetString($helperBytes)', 1)
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand',
+                           base64.b64encode(bootstrap.encode('utf-16le')).decode()],
+                          capture_output=True, text=True, timeout=30, check=False)
+    assert 'ATTACK_RAN' not in proc.stdout
+    if mode == 'pinned':
+        assert 'SYNTHETIC_ROUTE' in proc.stdout
+        assert proc.returncode == 0
+    else:
+        assert 'SYNTHETIC_ROUTE' not in proc.stdout
+        assert proc.returncode != 0
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')

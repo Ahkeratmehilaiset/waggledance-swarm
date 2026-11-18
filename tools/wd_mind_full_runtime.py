@@ -1810,7 +1810,7 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
 
 _STARTUP_OWNER_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
 _STARTUP_PREWARM_SOURCE_READ_LIMIT = 2 * 1024 * 1024 * 1024
-_STARTUP_OWNER_SOURCE_BUDGET_ENABLED = False  # WIP: integrated accounting not yet verified.
+_STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
 
 
 class _StartupSourceBudgetRefused(ValueError):
@@ -3583,8 +3583,7 @@ class _SingleManifestOwner:
                 or not reader._hex(request['nonce']) or request['lane'] not in self._lanes
                 or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        # Both candidate protocols stay unavailable until accounting across
-        # the owner and rotation callback has been verified end to end.
+        # A disabled budget gate refuses both candidate protocols before I/O.
         if not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         frozen = dict(request, schema='wd.mind-pipe-request.v1')

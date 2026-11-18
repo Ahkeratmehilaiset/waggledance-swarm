@@ -41,9 +41,8 @@ def _bind_synthetic_factory_admission(factory, admission=None, owner=None):
 _SYNTHETIC_QUERY_GATE_SCRIPT = r'''
 def _observe_synthetic_query_gate(runtime, enabled):
     # This runs only in a fresh synthetic subprocess, never in production.
-    assert runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is False
-    if enabled:
-        runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
+    assert runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is True
+    runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = enabled
     observed = []
     original = runtime._SingleManifestOwner._candidate_request
 
@@ -62,7 +61,7 @@ def _observe_synthetic_query_gate(runtime, enabled):
             assert owner.status()['state'] == 'READY'
             observed.append('gate_off_refused')
             raise
-        raise AssertionError('default OFF gate accepted a candidate')
+        raise AssertionError('explicit OFF gate accepted a candidate')
 
     runtime._SingleManifestOwner._candidate_request = checked
     return observed
@@ -73,6 +72,11 @@ def _observe_synthetic_query_gate(runtime, enabled):
 def synthetic_startup_query_gate_on():
     """Opt in only the synthetic child; its real start() must prewarm."""
     return 'synthetic_gate_on_prewarm'
+
+
+def test_startup_source_budget_default_is_enabled():
+    from tools import wd_mind_full_runtime as runtime
+    assert runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is True
 
 
 def test_cached_vectors_match_screened_records_and_ignore_new_records(monkeypatch):
@@ -982,13 +986,13 @@ request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview'
 if not query_gate_on:
     try:
         wrapper.candidates(request)
-        raise AssertionError('default OFF gate must refuse')
+        raise AssertionError('explicit OFF gate must refuse')
     except runtime.FullRuntimeRefused:
         pass
     assert gate_observed == ['gate_off_refused']
     assert wrapper.status()['state'] == 'READY'
     assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
-    print('synthetic_default_gate_off_refused')
+    print('synthetic_explicit_gate_off_refused')
     raise SystemExit(0)
 response = wrapper.candidates(request)
 assert gate_observed == ['prewarmed_candidate']
@@ -1014,7 +1018,7 @@ print('synthetic_adapter_manifest_verified')
     if query_gate == 'synthetic_gate_on_prewarm':
         assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
     else:
-        assert proc.stdout.strip() == 'synthetic_default_gate_off_refused'
+        assert proc.stdout.strip() == 'synthetic_explicit_gate_off_refused'
         assert proc.stderr == ''
 
 
@@ -1107,7 +1111,7 @@ raise SystemExit(result)
                           cwd=bundle, input=control, capture_output=True, timeout=30,
                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     if query_gate == 'gate_off':
-        assert proc.returncode == 2, 'default OFF gate must refuse'
+        assert proc.returncode == 2, 'explicit OFF gate must refuse'
         assert proc.stdout == b'' and proc.stderr == b''
         return
     assert proc.returncode == 0, 'synthetic owner process failed'

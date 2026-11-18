@@ -849,6 +849,7 @@ def test_refresh_prewarm_precedes_ready_and_preserves_worker(tmp_path, monkeypat
 
 @pytest.mark.parametrize('direct', [False, True])
 def test_located_startup_request_refuses_before_owner_io_and_preserves_ready(monkeypatch, direct):
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     owner = object.__new__(runtime._SingleManifestOwner)
     handler = SimpleNamespace(_retained=None)
     retained = object()
@@ -880,6 +881,7 @@ def test_located_startup_request_refuses_before_owner_io_and_preserves_ready(mon
 
 
 def test_nonlocated_request_refuses_without_owner_io(monkeypatch):
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     owner = object.__new__(runtime._SingleManifestOwner)
     owner._lanes = frozenset({'codex-lead-1'})
     owner._generation = (None, None, SimpleNamespace(_retained=None))

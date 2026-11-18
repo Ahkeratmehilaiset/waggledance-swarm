@@ -25,6 +25,9 @@ def _v1_wire(state):
 
 
 def _owner(monkeypatch, tmp_path, *, vector_cache_enabled=False):
+    # These diagnostics fixtures have no real source snapshot; separate tests
+    # exercise the enabled gate and prewarm path.
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     from tools import wd_mind_e5_client as e5_client
     from tools import wd_mind_e5_snapshot_adapter as adapter
     fleet = json.dumps({'lanes': [{'agent': 'codex-lead-1'}],

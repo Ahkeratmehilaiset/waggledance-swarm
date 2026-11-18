@@ -79,6 +79,13 @@ def test_startup_source_budget_default_is_enabled():
     assert runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is True
 
 
+@pytest.fixture
+def fake_snapshot_owner_orchestration(monkeypatch):
+    """Test ownership with an intentionally incomplete synthetic snapshot."""
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
+
+
 def test_cached_vectors_match_screened_records_and_ignore_new_records(monkeypatch):
     import struct
     from tools import wd_mind_full_runtime as runtime
@@ -1202,6 +1209,7 @@ raise SystemExit(child._fixed_child_main(['--parent-control']))
     assert result['lane'] == 'codex-lead-1' and result['results'][0]['source_event_sha256'] == 'a'*64
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch):
     """A post-reservation HOLD must stay reachable without an extra worker."""
     from tools import wd_mind_full_runtime as runtime
@@ -1273,6 +1281,7 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     return runtime, adapter_module, binding, factory, calls
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_cache_preflight_refusal_precedes_worker_launch(monkeypatch, tmp_path):
     runtime, _, binding, factory, launches = _single_owner_synthetic(monkeypatch, tmp_path)
     class Cache:
@@ -1287,6 +1296,7 @@ def test_cache_preflight_refusal_precedes_worker_launch(monkeypatch, tmp_path):
     assert launches == []
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_cache_write_failure_prevents_owner_ready(monkeypatch, tmp_path):
     runtime, _, binding, factory, launches = _single_owner_synthetic(monkeypatch, tmp_path)
     class Cache:
@@ -1419,6 +1429,7 @@ def test_rotating_owner_requires_explicit_boolean_opt_in(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('changed', ['source', 'policy'])
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_rotating_owner_refuses_changed_controls_before_worker_start(tmp_path, monkeypatch, changed):
     import types
     runtime, adapter_module, binding, factory, old_launches = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -1453,6 +1464,7 @@ def test_rotating_owner_refuses_changed_controls_before_worker_start(tmp_path, m
     assert owner.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_rotating_owner_refuses_unverified_loader_before_worker_start(tmp_path, monkeypatch):
     runtime, adapter, binding, factory, old_launches = _single_owner_synthetic(monkeypatch, tmp_path)
     monkeypatch.setattr(adapter, '_flat_bundle_bindings', lambda *args: (b'query-binding', 'c' * 64))
@@ -1479,6 +1491,7 @@ def test_single_owner_close_releases_proven_prelaunch_failure(tmp_path, monkeypa
     assert owner.close() == {'state':'STOPPED', 'owned':False, 'authority':'none'}
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_close_preserves_uncertain_thread_start_failure(tmp_path, monkeypatch):
     import threading
     runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -1883,6 +1896,7 @@ def test_generation_delivery_never_mixes_candidates_and_export_during_refresh(mo
 
 @pytest.mark.parametrize('mode', ['timeout', 'cancel', 'group', 'unknown',
                                   'group_unknown', 'group_oversized', 'group_no_cancel'])
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_path, monkeypatch, mode):
     import threading
     runtime, adapter_module, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -1940,6 +1954,7 @@ def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_pa
         release.set(); thread.join(5)
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_does_not_adopt_another_builders_source_verifier(tmp_path, monkeypatch):
     import threading
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -1964,6 +1979,7 @@ def test_single_owner_does_not_adopt_another_builders_source_verifier(tmp_path, 
 
 
 @pytest.mark.parametrize('mode', ['group', 'unknown', 'oversized'])
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_close_preserves_grouped_verifier_cancellation(tmp_path, monkeypatch, mode):
     import traceback
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -1999,6 +2015,7 @@ def test_single_owner_close_preserves_grouped_verifier_cancellation(tmp_path, mo
 
 
 @pytest.mark.parametrize(('verifier', 'expected_owned'), [('alive', True), ('unknown', None)])
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_close_reports_verifier_ownership_when_worker_exited(tmp_path, monkeypatch, verifier, expected_owned):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
     class SyntheticWatcher:
@@ -2143,6 +2160,7 @@ def test_single_manifest_owner_rejects_factory_retarget_before_spawn(tmp_path, m
     assert calls == []
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_manifest_owner_keeps_owner_if_factory_retargets_during_launch(tmp_path, monkeypatch):
     runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
     original = runtime._ManifestWorkerFactory.__call__
@@ -2462,6 +2480,7 @@ def test_single_manifest_owner_never_reports_ready_when_owner_status_raises(tmp_
 
 
 @pytest.mark.parametrize('signal_name', ['keyboard', 'cancelled'])
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_manifest_owner_retains_worker_when_adapter_is_cancelled(tmp_path, monkeypatch, signal_name):
     import asyncio
     runtime, adapter_module, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -2568,7 +2587,7 @@ def synthetic_bundle(tmp_path):
 
 
 def invoke(case, scenario='normal'):
-    if scenario.startswith(('package_direct_', 'refresh_real_delivery', 'refresh_real_worker_')):
+    if scenario.startswith(('package_direct_', 'refresh_real_')):
         # Synthetic operator pins: the approval descriptor is part of the
         # test's independently pinned deployment manifest, never live data.
         policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
@@ -2751,7 +2770,7 @@ try:
         anchor = (runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=str(root),
                     expected_manifest_sha256=sys.argv[2], operator_policy_sha256=hashlib.sha256(policy).hexdigest(),
                     operator_approval_reference_sha256='b'*64)
-                  if mode.startswith(('refresh_real_delivery', 'refresh_real_worker_')) else None)
+                  if mode.startswith('refresh_real_') else None)
         owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
                                                      worker_factory=factory, shutdown_timeout=0, policy_anchor=anchor)
         if owner.start()['state'] != 'READY': raise ValueError('synthetic owner not ready')
@@ -4324,6 +4343,7 @@ def test_deferred_owner_preflight_refuses_before_access(monkeypatch):
 
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_interrupt_during_spawn_preserves_owned_hold(tmp_path, monkeypatch):
     import threading
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -4387,6 +4407,7 @@ def test_single_owner_package_has_static_closure_with_rotator():
     assert not unresolved, unresolved
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_retains_both_owners_on_mismatched_launch_result(tmp_path, monkeypatch):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
     class Owner:
@@ -4407,6 +4428,7 @@ def test_single_owner_retains_both_owners_on_mismatched_launch_result(tmp_path, 
     assert owner._client is None
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_single_owner_retains_conflicting_sink_owners(tmp_path, monkeypatch):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
     class Owner:
@@ -4424,6 +4446,7 @@ def test_single_owner_retains_conflicting_sink_owners(tmp_path, monkeypatch):
     assert owner.close() == {'state':'HOLD','owned':None,'authority':'none'}
 
 
+@pytest.mark.usefixtures('fake_snapshot_owner_orchestration')
 def test_cancelled_single_owner_retains_later_conflicting_factory_owner(tmp_path, monkeypatch):
     import threading
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)

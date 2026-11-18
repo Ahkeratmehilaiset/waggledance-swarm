@@ -47,7 +47,7 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
     if existing:
         assert source_dir.is_dir() and cache_root.is_dir()
         template_dir = tmp_path / 'synthetic-control-template'
-        template_dir.mkdir()
+        template_dir.mkdir(exist_ok=True)
     else:
         source_dir.mkdir()
         cache_root.mkdir()
@@ -84,8 +84,10 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
         fixtures._edit_decision(case, source_prefix={'offset': cursor.offset,
                                 'sha256': digest, 'generation': cursor.generation})
         projection = reader.rederive_complete_message_projection(**case)
-        frozen = fixtures._snapshot(case, projection)
-        args = {'cursor': cursor, 'expected_prefix_sha256': digest}
+        frozen = fixtures._snapshot(dict(case, messages=dict(case['messages'])), projection)
+        args = {'cursor': cursor, 'expected_prefix_sha256': digest,
+                'source_path': case['messages']['source_path'],
+                'generation_path': case['messages']['generation_path']}
         controls = (b'synthetic-fleet', case['roster_bytes'], case['messages']['policy_bytes'])
         binding = runtime._PrivateBinding(frozen, tmp_path / 'synthetic-bundle', 'a'*64,
                                           controls, args, 'b'*64)
@@ -132,9 +134,9 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
     def encode(values):
         passages.extend(values)
         return VECTOR * len(values)
-    def build(binding):
+    def build(binding, prior_memory=None):
         return runtime._build_flat_memory_immutable(binding, encode, encoder, fixtures._sha(encoder),
-                                                     5, None, vector_cache=adapter)
+                                                     5, None, prior_memory=prior_memory, vector_cache=adapter)
     return SimpleNamespace(case=case, source=source, cache_path=cache_path, snapshot=snapshot,
                            passages=passages, checks=checks, build=build, adapter=adapter)
 
@@ -207,7 +209,7 @@ import pytest
 import test_wd_mind_cache_builder_integration as harness
 patcher = pytest.MonkeyPatch()
 try:
-    case = harness._synthetic_case(location, patcher, existing=(phase == 'warm'))
+    case = harness._synthetic_case(location, patcher, existing=(phase != 'cold'))
     before = hashlib.sha256(case.cache_path.read_bytes()).hexdigest() if case.cache_path.exists() else None
     binding, projection = case.snapshot()
     memory = case.build(binding)
@@ -225,7 +227,7 @@ try:
         with case.source.open('ab') as stream:
             stream.write(harness.fixtures._raw(row) + b'\n')
         later_binding, projection = case.snapshot()
-        later = case.build(later_binding)
+        later = case.build(later_binding, prior_memory=memory)
         result['append'] = {'cache_status':later.cache_status, 'passage_count':len(case.passages),
                             'only_new':case.passages == ['passage: synthetic allowed process append'],
                             'screened_records':len(projection['messages']['records']),
@@ -306,10 +308,16 @@ def test_sequential_processes_reuse_then_append_without_old_reencoding(tmp_path)
     assert second['ids_sha256'] == first['ids_sha256']
     assert second['vectors_sha256'] == first['vectors_sha256']
     appended = warm['append']
-    assert appended['cache_status'] == 'HIT_STORED' and appended['passage_count'] == 1
+    assert appended['cache_status'] == 'REFRESH_STORED' and appended['passage_count'] == 1
     assert appended['only_new'] is True and appended['screened_records'] == 3
     assert appended['source_sha256'] != first['source_sha256']
     assert appended['cache_sha256'] != first['cache_after_sha256']
+    restart = _run_synthetic_process(location, 'restart')
+    assert restart['pid'] != warm['pid']
+    assert restart['initial']['cache_status'] == 'HIT_STORED'
+    assert restart['initial']['passage_count'] == 0
+    assert restart['initial']['screened_records'] == 3
+    assert restart['initial']['cache_before_sha256'] == appended['cache_sha256']
 
 
 def test_incomplete_but_well_formed_cache_is_full_miss(synthetic):
@@ -325,6 +333,39 @@ def test_incomplete_but_well_formed_cache_is_full_miss(synthetic):
     fresh, _ = synthetic.snapshot()
     assert synthetic.build(fresh).cache_status == 'MISS_STORED'
     assert len(synthetic.passages) == 2
+
+
+def test_refresh_interrupted_publication_preserves_previous_cache(synthetic, monkeypatch):
+    binding, _ = synthetic.snapshot()
+    memory = synthetic.build(binding)
+    old_bytes = synthetic.cache_path.read_bytes()
+    with synthetic.source.open('ab') as stream:
+        stream.write(fixtures._raw(fixtures._row('synthetic refresh append')) + b'\n')
+    fresh, _ = synthetic.snapshot()
+    def fail_replace(*_args):
+        raise OSError('synthetic replace failure')
+    monkeypatch.setattr(cache.os, 'replace', fail_replace)
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        synthetic.build(fresh, prior_memory=memory)
+    assert synthetic.cache_path.read_bytes() == old_bytes
+
+
+def test_refresh_rechecks_source_after_cache_publication(synthetic, monkeypatch):
+    binding, _ = synthetic.snapshot()
+    memory = synthetic.build(binding)
+    with synthetic.source.open('ab') as stream:
+        stream.write(fixtures._raw(fixtures._row('synthetic refresh append')) + b'\n')
+    fresh, _ = synthetic.snapshot()
+    original = cache.write_cache
+    def write_then_change_source(*args):
+        original(*args)
+        with synthetic.source.open('r+b') as stream:
+            first = stream.read(1)
+            stream.seek(0)
+            stream.write(b'!' if first != b'!' else b'?')
+    monkeypatch.setattr(cache, 'write_cache', write_then_change_source)
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        synthetic.build(fresh, prior_memory=memory)
 
 
 def test_cache_more_than_legacy_row_limit_roundtrip_and_append(synthetic):

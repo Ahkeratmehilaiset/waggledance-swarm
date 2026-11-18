@@ -140,6 +140,10 @@ def _process_snapshot(kernel):
             available = kernel.Process32NextW(snapshot, ctypes.byref(entry))
         if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
             raise ValueError('process_next')
+        # The observing process itself cannot have vanished while it runs.
+        # A snapshot missing it is incomplete and cannot prove absence.
+        if os.getpid() not in seen:
+            raise ValueError('process_snapshot_incomplete')
         return tuple(items)
     finally:
         if not kernel.CloseHandle(snapshot):

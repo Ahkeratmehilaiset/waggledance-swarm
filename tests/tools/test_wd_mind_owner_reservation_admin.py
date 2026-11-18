@@ -910,6 +910,47 @@ def test_reset_refuses_locked_marker(tmp_path):
     assert marker.read_bytes().endswith(b'R')
 
 
+@pytest.mark.parametrize('case', ['empty', 'missing_self', 'duplicate_self', 'iteration_error', 'complete'])
+def test_synthetic_process_snapshot_requires_own_pid_and_complete_enumeration(monkeypatch, case):
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    own = 91919
+    monkeypatch.setattr(admin.os, 'getpid', lambda: own)
+    rows = {'empty': (), 'missing_self': (123,), 'duplicate_self': (own, own),
+            'iteration_error': (own,), 'complete': (own, 123)}[case]
+    closed = []
+    class Kernel:
+        def __init__(self):
+            self.index = 0
+            self.CreateToolhelp32Snapshot = Function(lambda *_: 111)
+            self.Process32FirstW = Function(self.first)
+            self.Process32NextW = Function(self.next)
+            self.CloseHandle = Function(lambda handle: (closed.append(handle), 1)[1])
+        def first(self, handle, pointer):
+            if not rows:
+                ctypes.set_last_error(18)
+                return 0
+            return self.fill(pointer)
+        def fill(self, pointer):
+            entry = ctypes.cast(pointer, ctypes.POINTER(admin._ProcessEntry)).contents
+            entry.pid, entry.parent, entry.exe = rows[self.index], 44, 'synthetic.exe'
+            return 1
+        def next(self, handle, pointer):
+            self.index += 1
+            if self.index >= len(rows):
+                ctypes.set_last_error(5 if case == 'iteration_error' else 18)
+                return 0
+            return self.fill(pointer)
+    kernel = Kernel()
+    if case == 'complete':
+        assert tuple(row[0] for row in admin._process_snapshot(kernel)) == rows
+    else:
+        with pytest.raises(ValueError):
+            admin._process_snapshot(kernel)
+    assert closed == [111]
+
+
 def test_observer_refuses_inaccessible_process_image(monkeypatch):
     monkeypatch.setattr(admin, '_windows_kernel_boot_ns', lambda: 123)
     monkeypatch.setattr(admin, '_windows_process_images', lambda: (_ for _ in ()).throw(PermissionError()))
@@ -918,13 +959,16 @@ def test_observer_refuses_inaccessible_process_image(monkeypatch):
 
 
 def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch):
-    """The first open returns 87; the next synthetic snapshot contains no PID."""
+    """The vanished PID is absent later, but both snapshots contain the observer."""
+    own = 91919
+    monkeypatch.setattr(admin.os, 'getpid', lambda: own)
     class Function:
         def __init__(self, fn): self.fn = fn
         def __call__(self, *args): return self.fn(*args)
     class Kernel:
         def __init__(self):
             self.snapshots = 0
+            self.index = 0
             self.CreateToolhelp32Snapshot = Function(self.snapshot)
             self.Process32FirstW = Function(self.first)
             self.Process32NextW = Function(self.next)
@@ -934,23 +978,30 @@ def test_synthetic_vanished_pid_requires_second_snapshot_before_skip(monkeypatch
             self.CloseHandle = Function(lambda *a: 1)
         def snapshot(self, *args):
             self.snapshots += 1
+            self.index = 0
             return self.snapshots
         def first(self, handle, pointer):
-            if handle == 1:
+            return self.fill(handle, pointer)
+        def fill(self, handle, pointer):
+            rows = (12345, own) if handle == 1 else (own,)
+            if self.index < len(rows):
                 entry = ctypes.cast(pointer, ctypes.POINTER(admin._ProcessEntry)).contents
-                entry.pid, entry.parent, entry.exe = 12345, 44, 'synthetic.exe'
+                entry.pid, entry.parent, entry.exe = rows[self.index], 44, 'synthetic.exe'
                 return 1
             ctypes.set_last_error(18)
             return 0
-        def next(self, *args):
-            ctypes.set_last_error(18)
-            return 0
-        def open(self, *args):
+        def next(self, handle, pointer):
+            self.index += 1
+            return self.fill(handle, pointer)
+        def open(self, access, inherit, pid):
+            if pid == own:
+                return 777
             ctypes.set_last_error(87)
             return 0
     kernel = Kernel()
     monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **k: kernel)
-    assert admin._windows_process_images() == ()
+    monkeypatch.setattr(admin, '_image_or_proven_exited', lambda *_: 'C:\\synthetic\\observer.exe')
+    assert admin._windows_process_images() == ((own, 'C:\\synthetic\\observer.exe'),)
     assert kernel.snapshots == 2
 
 

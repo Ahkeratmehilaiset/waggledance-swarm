@@ -109,3 +109,19 @@ def test_bootstrap_reparse_check_fails_before_runtime_dispatch(tmp_path, monkeyp
     monkeypatch.setattr(bootstrap.runpy, "run_module", lambda *a, **k: pytest.fail("runtime dispatch"))
     assert bootstrap.main(_argv(str(root))) == 2
     assert fake.path == []
+
+
+@pytest.mark.parametrize("suffix", [os.sep, os.sep + ".", os.sep * 2 + "child"])
+def test_worker_environment_rejects_noncanonical_root_before_spawn(tmp_path, suffix):
+    root = str(tmp_path / "runtime") + suffix
+    assert root != str(Path(root))
+    with pytest.raises((ValueError, child.LaunchRefused)):
+        child._worker_environment(root)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path separator semantics")
+def test_worker_environment_rejects_windows_forward_slash_root(tmp_path):
+    root = str(tmp_path / "runtime").replace("\\", "/")
+    assert root != str(Path(root))
+    with pytest.raises((ValueError, child.LaunchRefused)):
+        child._worker_environment(root)

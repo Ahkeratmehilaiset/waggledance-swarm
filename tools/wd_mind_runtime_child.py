@@ -1858,7 +1858,7 @@ def _path(value):
 def _worker_environment(runtime_root):
     """Create an isolated child environment from the verified runtime root."""
     runtime_cache = os.fspath(_path(runtime_root))
-    if runtime_cache != os.path.abspath(runtime_cache):
+    if os.fspath(runtime_root) != runtime_cache or runtime_cache != os.path.abspath(runtime_cache):
         raise ValueError("runtime_cache_not_canonical")
     env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
     env["TORCHINDUCTOR_CACHE_DIR"] = runtime_cache

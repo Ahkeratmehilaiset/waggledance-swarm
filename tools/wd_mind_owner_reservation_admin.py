@@ -33,8 +33,19 @@ class ReservationAdminRefused(ValueError):
     """Fixed refusal: never print host process details or paths."""
 
 
+class _AdminReason(Exception):
+    """Internal fixed-token branch, never constructed from host exception text."""
+
+
+_REASONS = frozenset({'ROOT_UNAVAILABLE', 'PRODUCTION_ROUTE_UNAVAILABLE', 'MARKER_EXISTS',
+                      'MARKER_MISSING', 'MARKER_LOCK_UNAVAILABLE', 'MARKER_NOT_RESERVED',
+                      'HOST_OBSERVATION_UNAVAILABLE', 'HOST_TIME_INVALID', 'REBOOT_REQUIRED',
+                      'PUBLISH_REFUSED', 'SYNTHETIC_SCOPE_REQUIRED'})
+
+
 _CURRENT_POINTER = Path(r'C:\Python\WD_REBOOT_STATE_CURRENT.json')
 _BUNDLE_STORE = Path(r'C:\Python\wd-reboot-bundles')
+_SYNTHETIC_ROOT = Path(r'C:\Python\project2-pr2179-owner-marker-fix-20261118\.codex-audit\marker-admin-synthetic-tests')
 
 
 class _TimeInfo(ctypes.Structure):
@@ -50,6 +61,21 @@ class _ProcessEntry(ctypes.Structure):
                 ('module', wintypes.DWORD), ('threads', wintypes.DWORD),
                 ('parent', wintypes.DWORD), ('priority', ctypes.c_long),
                 ('flags', wintypes.DWORD), ('exe', wintypes.WCHAR * 260)]
+
+
+def _image_or_proven_exited(kernel, process):
+    size = wintypes.DWORD(32768)
+    path = ctypes.create_unicode_buffer(size.value)
+    if not kernel.QueryFullProcessImageNameW(process, 0, path, ctypes.byref(size)):
+        # A stable process handle can prove this exact process has exited.
+        # Unknown, STILL_ACTIVE and an unavailable exit status all refuse.
+        code = wintypes.DWORD()
+        if kernel.GetExitCodeProcess(process, ctypes.byref(code)) and code.value != 259:
+            return None
+        raise ValueError('image_access')
+    if not path.value or not Path(path.value).is_absolute():
+        raise ValueError('image_path')
+    return path.value
 
 
 def _windows_kernel_boot_ns():
@@ -80,6 +106,8 @@ def _windows_process_images():
     kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
                                                  wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
     kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
     snapshot = kernel.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
@@ -102,13 +130,9 @@ def _windows_process_images():
                 if not process:
                     raise ValueError('process_access')
                 try:
-                    size = wintypes.DWORD(32768)
-                    path = ctypes.create_unicode_buffer(size.value)
-                    if not kernel.QueryFullProcessImageNameW(process, 0, path, ctypes.byref(size)):
-                        raise ValueError('image_access')
-                    if not path.value or not Path(path.value).is_absolute():
-                        raise ValueError('image_path')
-                    items.append((pid, path.value))
+                    path = _image_or_proven_exited(kernel, process)
+                    if path is not None:
+                        items.append((pid, path))
                 finally:
                     kernel.CloseHandle(process)
             available = kernel.Process32NextW(snapshot, ctypes.byref(entry))
@@ -144,10 +168,49 @@ def _no_runtime_process(processes, interpreter_root, interpreter=None):
         if os.path.splitdrive(root)[0] != os.path.splitdrive(path)[0]:
             continue  # A different volume cannot be inside the pinned root.
         try:
-            if os.path.commonpath((root, path)) == root:
-                raise ReservationAdminRefused('runtime_process_observed')
+            common = os.path.commonpath((root, path))
         except ValueError:
             raise ReservationAdminRefused('runtime_identity_invalid') from None
+        if common == root:
+            raise ReservationAdminRefused('runtime_process_observed')
+
+
+def _assert_synthetic_root(root):
+    """Admit only fixed, disjoint pytest audit leaves; never a live root."""
+    try:
+        path = Path(root)
+        if not path.is_absolute() or '..' in path.parts:
+            raise ValueError('root')
+        absent._plain(_SYNTHETIC_ROOT, directory=True)
+        absent._plain(path, directory=True)
+        base = os.path.normcase(str(_SYNTHETIC_ROOT.resolve(strict=True)))
+        actual = os.path.normcase(str(path.resolve(strict=True)))
+        live = os.path.normcase(str(child._AUDIT_ROOT.resolve(strict=True)))
+        common = os.path.commonpath((actual, live))
+        if common in (actual, live):
+            raise ValueError('live_root_overlap')
+        relative = Path(actual).relative_to(Path(base))
+        if (len(relative.parts) != 3 or relative.parts[-1].lower() != 'audit'
+                or any(re.fullmatch(r'[a-z0-9_-]{1,120}', part) is None
+                       for part in relative.parts[:2])):
+            raise ValueError('synthetic_leaf')
+        return actual
+    except Exception:
+        raise ReservationAdminRefused('SYNTHETIC_SCOPE_REQUIRED') from None
+
+
+def _final_handle_path(handle):
+    """Resolve the opened Windows object; do not trust the caller's path."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    kernel.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    buf = ctypes.create_unicode_buffer(32768)
+    count = kernel.GetFinalPathNameByHandleW(handle, buf, len(buf), 0)
+    value = buf.value
+    if (not count or count >= len(buf) or not value.startswith('\\\\?\\')
+            or value.upper().startswith('\\\\?\\UNC\\')):
+        raise ReservationAdminRefused('SYNTHETIC_SCOPE_REQUIRED')
+    return Path(value[4:])
 
 
 @contextlib.contextmanager
@@ -188,12 +251,35 @@ class _IoStatusBlock(ctypes.Structure):
     _fields_ = [('status', ctypes.c_void_p), ('information', ctypes.c_size_t)]
 
 
+def _discard_new_native_handle(handle):
+    """Dispose only an unrenamed handle returned by our successful FILE_CREATE."""
+    from tools import wd_mind_vector_cache as cache
+    final = _final_handle_path(handle)
+    _assert_synthetic_root(final.parent)
+    if re.fullmatch(re.escape(child._OWNER_RESERVATION_NAME) + r'\.init-[0-9a-f]{32}', final.name) is None:
+        raise ReservationAdminRefused('staging_cleanup_unproven')
+    kernel = cache._Native().kernel
+    info = cache._HandleInfo()
+    if (not kernel.GetFileInformationByHandle(handle, ctypes.byref(info))
+            or kernel.GetFileType(handle) != 1 or info.attributes & (0x10 | 0x400)
+            or info.links != 1 or not (info.index_high or info.index_low)):
+        raise ReservationAdminRefused('staging_cleanup_unproven')
+    disposition, io = wintypes.BOOLEAN(1), _IoStatusBlock()
+    native = ctypes.WinDLL('ntdll', use_last_error=True).NtSetInformationFile
+    native.argtypes = [wintypes.HANDLE, ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
+                       wintypes.ULONG, ctypes.c_int]
+    native.restype = ctypes.c_long
+    if native(handle, ctypes.byref(io), ctypes.byref(disposition), ctypes.sizeof(disposition), 13) != 0:
+        raise ReservationAdminRefused('staging_cleanup_unproven')
+
+
 def _relative_create(directory_handle, leaf):
     """Create one ASCII leaf relative to an already pinned directory handle."""
     import msvcrt
     if (type(leaf) is not str or not leaf or leaf in ('.', '..') or not leaf.isascii()
             or any(c in leaf for c in ('/', '\\', ':'))):
         raise ValueError('invalid_leaf')
+    _assert_synthetic_root(_final_handle_path(directory_handle))
     raw = leaf.encode('utf-16-le')
     buffer = ctypes.create_unicode_buffer(leaf)
     name = _UnicodeString(len(raw), len(raw) + 2, ctypes.cast(buffer, wintypes.LPWSTR))
@@ -205,22 +291,40 @@ def _relative_create(directory_handle, leaf):
         ctypes.POINTER(_ObjectAttributes), ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
         wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
     native.restype = ctypes.c_long
-    status = native(ctypes.byref(out), 0xc0110080, ctypes.byref(attributes), ctypes.byref(status_block),
-        None, 0x80, 3, 2, 0x00200060, None, 0)  # FILE_CREATE, no reparse, synchronous
-    if status != 0:
-        raise ValueError('relative_create_refused')
+    fd = None
     try:
-        return msvcrt.open_osfhandle(out.value, os.O_RDWR | os.O_BINARY | getattr(os, 'O_NOINHERIT', 0))
+        status = native(ctypes.byref(out), 0xc0110080, ctypes.byref(attributes), ctypes.byref(status_block),
+            None, 0x80, 3, 2, 0x00200060, None, 0)  # FILE_CREATE, no reparse, synchronous
+        if status != 0:
+            raise ValueError('relative_create_refused')
+        fd = msvcrt.open_osfhandle(out.value, os.O_RDWR | os.O_BINARY | getattr(os, 'O_NOINHERIT', 0))
+        return fd
     except BaseException:
-        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel.CloseHandle(out)
+        if out.value not in (None, wintypes.HANDLE(-1).value):
+            try:
+                _discard_new_native_handle(out)
+            finally:
+                if fd is not None:
+                    os.close(fd)
+                else:
+                    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+                    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+                    kernel.CloseHandle(out)
         raise
 
 
 def _discard_owned_temp(fd, tmp, identity):
     """Disposition the known open staging handle only; never unlink a path."""
     import msvcrt
+    try:
+        final = _final_handle_path(msvcrt.get_osfhandle(fd))
+        handle_root = _assert_synthetic_root(final.parent)
+        path_root = _assert_synthetic_root(Path(tmp).parent)
+        if (handle_root != path_root or os.path.normcase(str(final)) != os.path.normcase(str(tmp))
+                or re.fullmatch(re.escape(child._OWNER_RESERVATION_NAME) + r'\.init-[0-9a-f]{32}', final.name) is None):
+            raise ValueError('scope')
+    except Exception:
+        raise ValueError('staging_cleanup_unproven') from None
     absent._plain(tmp, directory=False)
     by_handle, by_path = os.fstat(fd), os.lstat(tmp)
     if ((by_handle.st_dev, by_handle.st_ino) != identity
@@ -238,7 +342,7 @@ def _discard_owned_temp(fd, tmp, identity):
         raise ValueError('staging_cleanup_unproven')
 
 
-def _atomic_reserved(path, directory_handle):
+def _atomic_reserved(path, directory_handle, state=b'R'):
     """Publish complete bytes; cleanup only the exact owned staging handle.
 
     A process crash may leave an incomplete or complete staging leaf, but never
@@ -246,15 +350,18 @@ def _atomic_reserved(path, directory_handle):
     native calls, same-user ABA and malicious legacy processes remain UNKNOWN.
     """
     import msvcrt
-    if path.name != child._OWNER_RESERVATION_NAME:
+    if path.name != child._OWNER_RESERVATION_NAME or state not in (b'R', b'C'):
         raise ValueError('invalid_marker_leaf')
+    if _assert_synthetic_root(path.parent) != _assert_synthetic_root(_final_handle_path(directory_handle)):
+        raise ReservationAdminRefused('SYNTHETIC_SCOPE_REQUIRED')
     tmp = path.with_name(path.name + '.init-' + secrets.token_hex(16))
     fd = _relative_create(directory_handle, tmp.name)
-    info = os.fstat(fd)
-    identity = (info.st_dev, info.st_ino)
+    identity = None
     published = False
     try:
-        raw = child._OWNER_RESERVATION_MAGIC + b'R'
+        info = os.fstat(fd)
+        identity = (info.st_dev, info.st_ino)
+        raw = child._OWNER_RESERVATION_MAGIC + state
         if os.write(fd, raw) != len(raw):
             raise ValueError('write')
         os.fsync(fd)
@@ -273,9 +380,12 @@ def _atomic_reserved(path, directory_handle):
         native.argtypes = [wintypes.HANDLE, ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
                            wintypes.ULONG, ctypes.c_int]
         native.restype = ctypes.c_long
-        if native(msvcrt.get_osfhandle(fd), ctypes.byref(io), ctypes.byref(rename),
-                  ctypes.sizeof(rename), 10) != 0:  # FileRenameInformation, no replace
-            raise ValueError('publish_refused')
+        status = native(msvcrt.get_osfhandle(fd), ctypes.byref(io), ctypes.byref(rename),
+                        ctypes.sizeof(rename), 10)  # FileRenameInformation, no replace
+        if status != 0:
+            if status & 0xffffffff == 0xc0000035:  # STATUS_OBJECT_NAME_COLLISION
+                raise _AdminReason('MARKER_EXISTS')
+            raise _AdminReason('PUBLISH_REFUSED')
         published = True
         by_handle = os.fstat(fd)
         by_path = os.lstat(path)
@@ -286,33 +396,49 @@ def _atomic_reserved(path, directory_handle):
     finally:
         try:
             if not published:
-                _discard_owned_temp(fd, tmp, identity)
+                if identity is None:
+                    _discard_new_native_handle(msvcrt.get_osfhandle(fd))
+                else:
+                    _discard_owned_temp(fd, tmp, identity)
         finally:
             os.close(fd)
     return identity
 
 
 def _validate_observation(boot_ns, processes, interpreter_root, interpreter, marker_time=None):
-    if (type(boot_ns) is not int or boot_ns <= 0 or boot_ns > time.time_ns()
-            or (marker_time is not None and boot_ns <= marker_time)):
-        raise ValueError('boot_not_later')
+    if type(boot_ns) is not int or boot_ns <= 0 or boot_ns > time.time_ns():
+        raise _AdminReason('HOST_TIME_INVALID')
+    if marker_time is not None and boot_ns <= marker_time:
+        raise _AdminReason('REBOOT_REQUIRED')
     _no_runtime_process(processes, interpreter_root, interpreter)
+
+
+def _checked_observe(observe):
+    try:
+        return observe()
+    except Exception:
+        raise _AdminReason('HOST_OBSERVATION_UNAVAILABLE') from None
 
 
 def _marker(root, interpreter_root, *, operation, observe, interpreter=None, verify_binding=lambda: None):
     """Synthetic seam only; CLI supplies fixed root, native observer and binding."""
     if os.name != 'nt' or operation not in ('create', 'reset'):
         raise ReservationAdminRefused('invalid_operation')
-    if (os.path.normcase(os.path.abspath(str(root))) == os.path.normcase(os.path.abspath(str(child._AUDIT_ROOT)))
-            or os.path.normcase(str(Path(root).resolve(strict=True))) ==
-               os.path.normcase(str(child._AUDIT_ROOT.resolve(strict=True)))):
-        raise ReservationAdminRefused('production_route_unavailable')
     fd = None
     guard = None
     try:
         import msvcrt
         root = Path(root)
-        absent._plain(root, directory=True)
+        try:
+            resolved_root = root.resolve(strict=True)
+            resolved_production = child._AUDIT_ROOT.resolve(strict=True)
+            absent._plain(root, directory=True)
+        except (OSError, ValueError):
+            raise _AdminReason('ROOT_UNAVAILABLE') from None
+        if (os.path.normcase(os.path.abspath(str(root))) == os.path.normcase(os.path.abspath(str(child._AUDIT_ROOT)))
+                or os.path.normcase(str(resolved_root)) == os.path.normcase(str(resolved_production))):
+            raise _AdminReason('PRODUCTION_ROUTE_UNAVAILABLE')
+        _assert_synthetic_root(root)
         root_stat = os.lstat(root)
         with _pin_directory_chain(root) as directory_handle:
             absent._plain(root, directory=True)
@@ -322,18 +448,31 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
             verify_binding()
             path = root / child._OWNER_RESERVATION_NAME
             if operation == 'create':
-                # Refusal on the first host observation must not leave a new
-                # reserved marker which cannot be recovered until next boot.
-                boot_ns, processes = observe()
+                if os.path.lexists(path):
+                    raise _AdminReason('MARKER_EXISTS')
+                # Both observations precede publication.  Publish complete C
+                # atomically; never delete a successfully published marker as
+                # another owner may have acquired it immediately afterward.
+                boot_ns, processes = _checked_observe(observe)
                 _validate_observation(boot_ns, processes, interpreter_root, interpreter)
                 verify_binding()
-                published = _atomic_reserved(path, directory_handle)
-            else:
-                published = None
+                boot_ns, processes = _checked_observe(observe)
+                _validate_observation(boot_ns, processes, interpreter_root, interpreter)
+                verify_binding()
+                _atomic_reserved(path, directory_handle, b'C')
+                return
+            published = None
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
+                raise _AdminReason('MARKER_MISSING') from None
             absent._plain(path, directory=False)
             fd = os.open(path, os.O_RDWR | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0))
             os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+            except OSError:
+                raise _AdminReason('MARKER_LOCK_UNAVAILABLE') from None
             path_stat = os.lstat(path)
             if published is not None and (path_stat.st_dev, path_stat.st_ino) != published:
                 raise ValueError('published_changed')
@@ -341,9 +480,9 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
                 (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
             guard._check()
             if guard._read() != child._OWNER_RESERVATION_MAGIC + b'R':
-                raise ValueError('not_reserved')
+                raise _AdminReason('MARKER_NOT_RESERVED')
             marker_time = os.fstat(fd).st_mtime_ns
-            boot_ns, processes = observe()
+            boot_ns, processes = _checked_observe(observe)
             _validate_observation(boot_ns, processes, interpreter_root, interpreter,
                                   marker_time if operation == 'reset' else None)
             verify_binding()
@@ -353,8 +492,17 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
             guard.release_clean(service_stopped=True, owner_stopped=True,
                                 owner_owned=False, control_stopped=True)
             fd = None
+    except _AdminReason as exc:
+        reason = str(exc)
+        raise ReservationAdminRefused(reason if reason in _REASONS else 'ADMIN_REFUSED') from None
+    except ReservationAdminRefused as exc:
+        reason = {'runtime_process_observed': 'RUNTIME_PROCESS_OBSERVED',
+                  'runtime_identity_invalid': 'RUNTIME_IDENTITY_UNKNOWN',
+                  'SYNTHETIC_SCOPE_REQUIRED': 'SYNTHETIC_SCOPE_REQUIRED',
+                  'staging_cleanup_unproven': 'STAGING_CLEANUP_UNPROVEN'}.get(str(exc), 'ADMIN_REFUSED')
+        raise ReservationAdminRefused(reason) from None
     except Exception:
-        raise ReservationAdminRefused('owner_marker_admin_refused') from None
+        raise ReservationAdminRefused('ADMIN_REFUSED') from None
     finally:
         if guard is not None and guard.fd >= 0:
             guard.abandon()

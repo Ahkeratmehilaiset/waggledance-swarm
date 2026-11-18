@@ -38,6 +38,127 @@ def _reserved(path):
     path.write_bytes(child._OWNER_RESERVATION_MAGIC + b'R')
 
 
+def test_marker_refuses_synthetic_directory_not_named_audit(tmp_path):
+    root = tmp_path / 'forbidden'
+    root.mkdir()
+    runtime = tmp_path / 'interpreter'
+    runtime.mkdir()
+    with pytest.raises(admin.ReservationAdminRefused, match='^SYNTHETIC_SCOPE_REQUIRED$'):
+        admin._marker(root, runtime, operation='create', observe=_clear())
+    assert not (root / child._OWNER_RESERVATION_NAME).exists()
+
+
+def test_marker_refuses_extra_nested_synthetic_audit_root(tmp_path):
+    root = tmp_path / 'extra' / 'audit'
+    root.mkdir(parents=True)
+    runtime = tmp_path / 'interpreter'
+    runtime.mkdir()
+    with pytest.raises(admin.ReservationAdminRefused, match='^SYNTHETIC_SCOPE_REQUIRED$'):
+        admin._marker(root, runtime, operation='create', observe=_clear())
+    assert not (root / child._OWNER_RESERVATION_NAME).exists()
+
+
+def test_relative_create_refuses_handle_to_non_test_root(tmp_path):
+    root = tmp_path / 'forbidden'
+    root.mkdir()
+    fd = None
+    try:
+        with admin._pin_directory_chain(root) as directory_handle:
+            with pytest.raises(admin.ReservationAdminRefused, match='^SYNTHETIC_SCOPE_REQUIRED$'):
+                fd = admin._relative_create(directory_handle, 'synthetic-test-file')
+    finally:
+        if fd is not None:
+            os.close(fd)
+    assert not (root / 'synthetic-test-file').exists()
+
+
+@pytest.mark.parametrize('root', [Path('C:\\'), Path(r'C:\Python'), child._AUDIT_ROOT.parent])
+def test_marker_refuses_live_ancestors_before_open_or_write(tmp_path, monkeypatch, root):
+    def unexpected(*args, **kwargs):
+        raise AssertionError('must_not_open_live_scope')
+    monkeypatch.setattr(admin, '_pin_directory_chain', unexpected)
+    with pytest.raises(admin.ReservationAdminRefused, match='^SYNTHETIC_SCOPE_REQUIRED$'):
+        admin._marker(root, tmp_path, operation='create', observe=_clear())
+
+
+def test_live_root_case_alias_is_refused_before_mutation(tmp_path, monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError('must_not_open_live_scope')
+    monkeypatch.setattr(admin, '_pin_directory_chain', unexpected)
+    alias = Path(str(child._AUDIT_ROOT).swapcase())
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._marker(alias, tmp_path, operation='create', observe=_clear())
+
+
+def test_live_descendant_is_refused_before_mutation(tmp_path, monkeypatch):
+    live_descendant = child._AUDIT_ROOT / 'wd-mind-runtime'
+    if not live_descendant.is_dir():
+        pytest.skip('live descendant absent; no creation attempted')
+    def unexpected(*args, **kwargs):
+        raise AssertionError('must_not_open_live_scope')
+    monkeypatch.setattr(admin, '_pin_directory_chain', unexpected)
+    with pytest.raises(admin.ReservationAdminRefused, match='^SYNTHETIC_SCOPE_REQUIRED$'):
+        admin._marker(live_descendant, tmp_path, operation='create', observe=_clear())
+
+
+def test_symlink_alias_to_live_root_is_refused_before_mutation(tmp_path, monkeypatch):
+    alias = tmp_path / 'audit'
+    try:
+        alias.symlink_to(child._AUDIT_ROOT, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f'symlink setup unavailable: {exc.winerror}')
+    def unexpected(*args, **kwargs):
+        raise AssertionError('must_not_open_live_scope')
+    monkeypatch.setattr(admin, '_pin_directory_chain', unexpected)
+    with pytest.raises(admin.ReservationAdminRefused, match='^(ROOT_UNAVAILABLE|PRODUCTION_ROUTE_UNAVAILABLE)$'):
+        admin._marker(alias, tmp_path, operation='create', observe=_clear())
+
+
+def test_atomic_publish_rejects_root_handle_path_mismatch(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    other = tmp_path.parent / (tmp_path.name + '-peer') / 'audit'
+    other.mkdir(parents=True)
+    with admin._pin_directory_chain(root) as directory_handle:
+        with pytest.raises(admin.ReservationAdminRefused, match='^SYNTHETIC_SCOPE_REQUIRED$'):
+            admin._atomic_reserved(other / marker.name, directory_handle)
+    assert not marker.exists() and not (other / marker.name).exists()
+
+
+def test_native_discard_refuses_handle_outside_synthetic_test_leaf(tmp_path):
+    import msvcrt
+    root = tmp_path / 'forbidden'
+    root.mkdir()
+    file = root / (child._OWNER_RESERVATION_NAME + '.init-' + 'a' * 32)
+    file.write_bytes(b'keep')
+    fd = os.open(file, os.O_RDWR | os.O_BINARY)
+    try:
+        with pytest.raises(admin.ReservationAdminRefused, match='^SYNTHETIC_SCOPE_REQUIRED$'):
+            admin._discard_new_native_handle(msvcrt.get_osfhandle(fd))
+    finally:
+        os.close(fd)
+    assert file.read_bytes() == b'keep'
+
+
+def test_missing_root_returns_fixed_reason_without_path(tmp_path):
+    missing = tmp_path / 'private-missing-root'
+    with pytest.raises(admin.ReservationAdminRefused, match='^ROOT_UNAVAILABLE$') as exc:
+        admin._marker(missing, tmp_path, operation='create', observe=_clear())
+    assert 'private-missing-root' not in str(exc.value)
+
+
+def test_reset_missing_marker_has_actionable_fixed_reason(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    with pytest.raises(admin.ReservationAdminRefused, match='^MARKER_MISSING$'):
+        admin._marker(root, runtime, operation='reset', observe=_clear())
+
+
+def test_reset_same_boot_has_actionable_fixed_reason(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    _reserved(marker)
+    with pytest.raises(admin.ReservationAdminRefused, match='^REBOOT_REQUIRED$'):
+        admin._marker(root, runtime, operation='reset', observe=_clear(marker.stat().st_mtime_ns))
+
+
 def _make_junction(path, target):
     path.mkdir()
     k = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -68,7 +189,7 @@ def test_create_clear_once_and_refuse_existing(tmp_path):
     root, runtime, marker = _paths(tmp_path)
     admin._marker(root, runtime, operation='create', observe=_clear())
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
-    with pytest.raises(admin.ReservationAdminRefused):
+    with pytest.raises(admin.ReservationAdminRefused, match='^MARKER_EXISTS$'):
         admin._marker(root, runtime, operation='create', observe=_clear())
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
     assert list(root.glob(marker.name + '.init-*')) == []
@@ -154,6 +275,120 @@ def test_cleanup_refuses_different_file_identity_without_deleting_it(tmp_path):
     assert (root / 'owned-staging').read_bytes() == b'owned'
 
 
+def test_fstat_failure_after_relative_create_closes_and_removes_owned_staging(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    captured = []
+    real_create, real_fstat = admin._relative_create, os.fstat
+    def capture(*args):
+        fd = real_create(*args)
+        captured.append(fd)
+        return fd
+    def fail_once(fd):
+        if captured and fd == captured[0]:
+            raise OSError('synthetic_fstat_failure')
+        return real_fstat(fd)
+    try:
+        with admin._pin_directory_chain(root) as directory_handle:
+            with monkeypatch.context() as patch:
+                patch.setattr(admin, '_relative_create', capture)
+                patch.setattr(admin.os, 'fstat', fail_once)
+                with pytest.raises(OSError):
+                    admin._atomic_reserved(marker, directory_handle)
+        with pytest.raises(OSError):
+            real_fstat(captured[0])
+        assert not marker.exists() and list(root.glob(marker.name + '.init-*')) == []
+    finally:
+        if captured:
+            try: os.close(captured[0])
+            except OSError: pass
+
+
+def test_open_osfhandle_failure_removes_exact_native_created_staging(tmp_path, monkeypatch):
+    import msvcrt
+    root, runtime, marker = _paths(tmp_path)
+    with admin._pin_directory_chain(root) as directory_handle:
+        monkeypatch.setattr(msvcrt, 'open_osfhandle', lambda *a: (_ for _ in ()).throw(OSError('conversion')))
+        with pytest.raises(OSError):
+            admin._atomic_reserved(marker, directory_handle)
+    assert not marker.exists() and list(root.glob(marker.name + '.init-*')) == []
+
+
+def test_interruption_after_native_create_closes_and_removes_owned_staging(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    real_load = ctypes.WinDLL
+    real_native = real_load('ntdll', use_last_error=True)
+    captured = []
+    class InterruptingCreate:
+        def __call__(self, *args):
+            real = real_native.NtCreateFile
+            real.argtypes, real.restype = self.argtypes, self.restype
+            status = real(*args)
+            if status == 0:
+                captured.append(ctypes.cast(args[0], ctypes.POINTER(wintypes.HANDLE)).contents.value)
+                raise KeyboardInterrupt('synthetic_after_native_create')
+            return status
+    class NativeProxy:
+        def __init__(self): self.NtCreateFile = InterruptingCreate()
+        def __getattr__(self, name): return getattr(real_native, name)
+    def load(name, *args, **kwargs):
+        return NativeProxy() if name == 'ntdll' else real_load(name, *args, **kwargs)
+    with admin._pin_directory_chain(root) as directory_handle:
+        with monkeypatch.context() as patch:
+            patch.setattr(admin.ctypes, 'WinDLL', load)
+            with pytest.raises(KeyboardInterrupt, match='synthetic_after_native_create'):
+                admin._atomic_reserved(marker, directory_handle)
+    kernel = real_load('kernel32', use_last_error=True)
+    kernel.GetHandleInformation.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    flags = wintypes.DWORD()
+    assert len(captured) == 1 and not kernel.GetHandleInformation(captured[0], ctypes.byref(flags))
+    assert not marker.exists() and list(root.glob(marker.name + '.init-*')) == []
+
+
+def test_open_osfhandle_and_native_cleanup_failure_closes_handle_and_keeps_leaf(tmp_path, monkeypatch):
+    import msvcrt
+    root, runtime, marker = _paths(tmp_path)
+    captured = []
+    def denied(handle):
+        captured.append(handle.value if hasattr(handle, 'value') else handle)
+        raise admin.ReservationAdminRefused('staging_cleanup_unproven')
+    with admin._pin_directory_chain(root) as directory_handle:
+        monkeypatch.setattr(admin, '_discard_new_native_handle', denied)
+        monkeypatch.setattr(msvcrt, 'open_osfhandle', lambda *a: (_ for _ in ()).throw(OSError('conversion')))
+        with pytest.raises(admin.ReservationAdminRefused, match='staging_cleanup_unproven'):
+            admin._atomic_reserved(marker, directory_handle)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetHandleInformation.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetHandleInformation.restype = wintypes.BOOL
+    flags = wintypes.DWORD()
+    assert len(captured) == 1 and not kernel.GetHandleInformation(captured[0], ctypes.byref(flags))
+    assert not marker.exists() and len(list(root.glob(marker.name + '.init-*'))) == 1
+
+
+def test_fstat_and_native_cleanup_failure_still_closes_fd_and_keeps_leaf(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    captured = []
+    real_create, real_fstat = admin._relative_create, os.fstat
+    def capture(*args):
+        fd = real_create(*args)
+        captured.append(fd)
+        return fd
+    def fail(fd):
+        if captured and fd == captured[0]:
+            raise OSError('synthetic_fstat_failure')
+        return real_fstat(fd)
+    with admin._pin_directory_chain(root) as directory_handle:
+        with monkeypatch.context() as patch:
+            patch.setattr(admin, '_relative_create', capture)
+            patch.setattr(admin, '_discard_new_native_handle', lambda h: (_ for _ in ()).throw(
+                admin.ReservationAdminRefused('staging_cleanup_unproven')))
+            patch.setattr(admin.os, 'fstat', fail)
+            with pytest.raises(admin.ReservationAdminRefused, match='staging_cleanup_unproven'):
+                admin._atomic_reserved(marker, directory_handle)
+    with pytest.raises(OSError):
+        real_fstat(captured[0])
+    assert not marker.exists() and len(list(root.glob(marker.name + '.init-*'))) == 1
+
+
 def test_open_staging_leaf_cannot_be_renamed_by_other_process(tmp_path):
     root, runtime, marker = _paths(tmp_path)
     source, moved = root / 'owned-staging', root / 'moved-staging'
@@ -204,7 +439,7 @@ sys.exit(9)
         str(runtime), point], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     assert result.returncode == code, result.stderr
     if point == 'after_publish':
-        assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
+        assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
     else:
         assert not marker.exists()
         admin._marker(root, runtime, operation='create', observe=_clear())
@@ -354,7 +589,7 @@ def test_reset_refuses_live_runtime_image(tmp_path):
     _reserved(marker)
     (runtime / 'python.exe').write_bytes(b'synthetic')
     observe = lambda: (marker.stat().st_mtime_ns + 1, ((os.getpid() + 1000, str(runtime / 'python.exe')),))
-    with pytest.raises(admin.ReservationAdminRefused):
+    with pytest.raises(admin.ReservationAdminRefused, match='^RUNTIME_PROCESS_OBSERVED$'):
         admin._marker(root, runtime, operation='reset', observe=observe)
     assert marker.read_bytes().endswith(b'R')
 
@@ -374,7 +609,7 @@ def test_reset_refuses_failed_observation_and_keeps_reserved(tmp_path):
     _reserved(marker)
     def observe():
         raise PermissionError('synthetic-private-process-data')
-    with pytest.raises(admin.ReservationAdminRefused, match='^owner_marker_admin_refused$'):
+    with pytest.raises(admin.ReservationAdminRefused, match='^HOST_OBSERVATION_UNAVAILABLE$'):
         admin._marker(root, runtime, operation='reset', observe=observe)
     assert marker.read_bytes().endswith(b'R')
 
@@ -386,7 +621,7 @@ def test_create_failed_first_observation_does_not_publish_marker(tmp_path):
     assert not marker.exists()
 
 
-def test_create_failed_second_observation_stays_reserved(tmp_path):
+def test_create_failed_second_observation_leaves_no_marker_and_retry_succeeds(tmp_path):
     root, runtime, marker = _paths(tmp_path)
     count = 0
     def observe():
@@ -397,7 +632,9 @@ def test_create_failed_second_observation_stays_reserved(tmp_path):
         return 1, ()
     with pytest.raises(admin.ReservationAdminRefused):
         admin._marker(root, runtime, operation='create', observe=observe)
-    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
+    assert not marker.exists()
+    admin._marker(root, runtime, operation='create', observe=_clear())
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
 
 
 def test_reset_refuses_changed_timestamp_during_observation(tmp_path):
@@ -435,6 +672,32 @@ def test_observer_refuses_inaccessible_process_image(monkeypatch):
         admin._observe_windows()
 
 
+@pytest.mark.parametrize('result,code', [(False, 0), (True, 259)])
+def test_unknown_or_active_process_with_unreadable_image_refuses(result, code):
+    class Kernel:
+        @staticmethod
+        def QueryFullProcessImageNameW(*args):
+            return False
+        @staticmethod
+        def GetExitCodeProcess(handle, output):
+            ctypes.cast(output, ctypes.POINTER(wintypes.DWORD)).contents.value = code
+            return result
+    with pytest.raises(ValueError, match='image_access'):
+        admin._image_or_proven_exited(Kernel(), 1)
+
+
+def test_unreadable_image_of_proven_exited_process_does_not_block():
+    class Kernel:
+        @staticmethod
+        def QueryFullProcessImageNameW(*args):
+            return False
+        @staticmethod
+        def GetExitCodeProcess(handle, output):
+            ctypes.cast(output, ctypes.POINTER(wintypes.DWORD)).contents.value = 0
+            return True
+    assert admin._image_or_proven_exited(Kernel(), 1) is None
+
+
 def test_observer_refuses_failed_enumeration(monkeypatch):
     monkeypatch.setattr(admin, '_windows_kernel_boot_ns', lambda: (_ for _ in ()).throw(OSError()))
     with pytest.raises(admin.ReservationAdminRefused, match='^host_observation_unavailable$'):
@@ -461,7 +724,7 @@ def test_production_entry_and_root_refuse_before_mutation(tmp_path, monkeypatch,
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)
     assert admin.main(['create', '--bundle-root', 'C:\\b', '--manifest-sha256', 'a' * 64]) == 2
     assert capsys.readouterr().err.strip() == 'owner_marker_production_route_unavailable'
-    with pytest.raises(admin.ReservationAdminRefused, match='^production_route_unavailable$'):
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
         admin._marker(root, runtime, operation='create', observe=_clear())
     assert not marker.exists()
 

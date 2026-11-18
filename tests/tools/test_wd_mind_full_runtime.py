@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import py_compile
 import subprocess
 from wd_mind_owned_compat import run_owned
 import sys
@@ -256,6 +257,209 @@ def test_private_cache_provider_rechecks_pins_after_io_refusal(operation):
     assert calls == ['verify', 'verify']
 
 
+def test_snapshot_loader_executes_pinned_source_not_timestamp_bytecode(monkeypatch, tmp_path):
+    import importlib
+    import tools
+    from tools import wd_mind_full_runtime as runtime
+    name, attr = 'tools.wd_mind_content_snapshot_package', 'wd_mind_content_snapshot_package'
+    bundle = tmp_path / 'bundle'
+    relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
+    path = bundle.joinpath(*relative.split('/'))
+    path.parent.mkdir(parents=True)
+    safe = b"from tools import wd_mind_content_query_readonly as reader\nSTATE = 'SAFE'\n"
+    altered = b"from tools import wd_mind_content_query_readonly as reader\nSTATE = 'EVIL'\n"
+    assert len(safe) == len(altered)
+    path.write_bytes(altered)
+    os.utime(path, (1700000000, 1700000000))
+    py_compile.compile(str(path), doraise=True)
+    path.write_bytes(safe)
+    os.utime(path, (1700000000, 1700000000))
+    manifest = json.dumps({'files': {relative: hashlib.sha256(safe).hexdigest()}}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest(), (), {})
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delattr(tools, attr, raising=False)
+    monkeypatch.setattr(tools, '__path__', [str(path.parent)])
+    monkeypatch.setattr(runtime, '_SNAPSHOT_MODULE_ATTESTATION', None, raising=False)
+    importlib.invalidate_caches()
+    try:
+        loaded = binding._snapshot_support()
+        assert loaded.STATE == 'SAFE'
+        assert binding._snapshot_support() is loaded
+        assert importlib.import_module(name) is loaded
+        assert runtime._SNAPSHOT_MODULE_LOCK.acquire(blocking=False)
+        try:
+            with pytest.raises(ValueError, match='watcher_loader'):
+                binding._snapshot_support()
+        finally:
+            runtime._SNAPSHOT_MODULE_LOCK.release()
+        import types
+        class EqualModule(types.ModuleType):
+            def __eq__(self, other):
+                return True
+        fake = EqualModule(name)
+        fake.__file__, fake.reader = str(path), reader
+        sys.modules[name] = fake
+        setattr(tools, attr, fake)
+        with pytest.raises(ValueError, match='watcher_unverified_preload'):
+            binding._snapshot_support()
+        sys.modules[name] = loaded
+        setattr(tools, attr, loaded)
+        path.write_bytes(altered)
+        with pytest.raises(ValueError):
+            binding._snapshot_support()
+    finally:
+        sys.modules.pop(name, None)
+        tools.__dict__.pop(attr, None)
+
+
+@pytest.mark.parametrize('failure_point', ['before_publication', 'after_publication'])
+def test_snapshot_loader_rejects_source_change_during_load(monkeypatch, tmp_path, failure_point):
+    import importlib
+    import tools
+    from tools import wd_mind_full_runtime as runtime
+    name, attr = 'tools.wd_mind_content_snapshot_package', 'wd_mind_content_snapshot_package'
+    bundle = tmp_path / 'bundle'
+    relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
+    path = bundle.joinpath(*relative.split('/'))
+    path.parent.mkdir(parents=True)
+    safe = b"from tools import wd_mind_content_query_readonly as reader\nSTATE = 'SAFE'\n"
+    path.write_bytes(safe)
+    manifest = json.dumps({'files': {relative: hashlib.sha256(safe).hexdigest()}}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest(), (), {})
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delattr(tools, attr, raising=False)
+    monkeypatch.setattr(tools, '__path__', [str(path.parent)])
+    monkeypatch.setattr(runtime, '_SNAPSHOT_MODULE_ATTESTATION', None, raising=False)
+    original_read = runtime.prefix._read_pinned
+    reads = 0
+    def change_after_read(candidate, pin, limit):
+        nonlocal reads
+        value = original_read(candidate, pin, limit)
+        if candidate == path:
+            reads += 1
+            if failure_point == 'before_publication' and reads == 1:
+                path.write_bytes(safe.replace(b'SAFE', b'EVIL'))
+            if failure_point == 'after_publication' and reads == 3:
+                raise ValueError('synthetic_changed')
+        return value
+    monkeypatch.setattr(runtime.prefix, '_read_pinned', change_after_read)
+    importlib.invalidate_caches()
+    with pytest.raises(ValueError):
+        binding._snapshot_support()
+    assert reads >= (1 if failure_point == 'before_publication' else 3)
+    assert name not in sys.modules and not hasattr(tools, attr)
+    assert runtime._SNAPSHOT_MODULE_ATTESTATION is None
+
+
+def test_snapshot_loader_rejects_unattested_preloaded_module(monkeypatch, tmp_path):
+    import types
+    import tools
+    from tools import wd_mind_full_runtime as runtime
+    name, attr = 'tools.wd_mind_content_snapshot_package', 'wd_mind_content_snapshot_package'
+    bundle = tmp_path / 'bundle'
+    relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
+    path = bundle.joinpath(*relative.split('/'))
+    path.parent.mkdir(parents=True)
+    code = b"from tools import wd_mind_content_query_readonly as reader\n"
+    path.write_bytes(code)
+    manifest = json.dumps({'files': {relative: hashlib.sha256(code).hexdigest()}}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest(), (), {})
+    fake = types.ModuleType(name)
+    fake.__file__, fake.reader = str(path), reader
+    monkeypatch.setitem(sys.modules, name, fake)
+    monkeypatch.setattr(tools, attr, fake, raising=False)
+    monkeypatch.setattr(runtime, '_SNAPSHOT_MODULE_ATTESTATION', None, raising=False)
+    monkeypatch.setattr(runtime.importlib.util, 'find_spec', lambda _: types.SimpleNamespace(origin=str(path)))
+    with pytest.raises(ValueError):
+        binding._snapshot_support()
+
+
+def test_snapshot_loader_does_not_publish_partial_module_to_ordinary_import(monkeypatch, tmp_path):
+    import builtins
+    import importlib
+    import threading
+    import time
+    import tools
+    from tools import wd_mind_full_runtime as runtime
+    name, attr = 'tools.wd_mind_content_snapshot_package', 'wd_mind_content_snapshot_package'
+    bundle = tmp_path / 'bundle'
+    relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
+    path = bundle.joinpath(*relative.split('/'))
+    path.parent.mkdir(parents=True)
+    source = (b"from tools import wd_mind_content_query_readonly as reader\n"
+              b"import builtins\n"
+              b"builtins._mind_test_entered.set()\n"
+              b"if not builtins._mind_test_release.wait(5): raise RuntimeError('test timeout')\n"
+              b"STATE = 'SAFE'\n")
+    forged = source.replace(b"'SAFE'", b"'EVIL'")
+    assert len(source) == len(forged)
+    path.write_bytes(forged)
+    os.utime(path, (1700000000, 1700000000))
+    py_compile.compile(str(path), doraise=True)
+    path.write_bytes(source)
+    os.utime(path, (1700000000, 1700000000))
+    manifest = json.dumps({'files': {relative: hashlib.sha256(source).hexdigest()}}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    binding = runtime._PrivateBinding({}, bundle, hashlib.sha256(manifest).hexdigest(), (), {})
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delattr(tools, attr, raising=False)
+    monkeypatch.setattr(tools, '__path__', [str(path.parent)])
+    monkeypatch.setattr(runtime, '_SNAPSHOT_MODULE_ATTESTATION', None, raising=False)
+    entered, release, importer_done = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setattr(builtins, '_mind_test_entered', entered, raising=False)
+    monkeypatch.setattr(builtins, '_mind_test_release', release, raising=False)
+    importlib.invalidate_caches()
+    loaded, observed, errors = [], [], []
+    def build():
+        try:
+            loaded.append(binding._snapshot_support())
+        except BaseException as exc:
+            errors.append(exc)
+    def ordinary_import():
+        try:
+            module = importlib.import_module(name)
+            attestation = runtime._SNAPSHOT_MODULE_ATTESTATION
+            observed.append((module, getattr(module, 'STATE', None),
+                             bool(attestation and attestation[0] is module)))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            importer_done.set()
+    builder = threading.Thread(target=build)
+    importer = threading.Thread(target=ordinary_import)
+    try:
+        builder.start()
+        assert entered.wait(5)
+        partial_published = name in sys.modules or hasattr(tools, attr)
+        importer.start()
+        returned_early = importer_done.wait(0.2)
+        deadline = time.monotonic() + 5
+        while name not in sys.modules and time.monotonic() < deadline:
+            time.sleep(0.01)
+        competing_import_started = name in sys.modules
+        release.set()
+        builder.join(5)
+        importer.join(5)
+        assert not builder.is_alive() and not importer.is_alive()
+        assert not partial_published, 'our loader exposed an unverified module'
+        assert not returned_early, 'ordinary import returned before verification and publication'
+        # The independent ordinary import is intentionally allowed to win;
+        # its own bytecode is untrusted and must never be adopted by our loader.
+        assert competing_import_started and not loaded and len(errors) == 1
+        assert isinstance(errors[0], ValueError) and str(errors[0]) == 'watcher_module_conflict'
+        assert len(observed) == 1 and observed[0][1:] == ('EVIL', False)
+    finally:
+        release.set()
+        builder.join(5)
+        if importer.ident is not None:
+            importer.join(5)
+        sys.modules.pop(name, None)
+        tools.__dict__.pop(attr, None)
+
+
 def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_path):
     import types
     import tools
@@ -282,6 +486,17 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
         with pytest.raises(Exception):
             provider.load({}, lambda *_: True)
         path.write_bytes(code)
+        class EqualModule(types.ModuleType):
+            def __eq__(self, other):
+                return True
+        fake = EqualModule(name)
+        fake.__file__ = str(path)
+        fake.load_cache = lambda *_: 'forged'
+        fake.write_cache = lambda *_: None
+        sys.modules[name] = fake
+        setattr(tools, attr, fake)
+        with pytest.raises(ValueError, match='cache_unverified_preload'):
+            runtime._load_pinned_vector_cache(binding)
         sys.modules[name] = types.ModuleType(name)
         with pytest.raises(ValueError, match='cache_unverified_preload'):
             runtime._load_pinned_vector_cache(binding)
@@ -306,7 +521,9 @@ def test_cache_security_refusal_does_not_become_miss_or_memory(monkeypatch, tmp_
     monkeypatch.setattr(reader, '_REQUIRED_CODE', {
         relative: reader._sha((root / relative).read_bytes()) for relative in reader._REQUIRED_CODE
     })
-    case = _synthetic_case(tmp_path, monkeypatch)
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    case = _synthetic_case(audit_root, monkeypatch)
     binding, _ = case.snapshot()
     def refuse(*args, **kwargs):
         raise vector_cache.CacheRefused('acl_not_user_only')
@@ -326,7 +543,9 @@ def test_verified_cache_miss_rebuilds_without_relaxing_refusal(monkeypatch, tmp_
     monkeypatch.setattr(reader, '_REQUIRED_CODE', {
         relative: reader._sha((root / relative).read_bytes()) for relative in reader._REQUIRED_CODE
     })
-    case = _synthetic_case(tmp_path, monkeypatch)
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    case = _synthetic_case(audit_root, monkeypatch)
     binding, _ = case.snapshot()
     if reason != 'missing':
         def stale(*args, **kwargs):
@@ -343,7 +562,9 @@ def test_corrupt_cache_payload_rebuilds_only_after_source_verification(monkeypat
     monkeypatch.setattr(reader, '_REQUIRED_CODE', {
         relative: reader._sha((root / relative).read_bytes()) for relative in reader._REQUIRED_CODE
     })
-    case = _synthetic_case(tmp_path, monkeypatch)
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    case = _synthetic_case(audit_root, monkeypatch)
     binding, _ = case.snapshot()
     assert case.build(binding).cache_status == 'MISS_STORED'
     raw = bytearray(case.cache_path.read_bytes())
@@ -2939,7 +3160,7 @@ try:
         if mode.startswith('package_owner_build_'):
             import threading
             from types import SimpleNamespace
-            from tools import wd_mind_content_snapshot_package as package
+            package = binding._snapshot_support()
             default_join = package._WATCH_JOIN_TIMEOUT_SECONDS
             checks, batch_checks = {'main':0}, []
             original_verify = reader._verified_complete
@@ -3384,11 +3605,11 @@ try:
         if mode == 'package_immutable_invalid_optin': options['source_verification'] = 'unverified'
         if mode == 'package_immutable_bad_timeout': options['watcher_join_timeout_seconds'] = 601
         if mode == 'package_immutable_forged_hold':
-            from tools import wd_mind_content_snapshot_package as package
+            package = binding._snapshot_support()
             def passage(texts): raise package.SnapshotPackageHold('synthetic forged hold')
         if mode == 'package_immutable_reserve_cancel':
             import inspect
-            from tools import wd_mind_content_snapshot_package as package
+            package = binding._snapshot_support()
             lease = runtime._OwnedSnapshotWatcher()
             options['_watcher_lease'] = lease
             lines, first = inspect.getsourcelines(runtime._reserve_owned_snapshot_watcher)
@@ -3416,7 +3637,7 @@ try:
         if mode == 'package_immutable_generation_before':
             pathlib.Path(sys.argv[3]).with_name('events.generation.json').write_bytes(b'{}')
         if mode in ('package_immutable_background', 'package_immutable_after_join'):
-            from tools import wd_mind_content_snapshot_package as package
+            package = binding._snapshot_support()
             audit = {'detected':False, 'joined':False}
             if mode == 'package_immutable_background':
                 package._WATCH_INTERVAL_SECONDS = .001
@@ -3438,7 +3659,7 @@ try:
                     'package_immutable_group_hold', 'package_immutable_oversized_group_hold',
                     'package_immutable_owned_hold', 'package_immutable_owned_cancel_hold'):
             import asyncio, threading
-            from tools import wd_mind_content_snapshot_package as package
+            package = binding._snapshot_support()
             entered, release = threading.Event(), threading.Event()
             original = reader._verified_complete
             def blocked(*args, **kwargs):
@@ -3509,7 +3730,7 @@ try:
             if mode == 'package_orthogonal': return (0.0, 1.0) + (0.0,) * 382
             return (1.0,) + (0.0,) * 383
         if mode == 'package_direct_narrow_probe':
-            from tools import wd_mind_content_snapshot_package as package
+            package = binding._snapshot_support()
             source_owner = package.create_consumer_flat_source_owner(enabled=True, bundle_root=sys.argv[1],
                 expected_manifest_sha256=sys.argv[2], snapshot=product.snapshot,
                 flat_manifest_bytes=product.manifest, flat_manifest_sha256=sha(product.manifest),

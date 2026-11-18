@@ -31,6 +31,8 @@ from waggledance.core import bridge_log_reader as bridge
 
 _POLICY = 'wd-mind-message-policy.json'
 _POLICY_APPROVAL_DESCRIPTOR = 'wd-mind-identifier-policy-approval.json'
+_SNAPSHOT_MODULE_LOCK = threading.Lock()
+_SNAPSHOT_MODULE_ATTESTATION = None
 
 
 class _ManifestPolicyCandidate:
@@ -552,25 +554,92 @@ class _PrivateBinding:
             raise ValueError('binding_changed')
 
     def _snapshot_support(self):
-        """Load the watcher helper only from the manifest-pinned bundle."""
-        raw = prefix._read_pinned(self.__bundle / 'deployment-manifest.json', self.__manifest,
-                                  prefix.MAX_CONTROL_BYTES)
-        manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
-                              parse_constant=reader._bad_constant)
-        relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
-        path = self.__bundle.joinpath(*relative.split('/'))
-        digest = manifest['files'].get(relative)
-        prefix._read_pinned(path, digest, 8 * 1024 * 1024)
-        name = 'tools.wd_mind_content_snapshot_package'
-        spec = importlib.util.find_spec(name)
-        if spec is None or type(spec.origin) is not str or not startup._same_path(Path(spec.origin), path):
-            raise ValueError('watcher_origin')
-        module = importlib.import_module(name)
-        if (type(getattr(module, '__file__', None)) is not str
-                or not startup._same_path(Path(module.__file__), path) or module.reader is not reader):
-            raise ValueError('watcher_origin')
-        prefix._read_pinned(path, digest, 8 * 1024 * 1024)
-        return module
+        """Execute the verified watcher bytes, never cached or preloaded code."""
+        global _SNAPSHOT_MODULE_ATTESTATION
+        if not _SNAPSHOT_MODULE_LOCK.acquire(blocking=False):
+            raise ValueError('watcher_loader')
+        try:
+            raw = prefix._read_pinned(self.__bundle / 'deployment-manifest.json', self.__manifest,
+                                      prefix.MAX_CONTROL_BYTES)
+            manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
+                                  parse_constant=reader._bad_constant)
+            if type(manifest) is not dict or type(manifest.get('files')) is not dict:
+                raise ValueError('watcher_manifest')
+            relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
+            path, name = self.__bundle.joinpath(*relative.split('/')), 'tools.wd_mind_content_snapshot_package'
+            digest = manifest['files'].get(relative)
+            if type(digest) is not str or not reader._hex(digest.lower()):
+                raise ValueError('watcher_pin')
+            digest = digest.lower()
+            verified = prefix._read_pinned(path, digest, 8 * 1024 * 1024)
+            package = sys.modules.get('tools')
+            if type(package) is not types.ModuleType:
+                raise ValueError('watcher_package')
+            module = sys.modules.get(name)
+            published = False
+            if module is None:
+                if getattr(package, 'wd_mind_content_snapshot_package', None) is not None:
+                    raise ValueError('watcher_module_conflict')
+                spec = importlib.util.find_spec(name)
+                if spec is None or type(spec.origin) is not str or not startup._same_path(Path(spec.origin), path):
+                    raise ValueError('watcher_origin')
+                module = types.ModuleType(name)
+                module.__file__, module.__package__, module.__spec__ = str(path), 'tools', spec
+                try:
+                    # Execute privately: the normal import fast path must not
+                    # observe this module before source and manifest rechecks.
+                    exec(compile(verified, str(path), 'exec', dont_inherit=True), module.__dict__)
+                    if getattr(module, 'reader', None) is not reader:
+                        raise ValueError('watcher_origin')
+                    prefix._read_pinned(self.__bundle / 'deployment-manifest.json', self.__manifest,
+                                        prefix.MAX_CONTROL_BYTES)
+                    prefix._read_pinned(path, digest, 8 * 1024 * 1024)
+                    # Set the attestation before publication so an ordinary
+                    # concurrent import can only see completed verified code.
+                    _SNAPSHOT_MODULE_ATTESTATION = (module, str(path), self.__manifest, digest)
+                    if sys.modules.setdefault(name, module) is not module:
+                        raise ValueError('watcher_module_conflict')
+                    existing = getattr(package, 'wd_mind_content_snapshot_package', None)
+                    if existing is not None and existing is not module:
+                        raise ValueError('watcher_module_conflict')
+                    setattr(package, 'wd_mind_content_snapshot_package', module)
+                    published = True
+                except BaseException:
+                    if sys.modules.get(name) is module:
+                        del sys.modules[name]
+                    if getattr(package, 'wd_mind_content_snapshot_package', None) is module:
+                        delattr(package, 'wd_mind_content_snapshot_package')
+                    _SNAPSHOT_MODULE_ATTESTATION = None
+                    raise
+            elif (type(module) is not types.ModuleType
+                  or type(_SNAPSHOT_MODULE_ATTESTATION) is not tuple
+                  or len(_SNAPSHOT_MODULE_ATTESTATION) != 4
+                  or _SNAPSHOT_MODULE_ATTESTATION[0] is not module
+                  or _SNAPSHOT_MODULE_ATTESTATION[1:] != (str(path), self.__manifest, digest)):
+                raise ValueError('watcher_unverified_preload')
+            try:
+                if (sys.modules.get(name) is not module
+                        or getattr(package, 'wd_mind_content_snapshot_package', None) is not module
+                        or type(getattr(module, '__file__', None)) is not str
+                        or not startup._same_path(Path(module.__file__), path) or module.reader is not reader):
+                    raise ValueError('watcher_origin')
+                prefix._read_pinned(self.__bundle / 'deployment-manifest.json', self.__manifest,
+                                    prefix.MAX_CONTROL_BYTES)
+                prefix._read_pinned(path, digest, 8 * 1024 * 1024)
+            except BaseException:
+                if published:
+                    if sys.modules.get(name) is module:
+                        del sys.modules[name]
+                    if getattr(package, 'wd_mind_content_snapshot_package', None) is module:
+                        delattr(package, 'wd_mind_content_snapshot_package')
+                    if (type(_SNAPSHOT_MODULE_ATTESTATION) is tuple
+                            and len(_SNAPSHOT_MODULE_ATTESTATION) == 4
+                            and _SNAPSHOT_MODULE_ATTESTATION[0] is module):
+                        _SNAPSHOT_MODULE_ATTESTATION = None
+                raise
+            return module
+        finally:
+            _SNAPSHOT_MODULE_LOCK.release()
 
 
 def _bundle_inputs(bundle, expected_manifest):
@@ -1383,7 +1452,11 @@ def _load_pinned_vector_cache(binding):
                 if sys.modules.get(name) is module:
                     del sys.modules[name]
                 raise
-        elif _CACHE_MODULE_ATTESTATION != (module, str(path), manifest_pin, digest):
+        elif (type(module) is not types.ModuleType
+              or type(_CACHE_MODULE_ATTESTATION) is not tuple
+              or len(_CACHE_MODULE_ATTESTATION) != 4
+              or _CACHE_MODULE_ATTESTATION[0] is not module
+              or _CACHE_MODULE_ATTESTATION[1:] != (str(path), manifest_pin, digest)):
             raise ValueError('cache_unverified_preload')
 
         def verify():

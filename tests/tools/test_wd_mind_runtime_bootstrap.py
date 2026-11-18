@@ -3,6 +3,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import py_compile
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -63,6 +64,58 @@ def test_runtime_verification_failure_precedes_any_runtime_import(tmp_path, monk
     assert bootstrap.main(_args(tmp_path / "runtime")) == 2
     captured = capsys.readouterr()
     assert json.loads(captured.out)["reason"] == "runtime_verification_failed" and "synthetic-private" not in captured.out
+
+
+def test_verifier_executes_pinned_source_not_matching_timestamp_bytecode(tmp_path, monkeypatch):
+    """A matching .pyc is not evidence that its code matches the approved source."""
+    path = tmp_path / 'wd_mind_runtime_manifest.py'
+    safe = b"def verify_runtime(*args, **kwargs): return 'SAFE'\n"
+    altered = b"def verify_runtime(*args, **kwargs): return 'EVIL'\n"
+    assert len(safe) == len(altered)
+    path.write_bytes(altered)
+    os.utime(path, (1700000000, 1700000000))
+    py_compile.compile(str(path), doraise=True)
+    path.write_bytes(safe)
+    os.utime(path, (1700000000, 1700000000))
+    monkeypatch.setattr(bootstrap, '__file__', str(tmp_path / 'wd_mind_runtime_bootstrap.py'))
+    monkeypatch.setattr(bootstrap, '_PACKAGED_VERIFIER_SHA256', hashlib.sha256(safe).hexdigest(), raising=False)
+    assert bootstrap._load_verifier()() == 'SAFE'
+
+
+def test_verifier_rejects_changed_pinned_source_before_execution(tmp_path, monkeypatch):
+    path = tmp_path / 'wd_mind_runtime_manifest.py'
+    path.write_bytes(b"def verify_runtime(*args, **kwargs): return 'EVIL'\n")
+    monkeypatch.setattr(bootstrap, '__file__', str(tmp_path / 'wd_mind_runtime_bootstrap.py'))
+    monkeypatch.setattr(bootstrap, '_PACKAGED_VERIFIER_SHA256', '0' * 64, raising=False)
+    with pytest.raises(ValueError):
+        bootstrap._load_verifier()
+
+
+def test_verifier_rejects_replaced_source_even_with_identical_bytes(tmp_path, monkeypatch):
+    path = tmp_path / 'wd_mind_runtime_manifest.py'
+    replacement = tmp_path / 'replacement.py'
+    source = b"def verify_runtime(*args, **kwargs): return 'SAFE'\n"
+    path.write_bytes(source)
+    replacement.write_bytes(source)
+    original_lstat = os.lstat
+    calls = 0
+    def replace_on_final_check(value, *args, **kwargs):
+        nonlocal calls
+        if Path(value) == path:
+            calls += 1
+            if calls == 2:
+                os.replace(replacement, path)
+        return original_lstat(value, *args, **kwargs)
+    monkeypatch.setattr(bootstrap, '__file__', str(tmp_path / 'wd_mind_runtime_bootstrap.py'))
+    monkeypatch.setattr(bootstrap, '_PACKAGED_VERIFIER_SHA256', hashlib.sha256(source).hexdigest())
+    monkeypatch.setattr(bootstrap.os, 'lstat', replace_on_final_check)
+    with pytest.raises(ValueError, match='verifier_file_changed'):
+        bootstrap._load_verifier()
+
+
+def test_bootstrap_and_parent_preflight_use_same_verifier_pin():
+    from tools import wd_mind_runtime_process as process
+    assert bootstrap._PACKAGED_VERIFIER_SHA256 == process._PACKAGED_VERIFIER_SHA256
 
 
 def test_only_verified_synthetic_tree_can_reach_reader_dispatch(tmp_path, monkeypatch):

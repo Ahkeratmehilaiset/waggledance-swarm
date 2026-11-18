@@ -15,6 +15,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from wd_mind_owned_compat import run_owned
 
 from tools import wd_mind_full_runtime as runtime
 from tools import wd_mind_vector_cache as cache
@@ -238,20 +239,51 @@ def _run_synthetic_process(location, phase):
         if name.startswith(('AGENT_BRIDGE_', 'WD_BRIDGE_', 'WD_REBOOT_', 'WD_MIND_')):
             del environment[name]
     environment['PYTHONDONTWRITEBYTECODE'] = '1'
-    process = subprocess.Popen([sys.executable, '-I', '-B', '-c', _PROCESS_ACTOR,
-        str(root), str(location), phase], cwd=root, env=environment, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
+    # Empty input closes the owned stdin pipe and preserves non-interactive EOF.
+    # On timeout/interruption the helper retains the process and both outputs
+    # until actual exit/EOF; uncertain spawn remains HOLD and is never killed.
+    process = run_owned([sys.executable, '-I', '-B', '-c', _PROCESS_ACTOR,
+        str(root), str(location), phase], cwd=root, env=environment, input='',
+        capture_output=True, text=True, encoding='utf-8', timeout=60,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    try:
-        output, error = process.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        pytest.fail(f'synthetic builder {process.pid} remains running; no kill attempted')
-    assert process.returncode == 0, error
-    data = json.loads(output)
-    # Windows venv launchers may themselves spawn the interpreter; its PID can
-    # differ from Popen's wrapper PID. Both still exit before communicate returns.
+    assert process.returncode == 0, process.stderr
+    data = json.loads(process.stdout)
+    # A venv launcher can report a PID different from its Popen wrapper. EOF
+    # and wrapper exit do not independently prove a descendant has exited.
     assert type(data['pid']) is int and data['pid'] > 0 and data['phase'] == phase
     return data
+
+
+
+@pytest.mark.parametrize('deadline', [False, True], ids=['success', 'deadline_owned_drain'])
+def test_synthetic_process_driver_owned_eof(monkeypatch, tmp_path, deadline):
+    import wd_mind_owned_compat as owned
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'synthetic-must-not-propagate')
+    events = []
+    class Process:
+        returncode = 0
+        def communicate(self, input=None, timeout=None):
+            events.append(('communicate', input, timeout))
+            if deadline and len(events) == 2:
+                raise subprocess.TimeoutExpired('synthetic', 60)
+            return json.dumps({'pid':123, 'phase':'cold'}), ''
+    def spawn(argv, **kwargs):
+        events.append(('spawn', argv, kwargs))
+        assert kwargs['stdin'] is subprocess.PIPE
+        assert kwargs['stdout'] is subprocess.PIPE and kwargs['stderr'] is subprocess.PIPE
+        assert kwargs['text'] is True and kwargs['encoding'] == 'utf-8'
+        assert 'WD_REBOOT_EXPECTED_MANIFEST_HASH' not in kwargs['env']
+        return Process()
+    monkeypatch.setattr(owned.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(owned.time, 'sleep', lambda _seconds: None)
+    if deadline:
+        with pytest.raises(AssertionError, match='late output discarded'):
+            _run_synthetic_process(tmp_path, 'cold')
+        assert len(events) == 3 and events[2][0] == 'communicate'
+    else:
+        assert _run_synthetic_process(tmp_path, 'cold') == {'pid':123, 'phase':'cold'}
+        assert len(events) == 2
+    assert events[1][0] == 'communicate' and events[1][1] == ''
 
 
 def test_sequential_processes_reuse_then_append_without_old_reencoding(tmp_path):

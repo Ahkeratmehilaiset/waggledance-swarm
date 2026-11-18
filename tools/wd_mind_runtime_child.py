@@ -2710,7 +2710,39 @@ def _guarded_local_entry(entry, **kwargs):
     """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
     if entry is _local_query_entry:
         return 2  # The closed route must not reserve or change the owner marker.
-    guard = _reserve_local_owner(_AUDIT_ROOT)
+    try:
+        guard = _reserve_local_owner(_AUDIT_ROOT)
+    except LaunchRefused:
+        # This is a pre-owner failure. Do not inspect or repair the marker;
+        # never expose its path, bytes, or the underlying exception.
+        v1 = kwargs.get('include_start_diagnostics') is True
+        v2 = kwargs.get('include_worker_stage_diagnostics') is True
+        manifest = kwargs.get('expected_manifest_sha256')
+        if (entry is _local_candidate_owner_entry and (v1 or v2)
+                and type(manifest) is str and _HEX.fullmatch(manifest)):
+            try:
+                status = {'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
+                    'manifest_sha256':manifest, 'authority':'none',
+                    'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
+                    'index_refresh':'NOT_SCHEDULED'}
+                diagnostic = {'schema':'wd.mind-local-owner-start-diagnostic.v2' if v2 else
+                    'wd.mind-local-owner-start-diagnostic.v1', 'reason':'ADMISSION',
+                    'exception_type':'LaunchRefused', 'authority':'none'}
+                if v2:
+                    diagnostic.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
+                out = kwargs['output_stream']
+                for record in (status, diagnostic):
+                    data = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+                    offset = 0
+                    while offset < len(data):
+                        count = out.write(memoryview(data)[offset:])
+                        if type(count) is not int or not 0 < count <= len(data) - offset:
+                            raise ValueError('diagnostic_write')
+                        offset += count
+                    out.flush()
+            except Exception:
+                pass  # Output uncertainty remains a refusal, never READY.
+        return 2
     cleanup_evidence = {'clean': False}
     admission = _LocalAdmission(guard, cleanup_evidence)
     try:

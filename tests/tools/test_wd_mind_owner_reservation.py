@@ -4,6 +4,8 @@ No production marker or live owner is touched. A preseeded CLEAR fixture is
 not evidence that an older, unguarded owner was absent during migration.
 """
 import io
+import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -24,6 +26,97 @@ def _seed(root, state=b'C'):
     root.mkdir()
     (root / MARKER).write_bytes(PREFIX + state)
     return root
+
+
+@WINDOWS
+@pytest.mark.parametrize('condition', ['missing', 'reserved', 'invalid', 'locked', 'unreadable'])
+@pytest.mark.parametrize('diagnostics', ['off', 'v1', 'v2'])
+def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch, condition, diagnostics):
+    root = tmp_path / 'synthetic-audit'
+    root.mkdir()
+    marker = root / MARKER
+    before = {'reserved': PREFIX + b'R', 'invalid': PREFIX + b'X',
+              'locked': PREFIX + b'C', 'unreadable': PREFIX + b'C'}.get(condition)
+    if before is not None:
+        marker.write_bytes(before)
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    if condition == 'locked':
+        import msvcrt
+        monkeypatch.setattr(msvcrt, 'locking', lambda *args: (_ for _ in ()).throw(OSError('private-lock-marker')))
+    if condition == 'unreadable':
+        monkeypatch.setattr(child.os, 'open', lambda *args, **kw: (_ for _ in ()).throw(PermissionError('private-open-marker')))
+    output = io.BytesIO()
+    result = child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
+        expected_manifest_sha256='a' * 64, include_start_diagnostics=diagnostics == 'v1',
+        include_worker_stage_diagnostics=diagnostics == 'v2')
+    assert result == 2
+    assert (marker.read_bytes() if marker.exists() else None) == before
+    assert b'private-' not in output.getvalue() and b'READY' not in output.getvalue()
+    if diagnostics == 'off':
+        assert output.getvalue() == b''
+    else:
+        status, detail = map(json.loads, output.getvalue().splitlines())
+        assert status == {'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
+            'manifest_sha256':'a' * 64, 'authority':'none', 'caller_authentication':'UNKNOWN',
+            'source_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'}
+        expected = {'schema':'wd.mind-local-owner-start-diagnostic.' + diagnostics,
+            'reason':'ADMISSION', 'exception_type':'LaunchRefused', 'authority':'none'}
+        if diagnostics == 'v2':
+            expected.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
+        assert detail == expected
+
+
+@WINDOWS
+@pytest.mark.parametrize('fail_at', ['write', 'partial', 'flush'])
+def test_reservation_diagnostic_write_failure_still_refuses(tmp_path, monkeypatch, fail_at):
+    root = tmp_path / 'synthetic-audit'
+    root.mkdir()
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    class BrokenOutput:
+        def __init__(self): self.data = b''
+        def write(self, data):
+            if fail_at == 'write' or (fail_at == 'partial' and self.data):
+                raise OSError('private-output-marker')
+            take = 8 if fail_at == 'partial' else len(data)
+            self.data += bytes(data[:take])
+            return take
+        def flush(self):
+            if fail_at == 'flush': raise OSError('private-output-marker')
+    output = BrokenOutput()
+    assert child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
+        expected_manifest_sha256='a' * 64, include_start_diagnostics=True) == 2
+    assert b'private-output-marker' not in output.data and b'READY' not in output.data
+    assert not (root / MARKER).exists()
+
+
+@WINDOWS
+def test_reservation_diagnostic_accepts_successful_short_writes(tmp_path, monkeypatch):
+    root = tmp_path / 'synthetic-audit'
+    root.mkdir()
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    class ShortOutput(io.BytesIO):
+        def write(self, data): return super().write(data[:3])
+    output = ShortOutput()
+    assert child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
+        expected_manifest_sha256='a' * 64, include_start_diagnostics=True) == 2
+    status, detail = map(json.loads, output.getvalue().splitlines())
+    assert status['state'] == 'HOLD' and detail['reason'] == 'ADMISSION'
+    assert detail['exception_type'] == 'LaunchRefused'
+    assert not (root / MARKER).exists()
+
+
+@WINDOWS
+@pytest.mark.parametrize('cancel', [KeyboardInterrupt, GeneratorExit, asyncio.CancelledError])
+def test_reservation_diagnostic_preserves_cancellation(tmp_path, monkeypatch, cancel):
+    root = tmp_path / 'synthetic-audit'
+    root.mkdir()
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    class CancelOutput:
+        def write(self, data): raise cancel('synthetic-private-cancellation')
+    with pytest.raises(cancel, match='synthetic-private-cancellation'):
+        child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=CancelOutput(),
+            expected_manifest_sha256='a' * 64, include_start_diagnostics=True)
+    assert not (root / MARKER).exists()
 
 
 @WINDOWS

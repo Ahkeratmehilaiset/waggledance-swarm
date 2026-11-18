@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -11,10 +12,15 @@ import pytest
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows process and inherited pipe integration')
+@pytest.mark.parametrize('shell', [
+    str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(shutil.which('pwsh') is None,
+                                                                reason='PowerShell 7 unavailable')),
+], ids=['powershell51', 'pwsh7'])
 @pytest.mark.parametrize('mode', ['normal', 'normal_scriptblock', 'bad_status', 'bad_scriptblock', 'bad_policy', 'bad_wrapper',
                                   'missing_python_pin', 'wrong_python_pin', 'missing_python_path', 'disabled',
                                   'bad_manifest', 'bad_descriptor', 'bad_child', 'bad_approval'])
-def test_manual_owner_synthetic_process_keeps_stdin_and_stops(tmp_path, mode):
+def test_manual_owner_synthetic_process_keeps_stdin_and_stops(tmp_path, mode, shell):
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
     helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
@@ -108,7 +114,6 @@ try {
 $result.stage=if([IO.File]::Exists(''' + psquote(marker) + ''')){[IO.File]::ReadAllText(''' + psquote(marker) + ''')}else{'not-started'}
 $result|ConvertTo-Json -Compress -Depth 5
 '''
-    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
     encoded = base64.b64encode(harness.encode('utf-16le')).decode()
     proc = subprocess.Popen([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

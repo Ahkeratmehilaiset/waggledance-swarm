@@ -1542,10 +1542,9 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     if type(exc) is vector_cache._module.CacheRefused and str(exc) in _CACHE_RESOURCE_REASONS:
                         raise _CacheResourceRefused(str(exc)) from None
                     raise
-            if vector_cache is not None:
+            if vector_cache is not None and prior_memory is None:
                 cache_binding = _cache_snapshot_binding(binding, frozen, projection,
                                                         encoder_binding_bytes, encoder_binding_sha256)
-            if vector_cache is not None and prior_memory is None:
                 try:
                     def verify_old_prefix(offset, expected):
                         return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
@@ -1579,8 +1578,6 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 for index, record_id in enumerate(prior_memory.ids):
                     if record_id in by_id and old_records[record_id] == by_id[record_id]:
                         reusable[record_id] = prior_memory.vectors[index * 1536:(index + 1) * 1536]
-                if vector_cache is not None:
-                    cache_status = 'REFRESH'
 
             def checkpoint():
                 watcher.check()
@@ -1617,7 +1614,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 raise ValueError('immutable_snapshot_changed')
             output = _PrivateFlatMemory(binding, frozen, reader._canonical(manifest), ids, vectors,
                                         encoder_binding_bytes, cache_status)
-            if vector_cache is not None and cache_binding is not None:
+            if vector_cache is not None and prior_memory is None and cache_binding is not None:
                 cache_rows = _cache_rows_from_screened_projection(projection, ids, vectors)
                 vector_cache.write(cache_binding, cache_rows)
                 output.cache_status = cache_status + '_STORED'

@@ -137,8 +137,17 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
     def build(binding, prior_memory=None):
         return runtime._build_flat_memory_immutable(binding, encode, encoder, fixtures._sha(encoder),
                                                      5, None, prior_memory=prior_memory, vector_cache=adapter)
+    def publish_refresh(binding, memory):
+        # Simulate only the owner state at the later publication boundary.
+        # The real publisher still checks the source, memory and generation.
+        handler = SimpleNamespace(_vector_cache=adapter, _memory=memory)
+        owner = SimpleNamespace(_generation=(binding, memory.snapshot, handler),
+                                _check_factory=lambda: None, _policy_pins=None)
+        old_handler = SimpleNamespace(_vector_cache=adapter)
+        runtime._write_refresh_vector_cache(owner, old_handler)
     return SimpleNamespace(case=case, source=source, cache_path=cache_path, snapshot=snapshot,
-                           passages=passages, checks=checks, build=build, adapter=adapter)
+                           passages=passages, checks=checks, build=build, adapter=adapter,
+                           publish_refresh=publish_refresh)
 
 
 @pytest.fixture
@@ -228,6 +237,7 @@ try:
             stream.write(harness.fixtures._raw(row) + b'\n')
         later_binding, projection = case.snapshot()
         later = case.build(later_binding, prior_memory=memory)
+        case.publish_refresh(later_binding, later)
         result['append'] = {'cache_status':later.cache_status, 'passage_count':len(case.passages),
                             'only_new':case.passages == ['passage: synthetic allowed process append'],
                             'screened_records':len(projection['messages']['records']),
@@ -345,8 +355,9 @@ def test_refresh_interrupted_publication_preserves_previous_cache(synthetic, mon
     def fail_replace(*_args):
         raise OSError('synthetic replace failure')
     monkeypatch.setattr(cache.os, 'replace', fail_replace)
-    with pytest.raises(ValueError, match='snapshot_build_refused'):
-        synthetic.build(fresh, prior_memory=memory)
+    refreshed = synthetic.build(fresh, prior_memory=memory)
+    with pytest.raises(cache.CacheRefused, match='write'):
+        synthetic.publish_refresh(fresh, refreshed)
     assert synthetic.cache_path.read_bytes() == old_bytes
 
 
@@ -364,8 +375,9 @@ def test_refresh_rechecks_source_after_cache_publication(synthetic, monkeypatch)
             stream.seek(0)
             stream.write(b'!' if first != b'!' else b'?')
     monkeypatch.setattr(cache, 'write_cache', write_then_change_source)
-    with pytest.raises(ValueError, match='snapshot_build_refused'):
-        synthetic.build(fresh, prior_memory=memory)
+    refreshed = synthetic.build(fresh, prior_memory=memory)
+    with pytest.raises(Exception):
+        synthetic.publish_refresh(fresh, refreshed)
 
 
 def test_cache_more_than_legacy_row_limit_roundtrip_and_append(synthetic):

@@ -40,6 +40,12 @@ if ($SelfTestAdmission) {
                   $record.StartDiagnostic.schema -cne ('wd.mind-local-owner-start-diagnostic.'+$mode)) {
             throw ('admission diagnostic mismatch: '+$mode)
         }
+        if ($mode -ceq 'v2' -and ($null -eq $record.StartDiagnostic.PSObject.Properties['worker_exit_code'] -or
+                                  $null -eq $record.StartDiagnostic.PSObject.Properties['worker_exit_stage_hint'] -or
+                                  $null -ne $record.StartDiagnostic.worker_exit_code -or
+                                  $record.StartDiagnostic.worker_exit_stage_hint -cne 'UNKNOWN')) {
+            throw 'admission worker diagnostic mismatch'
+        }
     }
     Write-Output 'admission parser: off/v1/v2, EOF, exit 2 passed'
     return

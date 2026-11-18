@@ -47,7 +47,7 @@ def _fixture(tmp_path, mode):
                  b'def main(argv):\n print("ATTACK_MAIN")\n return 0\n')
     sources = {'tools/__init__.py': b'', 'tools/wd_mind_admin_bootstrap.py': source.encode(),
                'tools/wd_mind_owner_reservation_admin.py': admin, 'tools/dependency.py': b'VALUE = 41\n'}
-    if mode in ('real_disabled', 'real_disabled_current_cli', 'real_validate_loader'):
+    if mode in ('real_disabled', 'real_disabled_current_cli', 'real_validate_loader', 'real_exact_e2e'):
         definition = json.loads((ROOT / 'ops/windows/reboot/bridge-code-files.json').read_text())
         sources = {p: (ROOT / p).read_bytes() for p in definition['python_files']
                    if p.endswith('.py') and p.startswith(('tools/', 'waggledance/'))}
@@ -67,7 +67,8 @@ def _fixture(tmp_path, mode):
                 b' _validate_bootstrap_loader(Path(__file__).parents[2])\n'
                 b' print("SYNTHETIC_REAL_LOADER_VALIDATED")\n'
                 b' return 2\n')
-        sources['tools/wd_mind_admin_bootstrap.py'] = source.encode()
+        sources['tools/wd_mind_admin_bootstrap.py'] = (BOOTSTRAP.read_bytes()
+            if mode == 'real_exact_e2e' else source.encode())
     pins = {}
     for relative, raw in sources.items():
         path = root / 'tools-bootstrap' / relative
@@ -208,6 +209,111 @@ print('SYNTHETIC_FINDER_CLEAN')
                             cwd=str(tmp_path), capture_output=True, text=True, timeout=25, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'SYNTHETIC_FINDER_CLEAN'
+
+
+@pytest.mark.parametrize('scenario', ['create', 'reset', 'damaged', 'source_changed',
+                                      'pointer_changed', 'binding_changed', 'binding_reset',
+                                      'binding_damaged', 'uncertain'])
+def test_exact_admin_end_to_end_with_only_synthetic_injections(tmp_path, scenario):
+    """Exact loader/admin bytes; synthetic process overrides all live bindings."""
+    root, commit, pin, _ = _fixture(tmp_path, 'real_exact_e2e')
+    loader = root / 'tools-bootstrap/tools/wd_mind_admin_bootstrap.py'
+    admin_source = root / 'tools-bootstrap/tools/wd_mind_owner_reservation_admin.py'
+    assert loader.read_bytes() == BOOTSTRAP.read_bytes()
+    assert admin_source.read_bytes() == (ROOT / 'tools/wd_mind_owner_reservation_admin.py').read_bytes()
+    script = r'''
+import pathlib, sys, time
+loader, store, pointer, fake_root, commit, pin, scenario = sys.argv[1:]
+loader, store, pointer, fake_root = map(pathlib.Path, (loader, store, pointer, fake_root))
+fake_root.mkdir()
+interpreter_root = fake_root.parent / 'synthetic-interpreter'
+interpreter_root.mkdir()
+interpreter = interpreter_root / 'python.exe'
+interpreter.write_bytes(b'synthetic interpreter')
+ns = {'__name__': 'wd_mind_admin_verified_bootstrap', '__file__': str(loader), '__package__': None}
+exec(compile(loader.read_bytes(), str(loader), 'exec', dont_inherit=True), ns)
+ns['_BUNDLE_STORE'], ns['_CURRENT_POINTER'] = store, pointer
+original_exec = ns['_PinnedFinder'].exec_module
+holder = {}
+def inject(finder, module):
+    original_exec(finder, module)
+    if module.__name__ != 'tools.wd_mind_owner_reservation_admin': return
+    admin = holder['admin'] = module
+    assert admin._PRODUCTION_ENTRY_ENABLED is False
+    # Every overridden location is inside this synthetic test root. Never use
+    # an installed pointer, live audit root, or real process observer.
+    admin._BUNDLE_STORE, admin._CURRENT_POINTER = store, pointer
+    admin._FIXED_PRODUCTION_ROOT = fake_root
+    admin.child._AUDIT_ROOT = fake_root
+    from tools import wd_mind_full_runtime as runtime
+    runtime.resolve_manifest_runtime_location = lambda **kwargs: {
+        'interpreter_status': 'VERIFIED', 'interpreter_root': str(interpreter_root),
+        'interpreter': str(interpreter)}
+    admin._observe_windows = lambda: (time.time_ns() - 1_000_000_000, ())
+    admin._PRODUCTION_ENTRY_ENABLED = True  # synthetic child process only
+    if scenario == 'source_changed':
+        pathlib.Path(module.__file__).write_bytes(b'changed synthetic admin')
+    elif scenario == 'pointer_changed':
+        pointer.write_text('{}', encoding='utf-8')
+    elif scenario in ('binding_changed', 'binding_reset', 'binding_damaged'):
+        method = {'binding_changed': '_atomic_reserved', 'binding_reset': '_release_verified',
+                  'binding_damaged': '_repair_marker_locked'}[scenario]
+        original = getattr(admin, method)
+        def changed(*args, **kwargs):
+            pointer.write_text('{}', encoding='utf-8')
+            return original(*args, **kwargs)
+        setattr(admin, method, changed)
+    elif scenario == 'uncertain':
+        original = admin._release_verified
+        def failed_fsync(*args, **kwargs):
+            def fail(fd): raise OSError('synthetic fsync fault')
+            admin.os.fsync = fail
+            return original(*args, **kwargs)
+        admin._release_verified = failed_fsync
+ns['_PinnedFinder'].exec_module = inject
+marker = fake_root / 'wd-mind-owner.reservation'
+# Derive the exact filename and bytes from captured source only, before the
+# actual entry, by populating the synthetic root in the injected import hook.
+original_inject = ns['_PinnedFinder'].exec_module
+def setup(finder, module):
+    original_inject(finder, module)
+    if module.__name__ != 'tools.wd_mind_owner_reservation_admin': return
+    global marker, initial
+    marker = fake_root / module.child._OWNER_RESERVATION_NAME
+    if scenario in ('reset', 'binding_reset', 'uncertain'):
+        initial = module.child._OWNER_RESERVATION_MAGIC + b'R'
+    elif scenario in ('damaged', 'binding_damaged'): initial = b'broken synthetic marker'
+    else: initial = None
+    if initial is not None:
+        marker.write_bytes(initial)
+        import os
+        os.utime(marker, ns=(1_600_000_000_000_000_000,)*2)
+ns['_PinnedFinder'].exec_module = setup
+operation = 'reset' if scenario in ('reset', 'damaged', 'binding_reset', 'binding_damaged', 'uncertain') else 'create'
+try:
+    result = ns['_run'](commit, pin, operation)
+except ns['BootstrapRefused']:
+    result = 2
+admin = holder['admin']
+if scenario in ('create', 'reset', 'damaged'):
+    assert result == 0
+    assert marker.read_bytes() == admin.child._OWNER_RESERVATION_MAGIC + b'C'
+elif scenario == 'uncertain':
+    assert result == 2
+    assert marker.read_bytes() == admin.child._OWNER_RESERVATION_MAGIC + b'C'
+elif scenario in ('binding_reset', 'binding_damaged'):
+    assert result == 2 and marker.read_bytes() == initial
+else:
+    assert result == 2 and not marker.exists()
+print('SYNTHETIC_E2E_' + scenario.upper())
+'''
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(loader), str(root.parent),
+                             str(tmp_path / 'state.json'), str(tmp_path / 'owner-root'), commit, pin, scenario],
+                            cwd=str(tmp_path), capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    assert 'SYNTHETIC_E2E_' + scenario.upper() in result.stdout
+    if scenario == 'uncertain':
+        assert 'owner_marker_reset_publication_uncertain' in result.stderr
 
 
 def test_wrong_external_manifest_or_missing_isolation_refuses(tmp_path):

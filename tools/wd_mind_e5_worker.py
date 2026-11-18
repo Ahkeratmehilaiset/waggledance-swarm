@@ -158,8 +158,17 @@ def serve(input_stream, output_stream, model, *, reader_slot=None, bulk_contract
               bytes.fromhex(active_nonce), bytes.fromhex(active_digest))
 
 
+# Closed table. Every failure of this worker leaves through one of these exit codes, so the parent can name the
+# stage without any text from the child; nothing is written to stdout or stderr. The worker itself never returns
+# 2: an exit code of 2 means the bootstrap refused (it prints its own fixed refusal line) or the interpreter
+# did not start.
+STAGE_EXIT_CODES = {"arguments": 20, "model_pin": 21, "offline_environment": 22, "reader_mutex": 23,
+                    "library_import": 24, "model_load": 25, "serving": 29}
+
+
 def main(*, model_dir, weights_sha256, generation, bulk_contract_sha256=None):
-    """Load one verified local model; transport only fixed-token failure."""
+    """Load one verified local model; transport only a fixed stage code on failure."""
+    stage = "arguments"
     try:
         _nonce_budget(bulk_contract_sha256)
         if (type(weights_sha256) is not str or not _HEX.fullmatch(weights_sha256)
@@ -168,20 +177,27 @@ def main(*, model_dir, weights_sha256, generation, bulk_contract_sha256=None):
         directory = Path(model_dir)
         if not directory.is_absolute():
             raise ValueError("model_path")
+        stage = "model_pin"
         hasher = hashlib.sha256()
         with (directory / "model.safetensors").open("rb") as stream:
             for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
                 hasher.update(block)
         if hasher.hexdigest() != weights_sha256:
             raise ValueError("model_pin")
+        stage = "offline_environment"
         if (os.environ.get("HF_HUB_OFFLINE") != "1" or os.environ.get("TRANSFORMERS_OFFLINE") != "1"):
             raise ValueError("offline_required")
+        stage = "reader_mutex"
         slot = sys.modules.get("sandbox.mind.step2.reader_slot")
         if slot is None or getattr(slot, "_generation", None) != generation or not callable(getattr(slot, "reader_slot", None)):
             raise ValueError("mutex_required")
+        stage = "library_import"
         from sentence_transformers import SentenceTransformer
+        stage = "model_load"
         model = SentenceTransformer(str(directory), device="cpu", local_files_only=True)
+        stage = "serving"
         return serve(sys.stdin.buffer, sys.stdout.buffer, model, reader_slot=slot.reader_slot,
                      bulk_contract_sha256=bulk_contract_sha256)
-    except Exception:
-        return 2
+    except BaseException:
+        # SystemExit and KeyboardInterrupt included: a library that exits on its own must not look like a clean end.
+        return STAGE_EXIT_CODES[stage]

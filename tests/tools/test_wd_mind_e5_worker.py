@@ -145,4 +145,86 @@ def test_wrong_weights_refuse_before_model_import(tmp_path, monkeypatch):
     (tmp_path / "model.safetensors").write_bytes(b"synthetic-weights")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    assert worker.main(model_dir=tmp_path, weights_sha256="0" * 64, generation="a" * 40) == 2
+    assert worker.main(model_dir=tmp_path, weights_sha256="0" * 64, generation="a" * 40) == 21
+
+
+def _start_inputs(tmp_path, monkeypatch, *, offline=True, slot=True, load=None):
+    """Synthetic start inputs that pass every check up to the chosen stage; no real library is imported.
+    ``load`` is None (model object returned), "missing" (the import fails) or an exception to raise at load."""
+    import hashlib
+    import sys
+    import types
+    payload = b"synthetic-weights"
+    (tmp_path / "model.safetensors").write_bytes(payload)
+    generation = "a" * 40
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1" if offline else "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    if slot:
+        monkeypatch.setitem(sys.modules, "sandbox.mind.step2.reader_slot",
+                            SimpleNamespace(_generation=generation, reader_slot=lambda *a, **k: None))
+    else:
+        monkeypatch.delitem(sys.modules, "sandbox.mind.step2.reader_slot", raising=False)
+    module = types.ModuleType("sentence_transformers")
+    if load is None:
+        module.SentenceTransformer = lambda *a, **k: object()
+    elif load != "missing":
+        def failing(*a, **k):
+            raise load
+        module.SentenceTransformer = failing
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+    return dict(model_dir=tmp_path, weights_sha256=hashlib.sha256(payload).hexdigest(), generation=generation)
+
+
+def _raiser(error):
+    def raising(*a, **k):
+        raise error
+    return raising
+
+
+def test_stage_table_is_closed_distinct_and_never_the_generic_code():
+    codes = worker.STAGE_EXIT_CODES
+    assert list(codes) == ["arguments", "model_pin", "offline_environment", "reader_mutex", "library_import",
+                           "model_load", "serving"]
+    assert list(codes.values()) == [20, 21, 22, 23, 24, 25, 29]
+    assert not {0, 1, 2} & set(codes.values())      # 2 stays what the bootstrap or the interpreter returns
+
+
+@pytest.mark.parametrize("fault, expected", [
+    ("arguments_identity", 20), ("arguments_relative_path", 20), ("arguments_bulk_contract", 20),
+    ("model_pin_missing_file", 21), ("offline_environment", 22), ("reader_mutex", 23),
+    ("library_import", 24), ("model_load", 25), ("model_load_system_exit", 25),
+    ("model_load_keyboard_interrupt", 25),
+])
+def test_each_start_stage_leaves_its_own_code_and_no_output(tmp_path, monkeypatch, capfd, fault, expected):
+    load = {"library_import": "missing", "model_load": OSError("synthetic secret detail"),
+            "model_load_system_exit": SystemExit("synthetic secret detail"),
+            "model_load_keyboard_interrupt": KeyboardInterrupt()}.get(fault)
+    options = _start_inputs(tmp_path, monkeypatch, offline=fault != "offline_environment",
+                            slot=fault != "reader_mutex", load=load)
+    if fault == "arguments_identity":
+        options["generation"] = "not-a-generation"
+    elif fault == "arguments_relative_path":
+        options["model_dir"] = "relative"
+    elif fault == "arguments_bulk_contract":
+        options["bulk_contract_sha256"] = "0" * 64
+    elif fault == "model_pin_missing_file":
+        (tmp_path / "model.safetensors").unlink()
+    assert worker.main(**options) == expected
+    captured = capfd.readouterr()
+    assert captured.out == "" and captured.err == ""        # no text from the failure, not even its type
+
+
+@pytest.mark.parametrize("error", [ValueError("request_shape"), SystemExit(0), SystemExit("synthetic secret detail"),
+                                   KeyboardInterrupt()])
+def test_failure_after_model_load_has_its_own_code_and_no_output(tmp_path, monkeypatch, capfd, error):
+    options = _start_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker, "serve", _raiser(error))
+    assert worker.main(**options) == 29
+    captured = capfd.readouterr()
+    assert captured.out == "" and captured.err == ""
+
+
+def test_successful_start_returns_what_serve_returns(tmp_path, monkeypatch):
+    options = _start_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker, "serve", lambda *a, **k: 0)
+    assert worker.main(**options) == 0

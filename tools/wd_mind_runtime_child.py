@@ -2707,6 +2707,18 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     service_status = service.close(timeout=0)
                     if type(service_status) is dict and service_status.get('state') == 'STOPPED':
                         break
+                    if (type(service_status) is dict and service_status.get('state') == 'FAILED'
+                            and type(service) is process._LocalCandidateService):
+                        # The pinned service returns FAILED from close only
+                        # after listener closure and all worker/wake exits are
+                        # positively established. Preserve the failure result.
+                        failed = True
+                        try: emit('HOLD')
+                        except BaseException: pass
+                        if (include_worker_stage_diagnostics is True or
+                                (include_start_diagnostics is True and not startup_reported_ready)):
+                            start_diagnostic_worker()
+                        break
                 except BaseException:
                     pass
                 try: emit('HOLD')

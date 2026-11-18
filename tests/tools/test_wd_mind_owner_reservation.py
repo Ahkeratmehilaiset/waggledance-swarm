@@ -111,6 +111,64 @@ def test_synthetic_eof_does_not_hide_late_service_start_failure(monkeypatch):
     assert states == ['STARTING', 'HOLD', 'STOPPED']
 
 
+@WINDOWS
+@pytest.mark.parametrize('serve_fails', [False, True])
+def test_synthetic_real_service_finishes_after_stop_with_failure_evidence(monkeypatch, serve_fails):
+    """Real service threads/close, synthetic AF_PIPE transport and adapter."""
+    import threading
+    import multiprocessing.connection as transport
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    entered, wake, closed, failure_seen = threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    class Adapter:
+        _owner = object()
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'READY', 'owned': True}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+        def candidates(self, request): raise AssertionError('no candidate query expected')
+    class Connection:
+        def poll(self, timeout):
+            failure_seen.set()
+            raise KeyboardInterrupt()
+        def close(self): pass
+    class Listener:
+        def __init__(self, **kwargs): pass
+        def accept(self):
+            entered.set()
+            if not serve_fails: assert wake.wait(4)
+            return Connection()
+        def close(self): closed.set()
+    def client(**kwargs):
+        wake.set()
+        return Connection()
+    monkeypatch.setattr(transport, 'Listener', Listener)
+    monkeypatch.setattr(transport, 'Client', client)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    class Input:
+        def read(self, size):
+            assert (failure_seen if serve_fails else entered).wait(4)
+            return b''
+    output, result = io.BytesIO(), []
+    def owner_entry():
+        result.append(child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+            bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+            policy_sha256='b' * 64, approval_reference_sha256='c' * 64))
+    owner = threading.Thread(target=owner_entry, name='synthetic-owner', daemon=True)
+    owner.start()
+    try:
+        owner.join(4)
+        assert not owner.is_alive(), 'owner retained HOLD after actual service threads ended'
+        assert closed.is_set()
+        assert result == [2 if serve_fails else 0]
+        states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+        assert states[0] == 'STARTING' and states[-1] == 'STOPPED'
+        if serve_fails: assert 'HOLD' in states
+    finally:
+        wake.set()
+
+
 @pytest.mark.parametrize('startup_failed', [False, True])
 def test_synthetic_eof_does_not_hide_adapter_failure_during_cleanup(monkeypatch, startup_failed):
     import threading

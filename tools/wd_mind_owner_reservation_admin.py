@@ -40,12 +40,16 @@ class _AdminReason(Exception):
 _REASONS = frozenset({'ROOT_UNAVAILABLE', 'PRODUCTION_ROUTE_UNAVAILABLE', 'MARKER_EXISTS',
                       'MARKER_MISSING', 'MARKER_LOCK_UNAVAILABLE', 'MARKER_NOT_RESERVED',
                       'HOST_OBSERVATION_UNAVAILABLE', 'HOST_TIME_INVALID', 'REBOOT_REQUIRED',
-                      'PUBLISH_REFUSED', 'SYNTHETIC_SCOPE_REQUIRED', 'RESET_PUBLICATION_UNCERTAIN'})
+                      'PUBLISH_REFUSED', 'SYNTHETIC_SCOPE_REQUIRED', 'RESET_PUBLICATION_UNCERTAIN',
+                      'CREATE_PUBLICATION_UNCERTAIN'})
 
 
 _CURRENT_POINTER = Path(r'C:\Python\WD_REBOOT_STATE_CURRENT.json')
 _BUNDLE_STORE = Path(r'C:\Python\wd-reboot-bundles')
 _SYNTHETIC_ROOT = Path(r'C:\Python\project2-pr2179-owner-marker-fix-20261118\.codex-audit\marker-admin-synthetic-tests')
+_FIXED_PRODUCTION_ROOT = Path(r'C:\Python\project2\.codex-audit')
+_SYNTHETIC_SCOPE = object()
+_PRODUCTION_SCOPE = object()
 
 
 class _TimeInfo(ctypes.Structure):
@@ -199,6 +203,38 @@ def _assert_synthetic_root(root):
         raise ReservationAdminRefused('SYNTHETIC_SCOPE_REQUIRED') from None
 
 
+def _require_production_activation():
+    """Non-overridable through CLI: no live operation is enabled in this draft."""
+    raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+
+
+def _assert_scope_root(root, scope):
+    if scope is _SYNTHETIC_SCOPE:
+        return _assert_synthetic_root(root)
+    if scope is not _PRODUCTION_SCOPE:
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    # This check intentionally precedes even a live path lookup. Its future
+    # replacement requires reviewed activation and legacy-owner proof.
+    _require_production_activation()
+    path = Path(root)
+    expected = _FIXED_PRODUCTION_ROOT
+    if (not path.is_absolute() or '..' in path.parts
+            or os.path.normcase(os.path.abspath(path)) != os.path.normcase(os.path.abspath(expected))
+            or os.path.normcase(os.path.abspath(child._AUDIT_ROOT)) != os.path.normcase(os.path.abspath(expected))):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    absent._plain(path, directory=True)
+    resolved = path.resolve(strict=True)
+    if os.path.normcase(str(resolved)) != os.path.normcase(os.path.abspath(expected)):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    return os.path.normcase(str(resolved))
+
+
+def _scoped_call(function, scope, *args):
+    if scope is _SYNTHETIC_SCOPE:
+        return function(*args)
+    return function(*args, _scope=scope)
+
+
 def _final_handle_path(handle):
     """Resolve the opened Windows object; do not trust the caller's path."""
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -237,6 +273,25 @@ def _pin_directory_chain(root):
             native.kernel.CloseHandle(handle)
 
 
+def _assert_open_directory_identity(root, handle):
+    """Compare the pinned directory object with a fresh no-reparse open."""
+    from tools import wd_mind_vector_cache as cache
+    native = cache._Native()
+    fresh = native.open(Path(root), 3, 0x81, 3, directory=True)
+    try:
+        left, right = cache._HandleInfo(), cache._HandleInfo()
+        if (not native.kernel.GetFileInformationByHandle(handle, ctypes.byref(left))
+                or not native.kernel.GetFileInformationByHandle(fresh, ctypes.byref(right))
+                or native.kernel.GetFileType(handle) != 1
+                or left.attributes & 0x400 or not left.attributes & 0x10
+                or not (left.index_high or left.index_low)
+                or (left.volume, left.index_high, left.index_low) !=
+                   (right.volume, right.index_high, right.index_low)):
+            raise ReservationAdminRefused('DIRECTORY_IDENTITY_UNKNOWN')
+    finally:
+        native.kernel.CloseHandle(fresh)
+
+
 class _UnicodeString(ctypes.Structure):
     _fields_ = [('length', wintypes.USHORT), ('maximum', wintypes.USHORT), ('buffer', wintypes.LPWSTR)]
 
@@ -251,11 +306,11 @@ class _IoStatusBlock(ctypes.Structure):
     _fields_ = [('status', ctypes.c_void_p), ('information', ctypes.c_size_t)]
 
 
-def _discard_new_native_handle(handle):
+def _discard_new_native_handle(handle, *, _scope=_SYNTHETIC_SCOPE):
     """Dispose only an unrenamed handle returned by our successful FILE_CREATE."""
     from tools import wd_mind_vector_cache as cache
     final = _final_handle_path(handle)
-    _assert_synthetic_root(final.parent)
+    _assert_scope_root(final.parent, _scope)
     if re.fullmatch(re.escape(child._OWNER_RESERVATION_NAME) + r'\.init-[0-9a-f]{32}', final.name) is None:
         raise ReservationAdminRefused('staging_cleanup_unproven')
     kernel = cache._Native().kernel
@@ -273,13 +328,15 @@ def _discard_new_native_handle(handle):
         raise ReservationAdminRefused('staging_cleanup_unproven')
 
 
-def _relative_create(directory_handle, leaf):
+def _relative_create(directory_handle, leaf, *, _scope=_SYNTHETIC_SCOPE, verify_binding=None):
     """Create one ASCII leaf relative to an already pinned directory handle."""
     import msvcrt
     if (type(leaf) is not str or not leaf or leaf in ('.', '..') or not leaf.isascii()
             or any(c in leaf for c in ('/', '\\', ':'))):
         raise ValueError('invalid_leaf')
-    _assert_synthetic_root(_final_handle_path(directory_handle))
+    _assert_scope_root(_final_handle_path(directory_handle), _scope)
+    if _scope is _PRODUCTION_SCOPE and not callable(verify_binding):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
     raw = leaf.encode('utf-16-le')
     buffer = ctypes.create_unicode_buffer(leaf)
     name = _UnicodeString(len(raw), len(raw) + 2, ctypes.cast(buffer, wintypes.LPWSTR))
@@ -293,6 +350,7 @@ def _relative_create(directory_handle, leaf):
     native.restype = ctypes.c_long
     fd = None
     try:
+        if verify_binding is not None: verify_binding()
         status = native(ctypes.byref(out), 0xc0110080, ctypes.byref(attributes), ctypes.byref(status_block),
             None, 0x80, 3, 2, 0x00200060, None, 0)  # FILE_CREATE, no reparse, synchronous
         if status != 0:
@@ -302,7 +360,7 @@ def _relative_create(directory_handle, leaf):
     except BaseException:
         if out.value not in (None, wintypes.HANDLE(-1).value):
             try:
-                _discard_new_native_handle(out)
+                _scoped_call(_discard_new_native_handle, _scope, out)
             finally:
                 if fd is not None:
                     os.close(fd)
@@ -313,13 +371,13 @@ def _relative_create(directory_handle, leaf):
         raise
 
 
-def _discard_owned_temp(fd, tmp, identity):
+def _discard_owned_temp(fd, tmp, identity, *, _scope=_SYNTHETIC_SCOPE):
     """Disposition the known open staging handle only; never unlink a path."""
     import msvcrt
     try:
         final = _final_handle_path(msvcrt.get_osfhandle(fd))
-        handle_root = _assert_synthetic_root(final.parent)
-        path_root = _assert_synthetic_root(Path(tmp).parent)
+        handle_root = _assert_scope_root(final.parent, _scope)
+        path_root = _assert_scope_root(Path(tmp).parent, _scope)
         if (handle_root != path_root or os.path.normcase(str(final)) != os.path.normcase(str(tmp))
                 or re.fullmatch(re.escape(child._OWNER_RESERVATION_NAME) + r'\.init-[0-9a-f]{32}', final.name) is None):
             raise ValueError('scope')
@@ -342,7 +400,7 @@ def _discard_owned_temp(fd, tmp, identity):
         raise ValueError('staging_cleanup_unproven')
 
 
-def _atomic_reserved(path, directory_handle, state=b'R'):
+def _atomic_reserved(path, directory_handle, state=b'R', *, _scope=_SYNTHETIC_SCOPE, verify_binding=None):
     """Publish complete bytes; cleanup only the exact owned staging handle.
 
     A process crash may leave an incomplete or complete staging leaf, but never
@@ -352,16 +410,26 @@ def _atomic_reserved(path, directory_handle, state=b'R'):
     import msvcrt
     if path.name != child._OWNER_RESERVATION_NAME or state not in (b'R', b'C'):
         raise ValueError('invalid_marker_leaf')
-    if _assert_synthetic_root(path.parent) != _assert_synthetic_root(_final_handle_path(directory_handle)):
+    if _assert_scope_root(path.parent, _scope) != _assert_scope_root(_final_handle_path(directory_handle), _scope):
         raise ReservationAdminRefused('SYNTHETIC_SCOPE_REQUIRED')
+    _assert_open_directory_identity(path.parent, directory_handle)
+    if _scope is _PRODUCTION_SCOPE and not callable(verify_binding):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
     tmp = path.with_name(path.name + '.init-' + secrets.token_hex(16))
-    fd = _relative_create(directory_handle, tmp.name)
+    if verify_binding is None:
+        fd = _scoped_call(_relative_create, _scope, directory_handle, tmp.name)
+    elif _scope is _SYNTHETIC_SCOPE:
+        fd = _relative_create(directory_handle, tmp.name, verify_binding=verify_binding)
+    else:
+        fd = _relative_create(directory_handle, tmp.name, _scope=_scope, verify_binding=verify_binding)
     identity = None
     published = False
+    publication_started = False
     try:
         info = os.fstat(fd)
         identity = (info.st_dev, info.st_ino)
         raw = child._OWNER_RESERVATION_MAGIC + state
+        if verify_binding is not None: verify_binding()
         if os.write(fd, raw) != len(raw):
             raise ValueError('write')
         os.fsync(fd)
@@ -380,9 +448,12 @@ def _atomic_reserved(path, directory_handle, state=b'R'):
         native.argtypes = [wintypes.HANDLE, ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
                            wintypes.ULONG, ctypes.c_int]
         native.restype = ctypes.c_long
+        if verify_binding is not None: verify_binding()
+        publication_started = True
         status = native(msvcrt.get_osfhandle(fd), ctypes.byref(io), ctypes.byref(rename),
                         ctypes.sizeof(rename), 10)  # FileRenameInformation, no replace
         if status != 0:
+            publication_started = False
             if status & 0xffffffff == 0xc0000035:  # STATUS_OBJECT_NAME_COLLISION
                 raise _AdminReason('MARKER_EXISTS')
             raise _AdminReason('PUBLISH_REFUSED')
@@ -393,15 +464,27 @@ def _atomic_reserved(path, directory_handle, state=b'R'):
                 or (by_path.st_dev, by_path.st_ino) != identity or by_handle.st_nlink != 1
                 or by_path.st_nlink != 1):
             raise ValueError('published_changed')
+    except Exception:
+        if publication_started:
+            raise ReservationAdminRefused('CREATE_PUBLICATION_UNCERTAIN') from None
+        raise
     finally:
+        primary = sys.exc_info()[1]
         try:
-            if not published:
+            # Once the rename was attempted, never delete: it might already be
+            # the public marker even if the syscall result was not observed.
+            if not published and not publication_started:
                 if identity is None:
-                    _discard_new_native_handle(msvcrt.get_osfhandle(fd))
+                    _scoped_call(_discard_new_native_handle, _scope, msvcrt.get_osfhandle(fd))
                 else:
-                    _discard_owned_temp(fd, tmp, identity)
+                    _scoped_call(_discard_owned_temp, _scope, fd, tmp, identity)
         finally:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except Exception:
+                if isinstance(primary, ReservationAdminRefused) and str(primary) == 'CREATE_PUBLICATION_UNCERTAIN':
+                    raise ReservationAdminRefused('CREATE_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN') from None
+                raise
     return identity
 
 
@@ -418,6 +501,116 @@ def _checked_observe(observe):
         return observe()
     except Exception:
         raise _AdminReason('HOST_OBSERVATION_UNAVAILABLE') from None
+
+
+def _release_verified(guard, verify_binding, *, _scope=_SYNTHETIC_SCOPE):
+    """Release a verified R marker; a failed post-write result is uncertain."""
+    if _scope is _PRODUCTION_SCOPE:
+        _require_production_activation()
+    if type(guard) is not child._LocalOwnerReservation:
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    _assert_scope_root(guard.root, _scope)
+    expected = Path(guard.root) / child._OWNER_RESERVATION_NAME
+    if os.path.normcase(os.path.abspath(guard.path)) != os.path.normcase(os.path.abspath(expected)):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    if not callable(verify_binding):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    guard._check()
+    if guard._read() != child._OWNER_RESERVATION_MAGIC + b'R':
+        raise ReservationAdminRefused('MARKER_NOT_RESERVED')
+    os.lseek(guard.fd, len(child._OWNER_RESERVATION_MAGIC), os.SEEK_SET)
+    # The mandatory binding check is immediately before the R->C write.
+    # A check/write race and same-account ABA remain UNKNOWN.
+    verify_binding()
+    try:
+        if os.write(guard.fd, b'C') != 1:
+            raise ValueError('write')
+        os.fsync(guard.fd)
+        guard._check()
+        if guard._read() != child._OWNER_RESERVATION_MAGIC + b'C':
+            raise ValueError('marker_changed')
+        import msvcrt
+        os.lseek(guard.fd, 0, os.SEEK_SET)
+        msvcrt.locking(guard.fd, msvcrt.LK_UNLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+        os.close(guard.fd)
+        guard.fd = -1
+    except Exception:
+        raise ReservationAdminRefused('RESET_PUBLICATION_UNCERTAIN') from None
+
+
+def _production_marker(*, operation, bundle_root, manifest_sha256):
+    """Unconditionally disabled fixed-root candidate; not an operator entrypoint.
+
+    No caller-supplied root, process observer, or proof hook is admitted. The
+    disabled activation is also a placeholder for the still-missing legacy
+    owner absence proof. Never remove it merely because a process snapshot was
+    empty: that snapshot is point-in-time only.
+    """
+    _require_production_activation()  # Before opening a pointer or live path.
+    if operation not in ('create', 'reset'):
+        raise ReservationAdminRefused('invalid_operation')
+    root = _FIXED_PRODUCTION_ROOT
+    _assert_scope_root(root, _PRODUCTION_SCOPE)
+    location, verify_binding = _current_binding(bundle_root, manifest_sha256)
+    if (type(location) is not dict or location.get('interpreter_status') != 'VERIFIED'
+            or not callable(verify_binding)):
+        raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+    interpreter_root, interpreter = location['interpreter_root'], location['interpreter']
+    root_stat = os.lstat(root)
+    guard = None
+    fd = None
+    try:
+        import msvcrt
+        with _pin_directory_chain(root) as directory_handle:
+            _assert_scope_root(root, _PRODUCTION_SCOPE)
+            _assert_open_directory_identity(root, directory_handle)
+            current = os.lstat(root)
+            if (current.st_dev, current.st_ino) != (root_stat.st_dev, root_stat.st_ino):
+                raise ReservationAdminRefused('PRODUCTION_ROUTE_UNAVAILABLE')
+            verify_binding()
+            path = root / child._OWNER_RESERVATION_NAME
+            if operation == 'create':
+                if os.path.lexists(path):
+                    raise ReservationAdminRefused('MARKER_EXISTS')
+                for _ in range(2):
+                    boot_ns, processes = _checked_observe(_observe_windows)
+                    _validate_observation(boot_ns, processes, interpreter_root, interpreter)
+                    verify_binding()
+                _atomic_reserved(path, directory_handle, b'C', _scope=_PRODUCTION_SCOPE,
+                                 verify_binding=verify_binding)
+                return
+            absent._plain(path, directory=False)
+            path_stat = os.lstat(path)
+            # Exactly the owner's share mode denies competing write/delete opens.
+            fd = child._open_owned_marker(path)
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
+            guard = child._LocalOwnerReservation(root, path, fd,
+                (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
+            guard._check()
+            if guard._read() != child._OWNER_RESERVATION_MAGIC + b'R':
+                raise ReservationAdminRefused('MARKER_NOT_RESERVED')
+            marker_time = os.fstat(fd).st_mtime_ns
+            boot_ns, processes = _checked_observe(_observe_windows)
+            _validate_observation(boot_ns, processes, interpreter_root, interpreter, marker_time)
+            verify_binding()
+            guard._check()
+            if os.fstat(fd).st_mtime_ns != marker_time or guard._read() != child._OWNER_RESERVATION_MAGIC + b'R':
+                raise ReservationAdminRefused('MARKER_NOT_RESERVED')
+            _release_verified(guard, verify_binding, _scope=_PRODUCTION_SCOPE)
+            fd = None
+    finally:
+        if guard is not None and guard.fd >= 0:
+            primary = sys.exc_info()[1]
+            try:
+                guard.abandon()
+            except Exception:
+                if isinstance(primary, ReservationAdminRefused) and str(primary) == 'RESET_PUBLICATION_UNCERTAIN':
+                    raise ReservationAdminRefused('RESET_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN') from None
+                raise
+            fd = None
+        if fd is not None:
+            os.close(fd)
 
 
 def _marker(root, interpreter_root, *, operation, observe, interpreter=None, verify_binding=lambda: None):
@@ -511,6 +704,8 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
         reason = {'runtime_process_observed': 'RUNTIME_PROCESS_OBSERVED',
                   'runtime_identity_invalid': 'RUNTIME_IDENTITY_UNKNOWN',
                   'SYNTHETIC_SCOPE_REQUIRED': 'SYNTHETIC_SCOPE_REQUIRED',
+                  'CREATE_PUBLICATION_UNCERTAIN': 'CREATE_PUBLICATION_UNCERTAIN',
+                  'CREATE_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN': 'CREATE_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN',
                   'staging_cleanup_unproven': 'STAGING_CLEANUP_UNPROVEN'}.get(str(exc), 'ADMIN_REFUSED')
         raise ReservationAdminRefused(reason) from None
     except Exception:

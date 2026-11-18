@@ -834,3 +834,179 @@ def test_binding_rejects_admin_source_tampering(tmp_path, monkeypatch):
     source.write_bytes(b'tampered')
     with pytest.raises(admin.ReservationAdminRefused):
         admin._current_binding(str(bundle), pin)
+
+
+def test_direct_production_candidate_refuses_before_open_or_binding(monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError('must not inspect or mutate live state')
+    monkeypatch.setattr(admin, '_current_binding', unexpected)
+    monkeypatch.setattr(admin, '_pin_directory_chain', unexpected)
+    monkeypatch.setattr(admin.os, 'open', unexpected)
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._production_marker(operation='create', bundle_root='untrusted', manifest_sha256='a' * 64)
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._production_marker(operation='reset', bundle_root='untrusted', manifest_sha256='a' * 64)
+
+
+def test_production_scope_refuses_direct_publish_and_release_before_open(monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError('must not access marker')
+    monkeypatch.setattr(admin, '_final_handle_path', unexpected)
+    monkeypatch.setattr(admin.os, 'write', unexpected)
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._atomic_reserved(admin._FIXED_PRODUCTION_ROOT / child._OWNER_RESERVATION_NAME, None,
+                               _scope=admin._PRODUCTION_SCOPE, verify_binding=unexpected)
+    guard = type('Guard', (), {'root': admin._FIXED_PRODUCTION_ROOT})()
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._release_verified(guard, unexpected, _scope=admin._PRODUCTION_SCOPE)
+
+
+def test_synthetic_directory_handle_must_match_named_root(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    other = tmp_path / 'other'
+    other.mkdir()
+    with admin._pin_directory_chain(root) as correct, admin._pin_directory_chain(other) as wrong:
+        admin._assert_open_directory_identity(root, correct)
+        with pytest.raises(admin.ReservationAdminRefused, match='^DIRECTORY_IDENTITY_UNKNOWN$'):
+            admin._assert_open_directory_identity(root, wrong)
+    assert not marker.exists()
+
+
+def test_release_rejects_forged_or_nonmarker_synthetic_guard(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    foreign = root / 'other-file'
+    foreign.write_bytes(child._OWNER_RESERVATION_MAGIC + b'R')
+    with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+        admin._release_verified(type('Guard', (), {'root': root})(), lambda: None)
+    fd = os.open(foreign, os.O_RDWR | getattr(os, 'O_BINARY', 0))
+    root_stat, file_stat = os.lstat(root), os.fstat(fd)
+    guard = child._LocalOwnerReservation(root, foreign, fd,
+        (root_stat.st_dev, root_stat.st_ino), (file_stat.st_dev, file_stat.st_ino))
+    try:
+        with pytest.raises(admin.ReservationAdminRefused, match='^PRODUCTION_ROUTE_UNAVAILABLE$'):
+            admin._release_verified(guard, lambda: None)
+    finally:
+        guard.abandon()
+    assert foreign.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'R'
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize('fail_check', [1, 2, 3])
+def test_synthetic_publish_binding_change_never_publishes(tmp_path, fail_check):
+    root, runtime, marker = _paths(tmp_path)
+    checks = []
+    def verify():
+        checks.append(len(checks) + 1)
+        if len(checks) == fail_check:
+            raise ValueError('synthetic binding changed')
+    with admin._pin_directory_chain(root) as directory_handle:
+        with pytest.raises(ValueError, match='synthetic binding changed'):
+            admin._atomic_reserved(marker, directory_handle, b'C', verify_binding=verify)
+    assert checks == list(range(1, fail_check + 1))
+    assert not marker.exists()
+    assert not list(root.glob(child._OWNER_RESERVATION_NAME + '.init-*'))
+
+
+def test_synthetic_publish_checks_binding_before_create_write_and_publish(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    states = []
+    def verify():
+        staging = list(root.glob(child._OWNER_RESERVATION_NAME + '.init-*'))
+        states.append((marker.exists(), len(staging), staging[0].stat().st_size if staging else None))
+    with admin._pin_directory_chain(root) as directory_handle:
+        admin._atomic_reserved(marker, directory_handle, b'C', verify_binding=verify)
+    assert states == [(False, 0, None), (False, 1, 0),
+                      (False, 1, len(child._OWNER_RESERVATION_MAGIC) + 1)]
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+
+
+def test_synthetic_publish_post_rename_check_failure_reports_uncertain(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    real_lstat = os.lstat
+    def fail_published(path, *args, **kwargs):
+        if Path(path) == marker:
+            raise OSError('private-published-check')
+        return real_lstat(path, *args, **kwargs)
+    with admin._pin_directory_chain(root) as directory_handle:
+        with monkeypatch.context() as patch:
+            patch.setattr(admin.os, 'lstat', fail_published)
+            with pytest.raises(admin.ReservationAdminRefused, match='^CREATE_PUBLICATION_UNCERTAIN$') as exc:
+                admin._atomic_reserved(marker, directory_handle, b'C', verify_binding=lambda: None)
+    assert 'private-published-check' not in str(exc.value)
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+
+
+def test_synthetic_publish_and_cleanup_failures_are_both_uncertain(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    real_lstat, real_close, real_create = os.lstat, os.close, admin._relative_create
+    created = []
+    def capture(*args, **kwargs):
+        fd = real_create(*args, **kwargs)
+        created.append(fd)
+        return fd
+    def fail_published(path, *args, **kwargs):
+        if Path(path) == marker:
+            raise OSError('private-published-check')
+        return real_lstat(path, *args, **kwargs)
+    def fail_after_close(fd):
+        real_close(fd)
+        if created and fd == created[0]:
+            raise OSError('private-close')
+    with admin._pin_directory_chain(root) as directory_handle:
+        with monkeypatch.context() as patch:
+            patch.setattr(admin, '_relative_create', capture)
+            patch.setattr(admin.os, 'lstat', fail_published)
+            patch.setattr(admin.os, 'close', fail_after_close)
+            with pytest.raises(admin.ReservationAdminRefused,
+                               match='^CREATE_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN$') as exc:
+                admin._atomic_reserved(marker, directory_handle, b'C', verify_binding=lambda: None)
+    assert 'private-' not in str(exc.value)
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+
+
+def test_synthetic_release_refuses_changed_binding_before_write(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    admin._marker(root, runtime, operation='create', observe=_clear())
+    guard = child._reserve_local_owner(root)
+    try:
+        def changed():
+            raise ValueError('synthetic binding changed')
+        with pytest.raises(ValueError, match='synthetic binding changed'):
+            admin._release_verified(guard, changed)
+        assert guard._read() == child._OWNER_RESERVATION_MAGIC + b'R'
+    finally:
+        guard.abandon()
+
+
+def test_synthetic_release_checks_binding_immediately_before_clear(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    admin._marker(root, runtime, operation='create', observe=_clear())
+    guard = child._reserve_local_owner(root)
+    states = []
+    real_write = os.write
+    def write(fd, data):
+        states.append('write')
+        return real_write(fd, data)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(admin.os, 'write', write)
+            admin._release_verified(guard, lambda: states.append('verify'))
+        assert states == ['verify', 'write']
+        assert guard.fd == -1
+        assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+    finally:
+        guard.abandon()
+
+
+def test_synthetic_release_fsync_failure_reports_uncertain(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    admin._marker(root, runtime, operation='create', observe=_clear())
+    guard = child._reserve_local_owner(root)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(admin.os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError('private')))
+            with pytest.raises(admin.ReservationAdminRefused, match='^RESET_PUBLICATION_UNCERTAIN$'):
+                admin._release_verified(guard, lambda: None)
+        assert guard._read() == child._OWNER_RESERVATION_MAGIC + b'C'
+    finally:
+        guard.abandon()

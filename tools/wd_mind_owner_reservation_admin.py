@@ -1,6 +1,9 @@
 """Pinned owner-marker administration candidate, pending review and deployment.
 
 A command cannot authenticate a human against another process using the same account.
+Success requires exit code 0 and the exact stdout receipt line
+``owner_marker_<operation>_complete``; otherwise the result is UNKNOWN, even
+if stderr is lost. Never automatically retry or revert a reset.
 
 This is a cooperating-owner guard, not an authentication boundary.  Process
 enumeration is a point-in-time observation: a legacy or same-user process may

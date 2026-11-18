@@ -4,8 +4,10 @@ This module is data for a separately reviewed operator command; executing this
 file by name is deliberately refused. The command must pin and execute these
 exact bytes from an externally anchored deployment manifest before calling
 ``_run``. This candidate is not evidence of installation or human authentication.
-Abnormal exit or absent unambiguous receipt means UNKNOWN: never automatically
-retry or revert a reset. Same-account changes,
+Success requires both exit code 0 and the exact stdout receipt line
+``owner_marker_<operation>_complete``. Otherwise the result is UNKNOWN, even
+if exit code is 0 or stderr is lost; never automatically retry or revert a
+reset. Same-account changes,
 interpreter/stdlib/DLL integrity and changes between checks remain UNKNOWN.
 """
 from __future__ import annotations

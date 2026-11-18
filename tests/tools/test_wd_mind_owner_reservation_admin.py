@@ -1619,10 +1619,12 @@ def test_synthetic_production_reset_reports_publication_and_cleanup_uncertain(
 
 
 @pytest.mark.parametrize('damaged', [False, True])
-@pytest.mark.parametrize('interrupt_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize(('interrupt_type', 'interrupt_value'), [
+    (KeyboardInterrupt, 'synthetic interrupt'), (SystemExit, 'synthetic interrupt'), (SystemExit, 0),
+])
 @pytest.mark.parametrize('cleanup_error', [None, OSError, KeyboardInterrupt])
 def test_synthetic_reset_interrupt_preserves_original_and_reports_unknown(
-        tmp_path, monkeypatch, capsys, damaged, interrupt_type, cleanup_error):
+        tmp_path, monkeypatch, capsys, damaged, interrupt_type, interrupt_value, cleanup_error):
     root, runtime, marker = _paths(tmp_path)
     interpreter = runtime / 'synthetic-interpreter.exe'
     interpreter.write_bytes(b'synthetic')
@@ -1641,7 +1643,7 @@ def test_synthetic_reset_interrupt_preserves_original_and_reports_unknown(
          'interpreter': str(interpreter)}, lambda: None))
     monkeypatch.setattr(admin, '_observe_windows', lambda: (time.time_ns() - 1_000_000_000, ()))
     original_write = os.write
-    fault = interrupt_type('synthetic interrupt')
+    fault = interrupt_type(interrupt_value)
     calls = []
     def interrupted_write(fd, data):
         calls.append(data)
@@ -1657,7 +1659,11 @@ def test_synthetic_reset_interrupt_preserves_original_and_reports_unknown(
     with pytest.raises(interrupt_type) as exc:
         admin.main(['reset', '--source-commit', commit, '--manifest-sha256', pin])
     assert exc.value is fault
-    assert 'RESET_PUBLICATION_UNCERTAIN' in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert 'RESET_PUBLICATION_UNCERTAIN' in captured.err
+    assert 'owner_marker_reset_complete' not in captured.out.splitlines()
+    if interrupt_type is SystemExit and interrupt_value == 0:
+        assert exc.value.code == 0  # exit 0 without the exact receipt is UNKNOWN.
     if cleanup_error is not None:
         assert isinstance(exc.value.__cause__, cleanup_error)
         assert 'CLEANUP_UNCERTAIN' in getattr(exc.value, '__notes__', ())

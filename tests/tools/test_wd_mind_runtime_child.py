@@ -1435,7 +1435,7 @@ def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(stag
     monkeypatch.setattr(subprocess, 'Popen', spawn)
     fleet = json.dumps({'lanes':[{'agent':'codex-lead-1'}],
                         'tools_supervisor':{'agent':'codex-tools-1'}}, sort_keys=True).encode()
-    snapshot = {'projection_sha256':'b'*64}
+    snapshot = {'projection_sha256':'b'*64, 'messages':{'end_cursor':SimpleNamespace(offset=1)}}
     binding = runtime._PrivateBinding(snapshot, tmp_path, 'a'*64, (fleet,), {})
     admission_owner = object()
     synthetic_local_admission.bind_owner(admission_owner)
@@ -1459,6 +1459,7 @@ def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(stag
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
     try:
         with pytest.raises(KeyboardInterrupt): owner.start()
+        assert entered.is_set()
         held = owner._owner
         assert held is not None and held.status()['owned'] is True
         assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}

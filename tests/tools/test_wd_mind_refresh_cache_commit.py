@@ -29,7 +29,9 @@ def refresh_case(tmp_path, monkeypatch):
     pins = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in runtime.reader._REQUIRED_CODE}
     monkeypatch.setattr(runtime.reader, '_REQUIRED_CODE', pins)
-    case = _synthetic_case(tmp_path, monkeypatch)
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    case = _synthetic_case(audit_root, monkeypatch)
     original_snapshot = case.snapshot
     def snapshot_with_realistic_source_args():
         binding, projection = original_snapshot()

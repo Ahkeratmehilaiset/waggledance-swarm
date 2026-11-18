@@ -202,6 +202,12 @@ class _LocalCandidateService:
     def __init__(self, owner, pipe_name):
         self._owner, self._name = owner, pipe_name
         self._listener = self._thread = self._wake_thread = None
+        self._listener_closed = False
+        self._listener_closing = False
+        self._pipe_lifecycle_lock = threading.Lock()
+        self._listener_creation_unknown = False
+        self._uncertain_connection = self._uncertain_wake_connection = None
+        self._accept_ownership_unknown = self._wake_ownership_unknown = False
         self._stop, self._lock, self._failed = threading.Event(), threading.Lock(), False
         self._serve_done, self._start_uncertain = threading.Event(), False
         self._wake_done, self._wake_start_uncertain = None, False
@@ -212,7 +218,10 @@ class _LocalCandidateService:
             if self._thread is not None or self._stop.is_set():
                 raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
             try:
+                # A constructor can allocate a native handle before it raises.
+                self._listener_creation_unknown = True
                 self._listener = Listener(address=self._name, family='AF_PIPE', authkey=None)
+                self._listener_creation_unknown = False
                 self._thread = threading.Thread(target=self._serve, name='mind-local-candidates', daemon=False)
                 self._thread.start()
             except BaseException as exc:
@@ -223,6 +232,7 @@ class _LocalCandidateService:
                     self._start_uncertain = True
                 elif self._listener is not None:
                     self._listener.close()
+                    self._listener_closed = True
                 self._stop.set()
                 if not isinstance(exc, Exception):
                     raise
@@ -236,6 +246,9 @@ class _LocalCandidateService:
                     connection = self._listener.accept()
                 except BaseException:
                     self._failed = True
+                    # The Windows listener may have detached a raw handle
+                    # before accept raises, so listener.close is not proof.
+                    self._accept_ownership_unknown = True
                     break
                 try:
                     if self._stop.is_set():
@@ -259,20 +272,34 @@ class _LocalCandidateService:
                     if connection is not None:
                         try:
                             connection.close()
-                        except Exception:
-                            pass
+                        except BaseException:
+                            self._failed = True
+                            self._uncertain_connection = connection
+                if self._uncertain_connection is not None:
+                    break
         finally:
-            try:
-                self._listener.close()
-            except BaseException:
-                self._failed = True
-            finally:
-                self._serve_done.set()
+            with self._pipe_lifecycle_lock:
+                self._listener_closing = True
+                try:
+                    self._listener.close()
+                except BaseException:
+                    self._failed = True
+                else:
+                    self._listener_closed = True
+                finally:
+                    self._serve_done.set()
 
     def status(self):
         with self._lock:
-            if ((self._start_uncertain and not self._serve_done.is_set()) or
-                    (self._wake_thread is not None and not self._wake_done.is_set())):
+            if ((self._wake_thread is not None and
+                     (self._wake_done is None or not self._wake_done.is_set() or self._wake_thread.is_alive()))
+                    or self._listener_creation_unknown
+                    or self._accept_ownership_unknown or self._wake_ownership_unknown
+                    or self._uncertain_connection is not None
+                    or self._uncertain_wake_connection is not None
+                    or (self._listener is not None and not self._listener_closed
+                        and (self._thread is None or self._serve_done.is_set())) or
+                    (self._start_uncertain and not self._serve_done.is_set())):
                 state = 'HOLD'
             elif self._failed:
                 state = 'FAILED'
@@ -289,10 +316,20 @@ class _LocalCandidateService:
             raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
         deadline = time.monotonic() + float(timeout)
         self._stop.set()
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+        try:
             thread = self._thread
             if thread is None:
-                return {'state':'STOPPED', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+                state = ('STOPPED' if (self._wake_thread is None or
+                         (self._wake_done is not None and self._wake_done.is_set()
+                          and not self._wake_thread.is_alive()))
+                         and (self._listener is None or self._listener_closed)
+                         and not self._listener_creation_unknown
+                         and not self._accept_ownership_unknown and not self._wake_ownership_unknown
+                         and self._uncertain_connection is None
+                         and self._uncertain_wake_connection is None else 'HOLD')
+                return {'state':state, 'authority':'none', 'caller_authentication':'UNKNOWN'}
             if self._start_uncertain and not self._serve_done.is_set() and not thread.is_alive():
                 return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
             if (self._wake_thread is not None and self._wake_done.is_set()
@@ -320,14 +357,36 @@ class _LocalCandidateService:
                     if not isinstance(exc, Exception):
                         raise
                     return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+            # Take the wake thread and its completion event as one generation.
+            # A concurrent close may retire and replace this pair while we
+            # wait, so it must be checked again under the same lock below.
+            wake_thread, wake_done = self._wake_thread, self._wake_done
+        finally:
+            self._lock.release()
         if thread.is_alive():
             thread.join(max(0, deadline - time.monotonic()))
-        wake_done = self._wake_done
         if wake_done is not None and not wake_done.is_set():
             wake_done.wait(max(0, deadline - time.monotonic()))
-        state = ('HOLD' if thread.is_alive() or (self._start_uncertain and not self._serve_done.is_set())
-                 or (wake_done is not None and not wake_done.is_set())
-                 else 'FAILED' if self._failed else 'STOPPED')
+        if wake_thread is not None and wake_done is not None and wake_done.is_set() and wake_thread.is_alive():
+            join = getattr(wake_thread, 'join', None)
+            if callable(join) and deadline > time.monotonic():
+                join(max(0, deadline - time.monotonic()))
+        if not self._lock.acquire(blocking=False):
+            return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+        try:
+            if (self._thread is not thread or self._wake_thread is not wake_thread
+                    or self._wake_done is not wake_done):
+                state = 'HOLD'
+            else:
+                state = ('HOLD' if thread.is_alive() or not self._serve_done.is_set() or not self._listener_closed
+                         or (wake_thread is not None and (wake_done is None or not wake_done.is_set()
+                                                          or wake_thread.is_alive()))
+                         or self._accept_ownership_unknown or self._wake_ownership_unknown
+                         or self._uncertain_connection is not None
+                         or self._uncertain_wake_connection is not None
+                         else 'FAILED' if self._failed else 'STOPPED')
+        finally:
+            self._lock.release()
         return {'state':state, 'authority':'none',
                 'caller_authentication':'UNKNOWN'}
 
@@ -339,11 +398,22 @@ class _LocalCandidateService:
 
     def _wake(self):
         from multiprocessing.connection import Client
+        connection = None
         try:
-            connection = Client(address=self._name, family='AF_PIPE', authkey=None)
+            # Serialize connection construction against listener close. Never
+            # hold the service state lock across a potentially blocking call.
+            with self._pipe_lifecycle_lock:
+                if self._listener_closing:
+                    return
+                connection = Client(address=self._name, family='AF_PIPE', authkey=None)
             connection.close()
-        except Exception:
-            pass
+        except BaseException:
+            # Client may have allocated a native handle even before raising.
+            # If it returned an object, retain it when close is uncertain.
+            self._failed = True
+            self._wake_ownership_unknown = True
+            if connection is not None:
+                self._uncertain_wake_connection = connection
 
 
 def create_local_candidate_service(*, enabled=False, owner=None, pipe_name=None):

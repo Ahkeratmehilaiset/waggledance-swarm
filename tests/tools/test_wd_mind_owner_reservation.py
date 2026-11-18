@@ -28,6 +28,254 @@ def _seed(root, state=b'C'):
     return root
 
 
+def test_synthetic_owner_immediate_control_eof_is_clean_stop_before_ready(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    class Adapter:
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'STARTING', 'owned': None}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    output = io.BytesIO()
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == 0
+    assert states == ['STARTING', 'STOPPED']
+
+
+def test_synthetic_eof_does_not_hide_already_failed_start(monkeypatch):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    class Adapter:
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'HOLD', 'owned': False}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    original_thread = threading.Thread
+    class EagerControlThread(original_thread):
+        def start(self):
+            super().start()
+            if self.name == 'mind-local-control':
+                self.join(3)
+                assert not self.is_alive()
+    monkeypatch.setattr(child.threading, 'Thread', EagerControlThread)
+    output = io.BytesIO()
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == 2
+    assert states == ['STARTING', 'HOLD', 'STOPPED']
+
+
+def test_synthetic_eof_does_not_hide_late_service_start_failure(monkeypatch):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    entered, release = threading.Event(), threading.Event()
+    class Adapter:
+        _owner = object()
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'READY', 'owned': True}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    class Service:
+        def start(self):
+            entered.set()
+            assert release.wait(3)
+            raise ValueError('synthetic-service-start-failure')
+        def close(self, timeout): return {'state': 'STOPPED'}
+    class Input:
+        def read(self, size):
+            assert entered.wait(3)
+            return b''
+    class Output(io.BytesIO):
+        def write(self, data):
+            if b'"state":"HOLD"' in bytes(data): release.set()
+            return super().write(data)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kwargs: 'synthetic')
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    output = Output()
+    code = child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == 2
+    assert states == ['STARTING', 'HOLD', 'STOPPED']
+
+
+@WINDOWS
+@pytest.mark.parametrize('serve_fails', [False, True])
+def test_synthetic_real_service_finishes_after_stop_with_failure_evidence(monkeypatch, serve_fails):
+    """Real service threads/close, synthetic AF_PIPE transport and adapter."""
+    import threading
+    import multiprocessing.connection as transport
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    entered, wake, closed, failure_seen = threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    class Adapter:
+        _owner = object()
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'READY', 'owned': True}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+        def candidates(self, request): raise AssertionError('no candidate query expected')
+    class Connection:
+        def poll(self, timeout):
+            failure_seen.set()
+            raise KeyboardInterrupt()
+        def close(self): pass
+    class Listener:
+        def __init__(self, **kwargs): pass
+        def accept(self):
+            entered.set()
+            if not serve_fails: assert wake.wait(4)
+            return Connection()
+        def close(self): closed.set()
+    def client(**kwargs):
+        wake.set()
+        return Connection()
+    monkeypatch.setattr(transport, 'Listener', Listener)
+    monkeypatch.setattr(transport, 'Client', client)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    class Input:
+        def read(self, size):
+            assert (failure_seen if serve_fails else entered).wait(4)
+            return b''
+    output, result = io.BytesIO(), []
+    def owner_entry():
+        result.append(child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+            bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+            policy_sha256='b' * 64, approval_reference_sha256='c' * 64))
+    owner = threading.Thread(target=owner_entry, name='synthetic-owner', daemon=True)
+    owner.start()
+    try:
+        owner.join(4)
+        assert not owner.is_alive(), 'owner retained HOLD after actual service threads ended'
+        assert closed.is_set()
+        assert result == [2 if serve_fails else 0]
+        states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+        assert states[0] == 'STARTING' and states[-1] == 'STOPPED'
+        if serve_fails: assert 'HOLD' in states
+    finally:
+        wake.set()
+
+
+@pytest.mark.parametrize('startup_failed', [False, True])
+def test_synthetic_eof_does_not_hide_adapter_failure_during_cleanup(monkeypatch, startup_failed):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    guard = child._LocalOwnerReservation(Path('synthetic'), Path('marker'), 123, (), ())
+    monkeypatch.setattr(guard, '_check', lambda: None)
+    monkeypatch.setattr(guard, '_read', lambda: PREFIX + b'R')
+    admission = child._LocalAdmission(guard)
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1, admission=admission)
+    admission.bind_owner(adapter)
+    release = threading.Event()
+    def prepare(self):
+        assert release.wait(3)
+        if startup_failed:
+            with self._lock:
+                self._state = 'HOLD'
+                self._start_failure = {'reason': 'OWNER_START', 'exception_type': 'ValueError'}
+    monkeypatch.setattr(child._LocalManifestQuery, '_prepare', prepare)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    class Output(io.BytesIO):
+        def write(self, data):
+            if b'"state":"HOLD"' in bytes(data): release.set()
+            return super().write(data)
+    output = Output()
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64, _admission=admission)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == (2 if startup_failed else 0)
+    assert states == ['STARTING', 'HOLD', 'STOPPED']
+
+
+@pytest.mark.parametrize(('reason', 'exception_type', 'expected'), [
+    ('NONE', 'NONE', False), ('UNKNOWN', 'UNKNOWN', None),
+    ('WORKER_SETUP', 'ValueError', True), ('BUSY', 'UNKNOWN', None)])
+def test_completed_adapter_start_failure_evidence_is_tristate(reason, exception_type, expected):
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1)
+    class Owner:
+        def start_diagnostic(self):
+            return {'reason': reason, 'exception_type': exception_type, 'authority': 'none'}
+    adapter._owner = Owner()
+    assert adapter.start_failure_observed() is expected
+
+
+@WINDOWS
+def test_held_reservation_rejects_second_handle_truncation(tmp_path):
+    root = _seed(tmp_path / 'synthetic-audit')
+    marker = root / MARKER
+    guard = child._reserve_local_owner(root)
+    opened = False
+    try:
+        try:
+            fd = os.open(marker, os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_BINARY', 0))
+        except OSError:
+            pass
+        else:
+            opened = True
+            os.close(fd)
+        assert not opened
+        assert guard._read() == PREFIX + b'R'
+        guard.release_clean(service_stopped=True, owner_stopped=True,
+                            owner_owned=False, control_stopped=True)
+    finally:
+        guard.abandon()
+
+
+@WINDOWS
+@pytest.mark.parametrize('mutation', ['write', 'unlink', 'rename'])
+def test_held_reservation_rejects_other_handle_mutation(tmp_path, mutation):
+    root = _seed(tmp_path / 'synthetic-audit')
+    marker = root / MARKER
+    guard = child._reserve_local_owner(root)
+    try:
+        with pytest.raises(OSError):
+            if mutation == 'write':
+                fd = os.open(marker, os.O_WRONLY | getattr(os, 'O_BINARY', 0))
+                try: os.write(fd, b'X')
+                finally: os.close(fd)
+            elif mutation == 'unlink':
+                marker.unlink()
+            else:
+                marker.rename(root / 'synthetic-other-marker')
+        assert guard._read() == PREFIX + b'R'
+        guard.release_clean(service_stopped=True, owner_stopped=True,
+                            owner_owned=False, control_stopped=True)
+        assert marker.read_bytes() == PREFIX + b'C'
+    finally:
+        guard.abandon()
+
+
+@WINDOWS
+def test_reservation_refuses_existing_writable_handle_without_mutating_marker(tmp_path):
+    root = _seed(tmp_path / 'synthetic-audit')
+    marker = root / MARKER
+    fd = os.open(marker, os.O_WRONLY | getattr(os, 'O_BINARY', 0))
+    try:
+        with pytest.raises(child.LaunchRefused):
+            child._reserve_local_owner(root)
+        assert marker.read_bytes() == PREFIX + b'C'
+    finally:
+        os.close(fd)
+
+
 @WINDOWS
 @pytest.mark.parametrize('condition', ['missing', 'reserved', 'invalid', 'locked', 'unreadable'])
 @pytest.mark.parametrize('diagnostics', ['off', 'v1', 'v2'])
@@ -40,16 +288,37 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
     if before is not None:
         marker.write_bytes(before)
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    reads = []
     if condition == 'locked':
         import msvcrt
+        original_open, original_read = child._open_owned_marker, child.os.read
+        marker_fds = []
+        def tracked_open(path):
+            fd = original_open(path)
+            if Path(path) == marker: marker_fds.append(fd)
+            return fd
+        def tracked_read(fd, size):
+            if fd in marker_fds:
+                reads.append(True)
+                raise AssertionError('marker bytes must not be read without lock')
+            return original_read(fd, size)
+        monkeypatch.setattr(child, '_open_owned_marker', tracked_open)
+        monkeypatch.setattr(child.os, 'read', tracked_read)
         monkeypatch.setattr(msvcrt, 'locking', lambda *args: (_ for _ in ()).throw(OSError('private-lock-marker')))
+        def forbidden_read(self):
+            reads.append(True)
+            raise AssertionError('marker must not be read without lock')
+        monkeypatch.setattr(child._LocalOwnerReservation, '_read', forbidden_read)
     if condition == 'unreadable':
-        monkeypatch.setattr(child.os, 'open', lambda *args, **kw: (_ for _ in ()).throw(PermissionError('private-open-marker')))
+        monkeypatch.setattr(child, '_open_owned_marker', lambda *args, **kw: (_ for _ in ()).throw(PermissionError('private-open-marker')))
     output = io.BytesIO()
     result = child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
         expected_manifest_sha256='a' * 64, include_start_diagnostics=diagnostics == 'v1',
         include_worker_stage_diagnostics=diagnostics == 'v2')
     assert result == 2
+    assert not reads
+    if condition == 'locked':
+        assert len(marker_fds) == 1
     assert (marker.read_bytes() if marker.exists() else None) == before
     assert b'private-' not in output.getvalue() and b'READY' not in output.getvalue()
     if diagnostics == 'off':
@@ -59,8 +328,10 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
             b'"index_refresh":"NOT_SCHEDULED","manifest_sha256":"' + b'a' * 64 +
             b'","schema":"wd.mind-local-owner-status.v1",'
             b'"source_authentication":"UNKNOWN","state":"HOLD"}\n')
+        reason = {'missing': 'ADMISSION_MISSING', 'reserved': 'ADMISSION_RESERVED',
+                  'locked': 'ADMISSION_LOCK_UNAVAILABLE'}.get(condition, 'ADMISSION')
         diagnostic_wire = (b'{"authority":"none","exception_type":"LaunchRefused",'
-            b'"reason":"ADMISSION","schema":"wd.mind-local-owner-start-diagnostic.' +
+            b'"reason":"' + reason.encode('ascii') + b'","schema":"wd.mind-local-owner-start-diagnostic.' +
             diagnostics.encode('ascii') + b'"')
         if diagnostics == 'v2':
             diagnostic_wire += b',"worker_exit_code":null,"worker_exit_stage_hint":"UNKNOWN"'
@@ -70,7 +341,7 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
             'manifest_sha256':'a' * 64, 'authority':'none', 'caller_authentication':'UNKNOWN',
             'source_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'}
         expected = {'schema':'wd.mind-local-owner-start-diagnostic.' + diagnostics,
-            'reason':'ADMISSION', 'exception_type':'LaunchRefused', 'authority':'none'}
+            'reason':reason, 'exception_type':'LaunchRefused', 'authority':'none'}
         if diagnostics == 'v2':
             expected.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
         assert detail == expected
@@ -110,7 +381,7 @@ def test_reservation_diagnostic_accepts_successful_short_writes(tmp_path, monkey
     assert child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
         expected_manifest_sha256='a' * 64, include_start_diagnostics=True) == 2
     status, detail = map(json.loads, output.getvalue().splitlines())
-    assert status['state'] == 'HOLD' and detail['reason'] == 'ADMISSION'
+    assert status['state'] == 'HOLD' and detail['reason'] == 'ADMISSION_MISSING'
     assert detail['exception_type'] == 'LaunchRefused'
     assert not (root / MARKER).exists()
 
@@ -229,8 +500,9 @@ def test_other_process_cannot_write_locked_state_byte(tmp_path):
     root = _seed(tmp_path / 'audit')
     guard = child._reserve_local_owner(root)
     script = r'''import os,sys
-fd=os.open(sys.argv[1],os.O_RDWR|os.O_BINARY)
+fd=None
 try:
+    fd=os.open(sys.argv[1],os.O_RDWR|os.O_BINARY)
     os.lseek(fd,int(sys.argv[2]),os.SEEK_SET)
     os.write(fd,b'C')
 except PermissionError:
@@ -238,7 +510,7 @@ except PermissionError:
 else:
     print('WRITTEN')
 finally:
-    os.close(fd)
+    if fd is not None: os.close(fd)
 '''
     result = subprocess.run([sys.executable, '-I', '-c', script, str(root / MARKER), str(len(PREFIX))],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=True,

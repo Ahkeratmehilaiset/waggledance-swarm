@@ -11,6 +11,48 @@ import sys
 import pytest
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
+@pytest.mark.parametrize(('reason', 'accepted'), [
+    ('ADMISSION_MISSING', True), ('ADMISSION_RESERVED', True),
+    ('ADMISSION_LOCK_UNAVAILABLE', True), ('ADMISSION_OTHER', False),
+])
+@pytest.mark.parametrize('version', [1, 2])
+def test_manual_owner_accepts_reservation_diagnostic(reason, accepted, version):
+    """The wrapper accepts the exact pinned child's reservation refusal, without a live owner."""
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    manifest = 'a' * 64
+    status = {'authority': 'none', 'caller_authentication': 'UNKNOWN',
+              'index_refresh': 'NOT_SCHEDULED', 'manifest_sha256': manifest,
+              'schema': 'wd.mind-local-owner-status.v1',
+              'source_authentication': 'UNKNOWN', 'state': 'HOLD'}
+    diagnostic = {'authority': 'none', 'exception_type': 'LaunchRefused',
+                  'reason': reason, 'schema': f'wd.mind-local-owner-start-diagnostic.v{version}'}
+    if version == 2:
+        diagnostic.update(worker_exit_code=None, worker_exit_stage_hint='UNKNOWN')
+    wire = b''.join(json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+                    for record in (status, diagnostic))
+    path = str(helper).replace("'", "''")
+    script = f"""
+$ErrorActionPreference='Stop'
+. '{path}'
+$bytes=[Convert]::FromBase64String('{base64.b64encode(wire).decode()}')
+$stream=New-Object System.IO.MemoryStream
+$process=[pscustomobject]@{{StandardOutput=[pscustomobject]@{{BaseStream=$stream}};HasExited=$false}}
+$record=@{{OutRead=[System.Threading.Tasks.Task]::FromResult($bytes.Length);ErrRead=$null;
+ OutBuffer=$bytes;Line=(New-Object System.IO.MemoryStream);Manifest='{manifest}';
+ DiagnosticsEnabled=$true;WorkerDiagnosticsEnabled=${str(version == 2).lower()};
+ DiagnosticCount=0;ReportedState='STARTING';Process=$process;Stopping=$false;Invalid=$false}}
+Update-WdMindManualOwner $record
+[pscustomobject]@{{invalid=$record.Invalid;state=$record.State;reason=$record.StartDiagnostic.reason}} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, text=True, timeout=15, check=True)
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    assert result == {'invalid': not accepted, 'state': 'HOLD', 'reason': reason if accepted else None}
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows process and inherited pipe integration')
 @pytest.mark.parametrize('shell', [
     str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),

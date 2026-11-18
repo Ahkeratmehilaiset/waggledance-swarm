@@ -18,18 +18,21 @@ directory is always the manifest-verified runtime's ``model`` child.
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import runpy
+import stat
 import sys
 import tempfile
 import types
 
 BULK_CONTRACT = b'{"frame_bytes":65536,"inflight_bytes":65540,"nonce_limit":8192,"schema":"wd.mind-e5-bulk-contract.v1","stdout_bytes":67108864}'
 BULK_CONTRACT_SHA256 = '61998bfeea1342988301f30f21d9781017249ef66761ec81874e5cc34633bc08'
+# Same independently manifest-anchored verifier pin as runtime_process.py.
+# This bootstrap itself is verified by its caller before process creation.
+_PACKAGED_VERIFIER_SHA256 = 'd488a8495f0ee89aebc26d2d1345878d26e5a6c85b228e2c10086f4134680a64'
 
 
 class _Parser(argparse.ArgumentParser):
@@ -44,14 +47,32 @@ def _refuse(reason):
 
 
 def _load_verifier():
-    # The caller authenticates this sibling before starting this process; it is
-    # not obtained from the unverified runtime generation or the ambient cwd.
+    # The caller pins this sibling before starting this process. Recheck and
+    # execute these exact bytes: an apparently matching __pycache__ is not a pin.
     path = Path(__file__).with_name("wd_mind_runtime_manifest.py")
-    spec = importlib.util.spec_from_file_location("_wd_trusted_runtime_manifest", path)
-    if spec is None or spec.loader is None:
-        raise ValueError("verifier_unavailable")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    before = os.lstat(path)
+    if (not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode) or not before.st_ino
+            or getattr(before, 'st_file_attributes', 0) & 0x400 or before.st_nlink != 1):
+        raise ValueError('verifier_file_invalid')
+    with path.open('rb') as stream:
+        opened = os.fstat(stream.fileno())
+        source = stream.read(2 * 1024 * 1024 + 1)
+        after_read = os.fstat(stream.fileno())
+    after = os.lstat(path)
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_nlink)
+    if (identity(before) != identity(opened) or identity(opened) != identity(after_read)
+            or identity(after_read) != identity(after) or not stat.S_ISREG(after.st_mode)
+            or getattr(after, 'st_file_attributes', 0) & 0x400):
+        raise ValueError('verifier_file_changed')
+    if (not source or len(source) > 2 * 1024 * 1024
+            or len(source) != opened.st_size
+            or hashlib.sha256(source).hexdigest() != _PACKAGED_VERIFIER_SHA256):
+        raise ValueError('verifier_pin_mismatch')
+    module = types.ModuleType('_wd_trusted_runtime_manifest')
+    module.__file__ = str(path)
+    exec(compile(source, str(path), 'exec', dont_inherit=True), module.__dict__)
+    if not callable(getattr(module, 'verify_runtime', None)):
+        raise ValueError('verifier_unavailable')
     return module.verify_runtime
 
 

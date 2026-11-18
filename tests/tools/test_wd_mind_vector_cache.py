@@ -484,6 +484,8 @@ def test_linked_cache_destination_refused(private_dir):
 
 def test_production_root_excludes_repo_and_bundles(tmp_path):
     assert str(cache._CACHE_ROOT).lower() == r"c:\wd-mind-private\vector-cache"
-    with pytest.raises(cache.CacheRefused, match="cache_root"):
+    # Native cache access refuses non-Windows before checking the root path.
+    reason = "cache_root" if os.name == "nt" else "windows_required"
+    with pytest.raises(cache.CacheRefused, match=f"^{reason}$"):
         with cache._Directory(tmp_path):
             pass

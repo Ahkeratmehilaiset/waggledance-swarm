@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -50,6 +51,379 @@ def _located_frame(request):
 def test_candidate_ipc_service_is_off_by_default():
     with pytest.raises(preflight.RuntimePreflightRefused):
         preflight.create_local_candidate_service(owner=_SyntheticCandidateOwner(), pipe_name='x')
+
+
+def test_synthetic_failed_service_retains_hold_if_listener_close_is_unproved():
+    class Listener:
+        def accept(self): raise OSError('synthetic accept failure')
+        def close(self): raise OSError('synthetic close failure')
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    service._listener = Listener()
+    service._thread = threading.Thread(target=service._serve)
+    service._thread.start()
+    service._thread.join(3)
+    assert not service._thread.is_alive() and service._serve_done.is_set()
+    assert service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+def test_synthetic_service_retains_hold_after_accept_ownership_becomes_unknown():
+    class Listener:
+        def accept(self): raise OSError('synthetic accept failure')
+        def close(self): pass
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    service._listener = Listener()
+    service._thread = threading.Thread(target=service._serve)
+    service._thread.start()
+    service._thread.join(3)
+    assert not service._thread.is_alive() and service._serve_done.is_set()
+    assert service._listener_closed is True
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+def test_synthetic_failed_service_retains_hold_until_wake_thread_exits():
+    class Connection:
+        def poll(self, timeout): raise KeyboardInterrupt()
+        def close(self): pass
+    class Listener:
+        def accept(self): return Connection()
+        def close(self): pass
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    service._listener = Listener()
+    service._thread = threading.Thread(target=service._serve)
+    service._thread.start()
+    service._thread.join(3)
+    assert not service._thread.is_alive() and service._serve_done.is_set()
+    service._wake_done = threading.Event()
+    release = threading.Event()
+    def wake():
+        service._wake_done.set()
+        release.wait(3)
+    service._wake_thread = threading.Thread(target=wake)
+    service._wake_thread.start()
+    try:
+        assert service._wake_done.wait(3) and service._wake_thread.is_alive()
+        assert service.close(timeout=0)['state'] == 'HOLD'
+    finally:
+        release.set()
+        service._wake_thread.join(3)
+    assert service.close(timeout=0)['state'] == 'FAILED'
+
+
+def test_synthetic_failed_service_retains_hold_until_serve_thread_exits(monkeypatch):
+    class Connection:
+        def poll(self, timeout): raise KeyboardInterrupt()
+        def close(self): pass
+    class Listener:
+        def accept(self): return Connection()
+        def close(self): pass
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    service._listener = Listener()
+    exit_gate = threading.Event()
+    def serve():
+        service._serve()
+        exit_gate.wait(3)
+    monkeypatch.setattr(service, '_wake', lambda: None)
+    service._thread = threading.Thread(target=serve)
+    service._thread.start()
+    try:
+        assert service._serve_done.wait(3) and service._thread.is_alive()
+        assert service.close(timeout=0)['state'] == 'HOLD'
+    finally:
+        exit_gate.set()
+        service._thread.join(3)
+        if service._wake_thread is not None:
+            service._wake_thread.join(3)
+    assert service.close(timeout=0)['state'] == 'FAILED'
+
+
+def test_concurrent_close_cannot_use_previous_wake_generation(monkeypatch):
+    service = preflight._LocalCandidateService(object(), 'synthetic')
+    serve_gate, at_old_wait, release_old_wait = threading.Event(), threading.Event(), threading.Event()
+    start_enter, allow_start = threading.Event(), threading.Event()
+    class PausingEvent:
+        def __init__(self): self.inner = threading.Event()
+        def is_set(self): return self.inner.is_set()
+        def set(self): self.inner.set()
+        def wait(self, timeout=None):
+            at_old_wait.set()
+            assert release_old_wait.wait(3)
+            return self.inner.is_set()
+    old_done = PausingEvent()
+    def serve():
+        serve_gate.wait(3)
+        service._listener_closed = True
+        service._serve_done.set()
+    service._thread = threading.Thread(target=serve, name='synthetic-serve')
+    service._thread.start()
+    service._wake_done = old_done
+    service._wake_thread = threading.Thread(target=lambda: old_done.inner.wait(3), name='synthetic-old-wake')
+    old_wake = service._wake_thread
+    old_wake.start()
+    service._failed = True
+    monkeypatch.setattr(service, '_wake', lambda: None)
+    original_start = threading.Thread.start
+    def gated_start(thread):
+        if thread.name == 'mind-local-wake':
+            start_enter.set()
+            assert allow_start.wait(3)
+        return original_start(thread)
+    monkeypatch.setattr(threading.Thread, 'start', gated_start)
+    results, a_done = {}, threading.Event()
+    def close_a():
+        try: results['a'] = service.close(timeout=0)
+        finally: a_done.set()
+    def close_b(): results['b'] = service.close(timeout=0)
+    a = threading.Thread(target=close_a, name='synthetic-close-a')
+    b = threading.Thread(target=close_b, name='synthetic-close-b')
+    try:
+        original_start(a)
+        assert at_old_wait.wait(3)
+        old_done.set()
+        old_wake.join(3)
+        assert not old_wake.is_alive()
+        original_start(b)
+        assert start_enter.wait(3)
+        serve_gate.set()
+        service._thread.join(3)
+        assert service._serve_done.is_set() and not service._thread.is_alive()
+        release_old_wait.set()
+        assert a_done.wait(2), 'concurrent close blocked instead of returning HOLD'
+        assert results['a']['state'] == 'HOLD', 'terminal state before next wake starts'
+    finally:
+        serve_gate.set()
+        release_old_wait.set()
+        allow_start.set()
+        a.join(3)
+        if b.ident is not None: b.join(3)
+        service._thread.join(3)
+        old_wake.join(3)
+        if service._wake_thread is not None and service._wake_thread.ident is not None:
+            service._wake_thread.join(3)
+    assert not a.is_alive() and not b.is_alive()
+    assert results['a']['state'] == 'HOLD'
+
+
+def test_synthetic_failed_listener_creation_cleanup_does_not_claim_stopped(monkeypatch):
+    import multiprocessing.connection as connection
+    class Listener:
+        def close(self): raise OSError('synthetic close failure')
+    monkeypatch.setattr(connection, 'Listener', lambda **kwargs: Listener())
+    def refuse_thread(*args, **kwargs): raise RuntimeError('synthetic thread construction failure')
+    monkeypatch.setattr(preflight.threading, 'Thread', refuse_thread)
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    with pytest.raises(OSError):
+        service.start()
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+@pytest.mark.parametrize('error', [OSError, KeyboardInterrupt])
+def test_synthetic_listener_constructor_exception_retains_unknown_ownership(monkeypatch, error):
+    import multiprocessing.connection as connection
+    retained = []
+    def listener(**kwargs):
+        retained.append(object())
+        raise error('synthetic resource acquired before constructor failure')
+    monkeypatch.setattr(connection, 'Listener', listener)
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    expected = preflight.RuntimePreflightRefused if error is OSError else error
+    with pytest.raises(expected):
+        service.start()
+    assert len(retained) == 1
+    assert service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+@pytest.mark.parametrize('close_error', [OSError, KeyboardInterrupt])
+def test_synthetic_service_retains_connection_when_close_is_unproved(close_error):
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    evidence = {'connection_close_attempted': False, 'listener_closed': False}
+    class Connection:
+        def close(self):
+            evidence['connection_close_attempted'] = True
+            raise close_error('synthetic connection close failure')
+    connection = Connection()
+    class Listener:
+        def accept(self):
+            service._stop.set()
+            return connection
+        def close(self): evidence['listener_closed'] = True
+    service._listener = Listener()
+    service._thread = threading.Thread(target=service._serve)
+    service._thread.start()
+    service._thread.join(3)
+    assert not service._thread.is_alive() and service._serve_done.is_set()
+    assert all(evidence.values())
+    assert service.close(timeout=0)['state'] == 'HOLD'
+    assert service._uncertain_connection is connection
+
+
+def test_synthetic_service_clean_connection_close_allows_stopped():
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    evidence = {'connection_closed': False, 'listener_closed': False}
+    class Connection:
+        def close(self): evidence['connection_closed'] = True
+    class Listener:
+        def accept(self):
+            service._stop.set()
+            return Connection()
+        def close(self): evidence['listener_closed'] = True
+    service._listener = Listener()
+    service._thread = threading.Thread(target=service._serve)
+    service._thread.start()
+    service._thread.join(3)
+    assert not service._thread.is_alive() and service._serve_done.is_set()
+    assert all(evidence.values())
+    assert service.close(timeout=0)['state'] == 'STOPPED'
+
+
+def test_synthetic_wake_skips_client_after_listener_closed(monkeypatch):
+    import multiprocessing.connection as connection_module
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    accepting, accept_release, wake_entered, wake_release = (threading.Event() for _ in range(4))
+    calls = []
+    class Connection:
+        def close(self): pass
+    class Listener:
+        def accept(self):
+            accepting.set()
+            assert accept_release.wait(3)
+            return Connection()
+        def close(self): pass
+    service._listener = Listener()
+    service._thread = threading.Thread(target=service._serve)
+    original_wake = service._wake
+    def gated_wake():
+        wake_entered.set()
+        assert wake_release.wait(3)
+        original_wake()
+    monkeypatch.setattr(service, '_wake', gated_wake)
+    def client(**kwargs):
+        calls.append(kwargs)
+        raise OSError('synthetic listener closed')
+    monkeypatch.setattr(connection_module, 'Client', client)
+    service._thread.start()
+    try:
+        assert accepting.wait(3)
+        assert service.close(timeout=0)['state'] == 'HOLD'
+        assert wake_entered.wait(3)
+        accept_release.set()
+        service._thread.join(3)
+        assert not service._thread.is_alive() and service._listener_closed
+        wake_release.set()
+        service._wake_thread.join(3)
+        assert not service._wake_thread.is_alive()
+        assert calls == []
+        assert service.close(timeout=0)['state'] == 'STOPPED'
+    finally:
+        accept_release.set()
+        wake_release.set()
+        service._thread.join(3)
+        if service._wake_thread is not None:
+            service._wake_thread.join(3)
+
+
+@pytest.mark.parametrize('method', ['status', 'close'])
+def test_terminal_state_checks_wake_ownership_after_thread_exit(method):
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    class DeadServe:
+        def is_alive(self): return False
+    class RacingWake:
+        checks = 0
+        def is_alive(self):
+            self.checks += 1
+            # close observes a wake in flight twice before its final check;
+            # status performs only its single final check.
+            if method == 'close' and self.checks < 3: return True
+            service._wake_ownership_unknown = True
+            return False
+        def join(self, timeout=None): pass
+    service._thread = DeadServe()
+    service._serve_done.set()
+    service._listener_closed = True
+    service._wake_done = threading.Event()
+    service._wake_done.set()
+    service._wake_thread = RacingWake()
+    result = service.status() if method == 'status' else service.close(timeout=0)
+    assert result['state'] == 'HOLD'
+
+
+@pytest.mark.parametrize('first', ['listener', 'client'])
+def test_synthetic_listener_wake_lifecycle_is_serialized_without_blocking_close(monkeypatch, first):
+    import multiprocessing.connection as connection_module
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    entered, release = threading.Event(), threading.Event()
+    listener_called, client_called = threading.Event(), threading.Event()
+    class Listener:
+        def close(self):
+            listener_called.set()
+            if first == 'listener':
+                entered.set()
+                assert release.wait(3)
+    class Connection:
+        def close(self): pass
+    def client(**kwargs):
+        client_called.set()
+        if first == 'client':
+            entered.set()
+            assert release.wait(3)
+        return Connection()
+    monkeypatch.setattr(connection_module, 'Client', client)
+    service._listener = Listener()
+    service._stop.set()
+    service._thread = threading.Thread(target=service._serve)
+    service._wake_done = threading.Event()
+    service._wake_thread = threading.Thread(target=service._wake_then_done, args=(service._wake_done,))
+    t1, t2 = (service._thread, service._wake_thread) if first == 'listener' else (service._wake_thread, service._thread)
+    t1.start()
+    try:
+        assert entered.wait(3)
+        t2.start()
+        # close must not wait for the synthetic resource operation.
+        start = time.monotonic()
+        assert service.close(timeout=0)['state'] == 'HOLD'
+        assert time.monotonic() - start < 1
+        if first == 'listener':
+            assert not client_called.wait(0.1)
+        else:
+            assert not listener_called.wait(0.1)
+        release.set()
+        t1.join(3)
+        t2.join(3)
+        assert not t1.is_alive() and not t2.is_alive()
+        assert listener_called.is_set()
+        assert client_called.is_set() == (first == 'client')
+        assert service.close(timeout=0)['state'] == 'STOPPED'
+    finally:
+        release.set()
+        t1.join(3)
+        if t2.ident is not None:
+            t2.join(3)
+
+
+@pytest.mark.parametrize('outcome', ['clean', 'close_failure', 'constructor_failure'])
+def test_synthetic_wake_connection_closure_evidence(monkeypatch, outcome):
+    import multiprocessing.connection as connection_module
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    class Connection:
+        closed = False
+        def close(self):
+            if outcome == 'close_failure': raise OSError('synthetic close failure')
+            self.closed = True
+    connection = Connection()
+    def client(**kwargs):
+        if outcome == 'constructor_failure': raise OSError('synthetic constructor failure')
+        return connection
+    monkeypatch.setattr(connection_module, 'Client', client)
+    service._wake()
+    if outcome == 'clean':
+        assert connection.closed
+        assert service.close(timeout=0)['state'] == 'STOPPED'
+    else:
+        assert service.close(timeout=0)['state'] == 'HOLD'
+        assert service._wake_ownership_unknown is True
+        if outcome == 'close_failure':
+            assert service._uncertain_wake_connection is connection
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
@@ -211,7 +585,10 @@ def test_candidate_ipc_uncertain_wake_start_stays_hold_after_service_exit(monkey
         assert service.status()['state'] == 'HOLD'
         assert service.close(timeout=0)['state'] == 'HOLD'
         service._wake_thread.fire()
+        # The listener is already closed, so the late wake does not open a client.
+        assert service._wake_ownership_unknown is False
         assert service.status()['state'] == 'STOPPED'
+        assert service.close(timeout=0)['state'] == 'STOPPED'
     finally:
         monkeypatch.setattr(preflight.threading, 'Thread', original)
         if service._thread.is_alive():
@@ -317,7 +694,7 @@ def test_candidate_ipc_five_simultaneous_lane_queries_close_cleanly():
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
-def test_candidate_ipc_rejects_text_and_retains_owner_on_timeout():
+def test_candidate_ipc_rejects_text_and_retains_owner_on_timeout(monkeypatch):
     gate = threading.Event()
     entered = threading.Event()
     class SlowOwner:
@@ -328,6 +705,9 @@ def test_candidate_ipc_rejects_text_and_retains_owner_on_timeout():
     name = preflight.local_candidate_pipe_name(manifest_sha256=_hash(os.urandom(32)))
     service = preflight.create_local_candidate_service(enabled=True, owner=SlowOwner(), pipe_name=name)
     service.start()
+    # This case is blocked inside candidates(), so STOP needs no wake client.
+    # Exercise clean owner release separately from wake-constructor uncertainty.
+    monkeypatch.setattr(service, '_wake', lambda: None)
     query = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=_candidate_request())
     try:
         query.start()
@@ -465,6 +845,23 @@ def _hash(raw):
 
 
 
+def _fixture_pinned_verifier_bytes(raw):
+    """Neutralize checkout line endings only for this synthetic bundle."""
+    canonical = raw.replace(b'\r\n', b'\n')
+    if _hash(canonical) != preflight._PACKAGED_VERIFIER_SHA256:
+        raise ValueError('synthetic_verifier_pin_mismatch')
+    return canonical
+
+
+def test_synthetic_verifier_checkout_translation_never_changes_the_pin():
+    source = Path(__file__).resolve().parents[2] / 'tools/wd_mind_runtime_manifest.py'
+    canonical = _fixture_pinned_verifier_bytes(source.read_bytes())
+    assert _hash(canonical) == preflight._PACKAGED_VERIFIER_SHA256
+    assert _fixture_pinned_verifier_bytes(canonical.replace(b'\n', b'\r\n')) == canonical
+    with pytest.raises(ValueError, match='synthetic_verifier_pin_mismatch'):
+        _fixture_pinned_verifier_bytes(canonical + b'# altered\n')
+
+
 @pytest.fixture
 def candidate(tmp_path):
     root = tmp_path / "runtime"
@@ -487,7 +884,8 @@ def candidate(tmp_path):
     verifier.parent.mkdir(parents=True)
     interpreter.write_bytes(b"synthetic interpreter, never execute")
     bootstrap.write_bytes(b"raise AssertionError('must never run')\n")
-    verifier.write_bytes((Path(__file__).resolve().parents[2] / "tools/wd_mind_runtime_manifest.py").read_bytes())
+    verifier.write_bytes(_fixture_pinned_verifier_bytes(
+        (Path(__file__).resolve().parents[2] / "tools/wd_mind_runtime_manifest.py").read_bytes()))
     deployment = json.dumps({"schema_version": 1, "files": {
         "tools-bootstrap/tools/wd_mind_runtime_manifest.py": _hash(verifier.read_bytes()).upper()}},
         sort_keys=True).encode()

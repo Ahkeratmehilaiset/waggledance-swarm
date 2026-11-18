@@ -436,14 +436,13 @@ def load_cache(path, expected_binding, verify_prefix):
                 # than the native wrapper's typed missing-cache result.
                 raise CacheMiss("missing") from None
             with os.fdopen(fd, "rb") as source:
-                # Only errors while reading already-authenticated cache content
-                # are recoverable.  Opening, path/ACL checks and prefix checks
-                # remain outside this boundary and continue to fail closed.
+                # An OS read error can indicate access or device failure, so it
+                # must never be mistaken for recoverable corrupt cache bytes.
                 def read_content(size):
                     try:
                         return source.read(size)
                     except OSError:
-                        raise CacheMiss("read") from None
+                        raise CacheRefused("read") from None
 
                 initial = read_content(len(_MAGIC) + 4)
                 if len(initial) != len(_MAGIC) + 4 or not initial.startswith(_MAGIC):

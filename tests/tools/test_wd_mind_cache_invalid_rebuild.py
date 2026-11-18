@@ -104,7 +104,7 @@ def test_failed_prefix_verification_is_not_a_recoverable_cache_miss(case):
     assert not isinstance(info.value, cache.CacheMiss)
 
 
-def test_content_read_failure_is_a_miss_after_authenticated_open(case, monkeypatch):
+def test_content_os_read_failure_is_a_hard_refusal(case, monkeypatch):
     binding, _ = case.snapshot()
     case.build(binding)
     raw = case.cache_path.read_bytes()
@@ -125,8 +125,10 @@ def test_content_read_failure_is_a_miss_after_authenticated_open(case, monkeypat
 
     with monkeypatch.context() as patch:
         patch.setattr(cache.os, 'fdopen', lambda fd, mode: Unreadable(original_fdopen(fd, mode)))
-        with pytest.raises(cache.CacheMiss, match='read'):
+        with pytest.raises(cache.CacheRefused, match='read') as info:
             case.adapter.load(expected_binding, lambda *_: True)
+    assert not isinstance(info.value, cache.CacheMiss)
+    assert case.cache_path.read_bytes() == raw
 
 
 def test_mismatched_file_size_is_rejected_before_reading_rows(case, monkeypatch):

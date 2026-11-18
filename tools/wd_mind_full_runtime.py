@@ -1435,7 +1435,7 @@ class _OwnerBatchProof:
         self.snapshot, self.frozen, self.generation = handler._snapshot, frozen, owner._generation
         self.adapter = adapter
         self.rotator, self.factory, self.callback = handler._rotator, handler._factory, callback
-        self.thread, self.checks, self.active = threading.get_ident(), 0, True
+        self.thread, self.checks, self.active = threading.current_thread(), 0, True
         self.frames = (count + 3) // 4
         self.before_client = self.before_next = self.after_client = self.after_next = None
         self.rotation_seen = False
@@ -1446,8 +1446,9 @@ class _OwnerBatchProof:
         from tools import wd_mind_e5_client as e5_client
         owner, handler, adapter, rotator = self.owner, self.handler, self.adapter, self.rotator
         callback = self.callback
-        if (not self.active or threading.get_ident() != self.thread
+        if (not self.active or threading.current_thread() is not self.thread
                 or type(owner) is not _SingleManifestOwner or type(handler) is not _FlatRequestHandler
+                or owner._start_thread is not self.thread or handler._build_thread is not self.thread
                 or type(self.binding) is not _PrivateBinding
                 or type(adapter) is not adapter_module._RotatingFlatAdapter
                 or type(rotator) is not rotation.RotatingGracefulE5Client
@@ -2184,7 +2185,7 @@ class _FlatRequestHandler:
     """In-process owner; caller retains this object through any HOLD."""
     __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_rotator', '_adapter', '_memory',
                  '_frozen_flat', '_closed', '_failed', '_lock', '_factory', '_timeout', '_bulk', '_pending_rotator',
-                 '_refresh_controller', '_watcher_lease', '_retained', '_vector_cache')
+                 '_refresh_controller', '_watcher_lease', '_retained', '_vector_cache', '_build_thread')
 
     def __init__(self, binding, snapshot, lane, lanes, rotator, adapter, factory, timeout, bulk, watcher_lease=None,
                  vector_cache=None):
@@ -2199,6 +2200,7 @@ class _FlatRequestHandler:
         self._retained = None
         self._closed = self._failed = False
         self._lock = threading.Lock()
+        self._build_thread = None
 
     def __repr__(self):
         return '<PrivateMindFlatRequestHandler>'
@@ -2220,6 +2222,7 @@ class _FlatRequestHandler:
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         try:
+            self._build_thread = threading.current_thread()
             if self._closed or self._failed or self._memory is not None:
                 raise ValueError('state')
             memory = build_flat_memory(enabled=True, binding=self._binding, passage_encoder=self._adapter.passage,
@@ -2239,6 +2242,7 @@ class _FlatRequestHandler:
         except Exception:
             self._failed = True
         finally:
+            self._build_thread = None
             self._lock.release()
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
@@ -2845,7 +2849,7 @@ class _SingleManifestOwner:
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
                  '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget',
-                 '_prewarm_generation', '_batch_proof')
+                 '_prewarm_generation', '_batch_proof', '_start_thread')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
                  vector_cache_enabled=False):
@@ -2873,6 +2877,7 @@ class _SingleManifestOwner:
         self._source_budget = None
         self._prewarm_generation = None
         self._batch_proof = None
+        self._start_thread = None
 
     @property
     def _binding(self):
@@ -3398,6 +3403,7 @@ class _SingleManifestOwner:
         try:
             if self._state != 'NEW':
                 raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            self._start_thread = threading.current_thread()
             self._state = 'STARTING'
             try:
                 self._check_factory()
@@ -3489,6 +3495,7 @@ class _SingleManifestOwner:
                 raise pending_cancel from None
             return self._status()
         finally:
+            self._start_thread = None
             self._lock.release()
 
     def prepare_consumer_export(self, *, enabled=False, expected_nonce=None,

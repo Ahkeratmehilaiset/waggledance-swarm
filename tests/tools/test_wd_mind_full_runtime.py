@@ -86,14 +86,111 @@ def owner_batch_fixture(tmp_path, monkeypatch):
             None, None, owner_handler=owner_handler)
     owner._lock.acquire()
     handler._lock.acquire()
+    # These markers simulate the real start/_build frames for proof-unit tests;
+    # separate execution tests below exercise their production lifecycle.
+    owner._start_thread = handler._build_thread = threading.current_thread()
     try:
         yield SimpleNamespace(runtime=runtime, adapter_module=adapter_module, client_module=client_module,
             owner=owner, handler=handler, adapter=adapter, rotator=rotator, callback=callback,
             binding=binding, snapshot=snapshot, projection=projection, checks=checks, fault=fault,
             vector=vector, build=build, monkeypatch=monkeypatch)
     finally:
+        owner._start_thread = handler._build_thread = None
         handler._lock.release()
         owner._lock.release()
+
+
+def test_owner_batch_proof_not_issued_to_foreign_thread(owner_batch_fixture):
+    """Both real locks are held by the fixture thread, not the caller thread."""
+    import threading
+    case = owner_batch_fixture
+    result = []
+    def issue():
+        proof = case.runtime._owner_batch_proof(case.handler, case.binding, case.snapshot,
+                                                case.adapter.passage, 1)
+        result.append(proof is None)
+        if proof is not None:
+            proof.close()
+    thread = threading.Thread(target=issue)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert result == [True]
+
+
+def test_real_owner_start_and_handler_build_bind_thread_and_clear_markers(owner_batch_fixture):
+    """Real start/build lock scopes, with synthetic source and worker transport."""
+    import threading
+    from types import SimpleNamespace
+    from tools import wd_mind_e5_rotating_client as rotating
+    case = owner_batch_fixture
+    runtime, owner = case.runtime, case.owner
+    mp = case.monkeypatch
+    case.handler._build_thread = owner._start_thread = None
+    case.handler._lock.release()
+    owner._lock.release()
+    old_handler = case.handler
+    observations = []
+    try:
+        factory = SimpleNamespace(_timeout=5, _bulk=None)
+        owner._state, owner._factory = 'NEW', factory
+        owner._lane, owner._lanes = 'codex-lead-1', frozenset({'codex-lead-1'})
+        owner._generation = (case.binding, case.snapshot, None)
+        owner._rotation_enabled, owner._vector_cache_enabled = True, False
+        owner._watcher_lease, owner._timeout = None, 5
+        owner._launch_cancel = threading.Event()
+        owner._batch_proof, owner._source_budget = None, None
+        owner._prewarm_generation = None
+        mp.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
+        mp.setattr(runtime._SingleManifestOwner, '_status', lambda self: {'state': self._state})
+        mp.setattr(runtime._FlatRequestHandler, '_source_check', lambda self: None)
+        mp.setattr(runtime._FlatRequestHandler, '_running_owner', lambda self: None)
+        mp.setattr(case.adapter_module, '_flat_bundle_bindings', lambda *_: (b'encoder', 'c' * 64))
+        mp.setattr(case.adapter_module, '_load_pinned_rotating_module', lambda *_: rotating)
+
+        def rotator_init(self, *, factory, snapshot_sha256, source_check, **_kwargs):
+            self._factory, self._snapshot, self._source_check = factory, snapshot_sha256, source_check
+            self._client = case.rotator._client
+            self._worker_nonces, self._session_nonces = set(), {'synthetic-nonce'}
+        mp.setattr(rotating.RotatingGracefulE5Client, '__init__', rotator_init)
+
+        def create_adapter(*, client, **_kwargs):
+            adapter = case.adapter
+            adapter._client = adapter._rotator = client
+            adapter._source_check, adapter._factory = client._source_check, factory
+            adapter._query_binding = b'encoder'
+            return adapter
+        mp.setattr(case.adapter_module, 'create_rotating_flat_adapter', create_adapter)
+
+        def request(_adapter, _operation, texts):
+            handler, proof = owner._handler, owner._batch_proof
+            assert owner._start_thread is handler._build_thread is threading.current_thread()
+            assert type(proof) is runtime._OwnerBatchProof
+            # This genuinely foreign thread sees real locks held by owner.start/_build.
+            foreign = []
+            def issue():
+                foreign.append(runtime._owner_batch_proof(handler, case.binding, case.snapshot,
+                                                          case.adapter.passage, len(texts)))
+            thread = threading.Thread(target=issue)
+            thread.start()
+            thread.join(timeout=5)
+            assert not thread.is_alive() and foreign == [None]
+            callback = owner._client._source_check
+            callback()
+            owner._client._client._next_id += 1
+            owner._client._client._used_nonces.add('synthetic-nonce')
+            callback()
+            observations.append(handler)
+            return case.vector * len(texts)
+        mp.setattr(case.adapter_module._RotatingFlatAdapter, '_request', request)
+        assert owner.start() == {'state': 'READY'}
+        assert len(observations) == 1
+        assert case.checks.count('source') == 3  # 2 optimized plus final checkpoint
+        assert owner._batch_proof is None and owner._start_thread is None
+        assert observations[0]._build_thread is None
+    finally:
+        owner._lock.acquire()
+        old_handler._lock.acquire()
 
 
 @pytest.mark.parametrize('enabled', [False, True])

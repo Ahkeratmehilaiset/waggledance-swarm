@@ -32,6 +32,51 @@ $ExpectedManifestHash = '<EXACT_MANIFEST_SHA256>'
 $BridgePythonPath = '<PINNED_PYTHON_PATH>'
 $BridgePythonSha256 = '<PINNED_PYTHON_SHA256>'
 $Operation = '<create_or_reset>'
+function Assert-WdManualUniqueJson([string] $Text) {
+    # Use case-insensitive comparison to match the PowerShell object parser;
+    # still validates full JSON syntax. Never rely on its duplicate-key policy.
+    $stack = New-Object 'System.Collections.Generic.List[object]'
+    if ($Text.Length -gt 4194304) { throw 'manual_json_size' }
+    $keyCount = 0
+    $i = 0
+    while ($i -lt $Text.Length) {
+        $ch = $Text[$i]
+        if ($ch -eq [char]123) {
+            $stack.Add((New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)))
+        } elseif ($ch -eq [char]91) {
+            $stack.Add($null)
+        } elseif ($ch -eq [char]125 -or $ch -eq [char]93) {
+            if ($stack.Count -eq 0) { throw 'manual_json_invalid' }
+            $stack.RemoveAt($stack.Count - 1)
+        } elseif ($ch -eq [char]34) {
+            $start = $i
+            $i++
+            $closed = $false
+            while ($i -lt $Text.Length) {
+                if ($Text[$i] -eq [char]92) { $i += 2; continue }
+                if ($Text[$i] -eq [char]34) { $closed = $true; break }
+                $i++
+            }
+            if (-not $closed) { throw 'manual_json_invalid' }
+            $end = $i
+            $next = $i + 1
+            while ($next -lt $Text.Length -and $Text[$next] -in @([char]32,[char]9,[char]10,[char]13)) { $next++ }
+            if ($next -lt $Text.Length -and $Text[$next] -eq [char]58) {
+                if ($stack.Count -eq 0 -or $null -eq $stack[$stack.Count - 1]) { throw 'manual_json_invalid' }
+                $token = $Text.Substring($start, $end - $start + 1)
+                $keyCount++
+                if ($keyCount -gt 16384 -or $token.Length -gt 8192) { throw 'manual_json_size' }
+                $key = ConvertFrom-Json -InputObject ('[' + $token + ']') -ErrorAction Stop
+                if ($key -is [array] -and $key.Count -eq 1) { $key = $key[0] }
+                if ($key -isnot [string] -or -not $stack[$stack.Count - 1].Add($key)) { throw 'manual_json_duplicate' }
+            }
+        }
+        if ($stack.Count -gt 64) { throw 'manual_json_depth' }
+        $i++
+    }
+    if ($stack.Count -ne 0) { throw 'manual_json_invalid' }
+    [void](ConvertFrom-Json -InputObject $Text -ErrorAction Stop)
+}
 function Read-BootstrapBounded([string] $Path, [int] $Limit) {
     $current = [IO.Path]::GetFullPath($Path)
     while ($current) {
@@ -57,7 +102,9 @@ function Read-BootstrapBounded([string] $Path, [int] $Limit) {
 if ($ExpectedCommit -cnotmatch '\A[0-9a-f]{40}\z' -or $ExpectedManifestHash -cnotmatch '\A[0-9a-fA-F]{64}\z') { throw 'manual_bootstrap_refused' }
 $BundleRoot = Join-Path 'C:\Python\wd-reboot-bundles' $ExpectedCommit
 $utf8 = New-Object Text.UTF8Encoding($false,$true)
-$pointer = $utf8.GetString((Read-BootstrapBounded 'C:\Python\WD_REBOOT_STATE_CURRENT.json' 65536)).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+$pointerText = $utf8.GetString((Read-BootstrapBounded 'C:\Python\WD_REBOOT_STATE_CURRENT.json' 65536)).TrimStart([char]0xFEFF)
+Assert-WdManualUniqueJson $pointerText
+$pointer = $pointerText | ConvertFrom-Json -ErrorAction Stop
 if ($pointer.source_commit -cne $ExpectedCommit -or $pointer.final_commit -cne $ExpectedCommit -or
     -not [string]::Equals([string]$pointer.active_bundle, $BundleRoot, [StringComparison]::OrdinalIgnoreCase) -or
     -not [string]::Equals([string]$pointer.manifest_sha256, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase) -or
@@ -67,7 +114,9 @@ $sha = [Security.Cryptography.SHA256]::Create()
 try { $manifestHash = [BitConverter]::ToString($sha.ComputeHash($manifestBytes)).Replace('-','') }
 finally { $sha.Dispose() }
 if ($manifestBytes.Length -gt 4194304 -or $manifestHash -ine $ExpectedManifestHash) { throw 'manual_bootstrap_refused' }
-$manifest = $utf8.GetString($manifestBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+$manifestText = $utf8.GetString($manifestBytes).TrimStart([char]0xFEFF)
+Assert-WdManualUniqueJson $manifestText
+$manifest = $manifestText | ConvertFrom-Json -ErrorAction Stop
 if ($manifest.schema_version -ne 1 -or $manifest.source_commit -cne $ExpectedCommit) { throw 'manual_bootstrap_refused' }
 $helperBytes = Read-BootstrapBounded (Join-Path $BundleRoot 'Start-WdMindManualOwner.ps1') 8388608
 $sha = [Security.Cryptography.SHA256]::Create()
@@ -79,6 +128,52 @@ Invoke-WdMindManualReservationAdmin -Enabled -Operation $Operation -BundleRoot $
     -ExpectedManifestHash $ExpectedManifestHash -BridgePythonPath $BridgePythonPath -BridgePythonSha256 $BridgePythonSha256
 END-WD-MANUAL-EXTERNAL-BOOTSTRAP #>
 $script:WdMindManualOwnerHelperText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
+
+function Assert-WdManualUniqueJson([string] $Text) {
+    # Use case-insensitive comparison to match the PowerShell object parser;
+    # still validates full JSON syntax. Never rely on its duplicate-key policy.
+    $stack = New-Object 'System.Collections.Generic.List[object]'
+    if ($Text.Length -gt 4194304) { throw 'manual_json_size' }
+    $keyCount = 0
+    $i = 0
+    while ($i -lt $Text.Length) {
+        $ch = $Text[$i]
+        if ($ch -eq [char]123) {
+            $stack.Add((New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)))
+        } elseif ($ch -eq [char]91) {
+            $stack.Add($null)
+        } elseif ($ch -eq [char]125 -or $ch -eq [char]93) {
+            if ($stack.Count -eq 0) { throw 'manual_json_invalid' }
+            $stack.RemoveAt($stack.Count - 1)
+        } elseif ($ch -eq [char]34) {
+            $start = $i
+            $i++
+            $closed = $false
+            while ($i -lt $Text.Length) {
+                if ($Text[$i] -eq [char]92) { $i += 2; continue }
+                if ($Text[$i] -eq [char]34) { $closed = $true; break }
+                $i++
+            }
+            if (-not $closed) { throw 'manual_json_invalid' }
+            $end = $i
+            $next = $i + 1
+            while ($next -lt $Text.Length -and $Text[$next] -in @([char]32,[char]9,[char]10,[char]13)) { $next++ }
+            if ($next -lt $Text.Length -and $Text[$next] -eq [char]58) {
+                if ($stack.Count -eq 0 -or $null -eq $stack[$stack.Count - 1]) { throw 'manual_json_invalid' }
+                $token = $Text.Substring($start, $end - $start + 1)
+                $keyCount++
+                if ($keyCount -gt 16384 -or $token.Length -gt 8192) { throw 'manual_json_size' }
+                $key = ConvertFrom-Json -InputObject ('[' + $token + ']') -ErrorAction Stop
+                if ($key -is [array] -and $key.Count -eq 1) { $key = $key[0] }
+                if ($key -isnot [string] -or -not $stack[$stack.Count - 1].Add($key)) { throw 'manual_json_duplicate' }
+            }
+        }
+        if ($stack.Count -gt 64) { throw 'manual_json_depth' }
+        $i++
+    }
+    if ($stack.Count -ne 0) { throw 'manual_json_invalid' }
+    [void](ConvertFrom-Json -InputObject $Text -ErrorAction Stop)
+}
 
 function Read-WdMindManualPinnedBytes {
     param([string] $Path, [string] $Sha256, [int] $MaxBytes)
@@ -234,14 +329,18 @@ function Invoke-WdMindManualReservationAdmin {
         try { $pointerHash = [BitConverter]::ToString($sha.ComputeHash($firstPointer)).Replace('-','') }
         finally { $sha.Dispose() }
         $pointerBytes = Read-WdMindManualPinnedBytes $pointerPath $pointerHash 65536
-        $pointer = [Text.Encoding]::UTF8.GetString($pointerBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+        $pointerText = [Text.Encoding]::UTF8.GetString($pointerBytes).TrimStart([char]0xFEFF)
+        Assert-WdManualUniqueJson $pointerText
+        $pointer = $pointerText | ConvertFrom-Json -ErrorAction Stop
         if ($pointer.source_commit -cne $ExpectedCommit -or $pointer.final_commit -cne $ExpectedCommit -or
             -not [string]::Equals([string]$pointer.active_bundle, $expectedRoot, [StringComparison]::OrdinalIgnoreCase) -or
             -not [string]::Equals([string]$pointer.manifest_sha256, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase) -or
             -not [string]::Equals([string]$pointer.final_manifest_sha256, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase)) { throw 'pointer' }
         $manifestPath = Join-Path $root 'deployment-manifest.json'
         $utf8 = New-Object Text.UTF8Encoding($false,$true)
-        $manifest = $utf8.GetString((Read-WdMindManualPinnedBytes $manifestPath $ExpectedManifestHash 4194304)).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+        $manifestText = $utf8.GetString((Read-WdMindManualPinnedBytes $manifestPath $ExpectedManifestHash 4194304)).TrimStart([char]0xFEFF)
+        Assert-WdManualUniqueJson $manifestText
+        $manifest = $manifestText | ConvertFrom-Json -ErrorAction Stop
         if ($manifest.schema_version -ne 1 -or $manifest.source_commit -cne $ExpectedCommit -or $null -eq $manifest.files) { throw 'manifest' }
         foreach ($name in @('Start-WdMindManualOwner.ps1','BridgeCodeContext.ps1','bridge-code-files.json')) {
             $pin = $manifest.files.PSObject.Properties[$name]

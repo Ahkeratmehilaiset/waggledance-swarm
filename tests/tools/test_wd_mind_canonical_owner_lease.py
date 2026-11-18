@@ -348,10 +348,10 @@ def test_fixed_owner_canonical_import_failure_emits_bounded_diagnostic(monkeypat
         m.setattr(child, '_load_pinned_canonical_child', refused)
         result = child._fixed_child_main(args)
     assert result == 2
-    status, diagnostic = map(json.loads, out.buffer.getvalue().splitlines())
-    assert status['state'] == 'HOLD'
-    assert status['manifest_sha256'] == 'a' * 64
-    assert diagnostic['reason'] == 'IMPORT'
+    diagnostic, = map(json.loads, out.buffer.getvalue().splitlines())
+    assert diagnostic == {'authority':'none', 'reason':'IMPORT',
+                          'schema':'wd.mind-local-owner-preanchor-diagnostic.v1'}
+    assert b'a' * 64 not in out.buffer.getvalue()
     assert b'synthetic-private-detail' not in out.buffer.getvalue()
 
 
@@ -368,7 +368,9 @@ def test_fixed_owner_missing_manifest_never_invents_pinned_status(monkeypatch):
         m.setattr(child.sys, 'stdout', out)
         result = child._fixed_child_main(args)
     assert result == 2
-    assert out.buffer.getvalue() == b''
+    diagnostic, = map(json.loads, out.buffer.getvalue().splitlines())
+    assert diagnostic == {'authority':'none', 'reason':'IMPORT',
+                          'schema':'wd.mind-local-owner-preanchor-diagnostic.v1'}
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='reservation uses Windows byte locks')

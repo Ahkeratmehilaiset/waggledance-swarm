@@ -248,6 +248,49 @@ def test_pinned_cli_bootstrap_forwards_explicit_optin_unchanged(monkeypatch):
     assert forwarded == [argv]
 
 
+@pytest.mark.parametrize('anchor', [None, '', 'synthetic-invalid-anchor'])
+@pytest.mark.parametrize('flag', [None, '--start-diagnostics', '--start-diagnostics-v2'])
+def test_invalid_manifest_anchor_emits_only_fixed_optin_diagnostic(monkeypatch, capsys, anchor, flag):
+    if anchor is None:
+        monkeypatch.delenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', raising=False)
+    else:
+        monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', anchor)
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda *_a, **_k: pytest.fail('owner entry reached'))
+    args = ['--mind-local-candidate-owner', '--policy-sha256', 'b'*64,
+            '--approval-reference-sha256', 'c'*64]
+    if flag:
+        args.append(flag)
+    assert child._fixed_child_main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.err == ''
+    expected = '{"authority":"none","reason":"IMPORT","schema":"wd.mind-local-owner-preanchor-diagnostic.v1"}\n'
+    assert captured.out == (expected if flag else '')
+
+
+@pytest.mark.parametrize('flag', [None, '--start-diagnostics', '--start-diagnostics-v2'])
+@pytest.mark.parametrize('with_path', [False, True])
+def test_unverified_well_formed_anchor_never_appears_in_diagnostic(monkeypatch, capsys, flag, with_path):
+    unverified = 'd' * 64
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', unverified)
+    monkeypatch.setattr(child, '__name__', '__main__')
+    def refuse(*_args):
+        raise ValueError('synthetic-private-text')
+    monkeypatch.setattr(child, '_load_pinned_canonical_child', refuse)
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda *_a, **_k: pytest.fail('owner entry reached'))
+    args = ['--mind-local-candidate-owner']
+    if with_path:
+        args += ['--policy-path', 'synthetic-private-path']
+    args += ['--policy-sha256', 'b'*64, '--approval-reference-sha256', 'c'*64]
+    if flag:
+        args.append(flag)
+    assert child._fixed_child_main(args) == 2
+    captured = capsys.readouterr()
+    expected = '{"authority":"none","reason":"IMPORT","schema":"wd.mind-local-owner-preanchor-diagnostic.v1"}\n'
+    assert captured.out == (expected if flag else '')
+    assert captured.err == ''
+    assert unverified not in captured.out and 'synthetic-private' not in captured.out
+
+
 def test_local_adapter_diagnostic_does_not_wait_for_contended_lock():
     adapter = _local_adapter()
     response = []

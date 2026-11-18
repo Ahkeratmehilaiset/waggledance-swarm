@@ -2855,6 +2855,18 @@ def _emit_preowner_diagnostic(out, manifest, reason, exception_type, v2):
         out.flush()
 
 
+def _emit_preanchor_diagnostic(out):
+    """Emit a fixed refusal without asserting an unavailable manifest pin."""
+    data = b'{"authority":"none","reason":"IMPORT","schema":"wd.mind-local-owner-preanchor-diagnostic.v1"}\n'
+    offset = 0
+    while offset < len(data):
+        count = out.write(memoryview(data)[offset:])
+        if type(count) is not int or not 0 < count <= len(data) - offset:
+            raise ValueError('diagnostic_write')
+        offset += count
+    out.flush()
+
+
 def _guarded_local_entry(entry, **kwargs):
     """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
     if entry is _local_query_entry:
@@ -3001,16 +3013,20 @@ def _fixed_child_main(argv):
     try:
         expected = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         if not _HEX.fullmatch(expected):
+            if (local_owner or local_owner_path) and (diagnostic_optin or worker_diagnostic_optin):
+                try:
+                    _emit_preanchor_diagnostic(sys.stdout.buffer)
+                except BaseException:
+                    pass  # Output uncertainty remains a refusal, never READY.
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
         if __name__ == '__main__':
             try:
                 canonical = _load_pinned_canonical_child(Path(bundle), expected)
-            except BaseException as exc:
+            except BaseException:
                 if (local_owner or local_owner_path) and (diagnostic_optin or worker_diagnostic_optin):
                     try:
-                        _emit_preowner_diagnostic(sys.stdout.buffer, expected, 'IMPORT',
-                                                  _local_exception_type(exc), worker_diagnostic_optin)
+                        _emit_preanchor_diagnostic(sys.stdout.buffer)
                     except BaseException:
                         pass
                 return 2

@@ -80,6 +80,17 @@ function Update-WdMindManualOwner {
                     $line=[Text.Encoding]::ASCII.GetString($lineBytes,0,$lineLength)
                     $Record.Line.SetLength(0)
                     $matched=$false
+                    if ($Record.ContainsKey('PreAnchorFailed') -and $Record.PreAnchorFailed) { throw 'mind_manual_status' }
+                    $preAnchor='{"authority":"none","reason":"IMPORT","schema":"wd.mind-local-owner-preanchor-diagnostic.v1"}'
+                    if ($line -ceq $preAnchor -and $Record.ContainsKey('DiagnosticsEnabled') -and $Record.DiagnosticsEnabled -and
+                        $Record.ReportedState -ceq '' -and [int]$Record.DiagnosticCount -eq 0) {
+                        $Record.PreAnchorFailed=$true
+                        $Record.ReportedState='HOLD'
+                        $Record.StartDiagnostic=[pscustomobject]@{schema='wd.mind-local-owner-preanchor-diagnostic.v1';
+                            reason='IMPORT';authority='none'}
+                        $Record.DiagnosticCount=1
+                        $matched=$true
+                    }
                     foreach($state in @('STARTING','READY','HOLD','STOPPED')) {
                         $expected='{"authority":"none","caller_authentication":"UNKNOWN","index_refresh":"NOT_SCHEDULED",'+
                             '"manifest_sha256":"'+$Record.Manifest+'","schema":"wd.mind-local-owner-status.v1",'+
@@ -175,17 +186,19 @@ function Start-WdMindManualOwner {
           [switch] $IncludeWorkerStageDiagnostics)
     if (-not $Enabled) { throw 'mind_manual_owner_disabled' }
     if ($IncludeStartupDiagnostics -and $IncludeWorkerStageDiagnostics) { throw 'mind_manual_diagnostics_option' }
-    $policy=$null; $record=$null
+    $policy=$null; $record=$null; $handle=$null; $registered=$false; $preflightStage='INPUT'
     try {
         if(-not [IO.Path]::IsPathRooted($BundleRoot) -or $BundleRoot -match '(^|[\\/])\.\.([\\/]|$)' -or
            $OperatorApprovalReferenceSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
            $BridgePythonSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z'){throw 'input'}
         $root=[IO.Path]::GetFullPath($BundleRoot).TrimEnd('\')
         $manifestPath=Join-Path $root 'deployment-manifest.json'
+        $preflightStage='MANIFEST'
         $manifestBytes=Read-WdMindManualPinnedBytes $manifestPath $ExpectedManifestHash 4194304
         $utf8=New-Object Text.UTF8Encoding($false,$true)
         $manifest=$utf8.GetString($manifestBytes).TrimStart([char]0xFEFF)|ConvertFrom-Json -ErrorAction Stop
         if($manifest.schema_version -ne 1 -or $null -eq $manifest.files){throw 'manifest'}
+        $preflightStage='POLICY'
         $descriptorName='wd-mind-identifier-policy-approval.json'
         $descriptorPin=$manifest.files.PSObject.Properties[$descriptorName]
         if($null -eq $descriptorPin -or $descriptorPin.Value -isnot [string]){throw 'descriptor'}
@@ -195,6 +208,7 @@ function Start-WdMindManualOwner {
             '"schema":"wd.mind-identifier-policy-approval.v1"}'
         if($utf8.GetString($descriptor) -cne $expected){throw 'descriptor'}
         $policy=Read-WdMindManualPinnedBytes $OperatorPolicyPath $OperatorPolicySha256 65536
+        $preflightStage='HELPER_OR_PYTHON'
         [void](Read-WdMindManualPinnedBytes $BridgePythonPath $BridgePythonSha256 134217728)
         $wrapper=Join-Path $root 'Invoke-WdBridgePython.ps1'
         $helperBytes=$null
@@ -207,8 +221,11 @@ function Start-WdMindManualOwner {
         }
         if($null -eq $helperBytes -or $utf8.GetString($helperBytes).TrimStart([char]0xFEFF) -cne
            $script:WdMindManualOwnerHelperText){throw 'helper_source'}
+        $preflightStage='MANIFEST'
         [void](Read-WdMindManualPinnedBytes $manifestPath $ExpectedManifestHash 4194304)
+        $preflightStage='POLICY'
         [void](Read-WdMindManualPinnedBytes (Join-Path $root $descriptorName) $descriptorPin.Value 65536)
+        $preflightStage='UNKNOWN'
         $wrapperPin=[string]$manifest.files.PSObject.Properties['Invoke-WdBridgePython.ps1'].Value
         $quote={param([string]$v) "'"+$v.Replace("'","''")+"'"}
         $command='$ErrorActionPreference="Stop"; $ProgressPreference="SilentlyContinue"; $f=[IO.File]::OpenRead('+(& $quote $wrapper)+
@@ -238,6 +255,8 @@ function Start-WdMindManualOwner {
         $info.EnvironmentVariables['WD_BRIDGE_PYTHON_SHA256']=$BridgePythonSha256.ToUpperInvariant()
         $info.EnvironmentVariables['WD_BRIDGE_PYTHON']=[IO.Path]::GetFullPath($BridgePythonPath)
         if(-not (Test-Path variable:global:WdMindManualOwnerRecords)){$global:WdMindManualOwnerRecords=@{}}
+        if ($global:WdMindManualOwnerRecords -isnot [hashtable]) { throw 'owner_records' }
+        $registry=$global:WdMindManualOwnerRecords
         $token=[Guid]::NewGuid().ToString('N')
         $proc=New-Object Diagnostics.Process; $proc.StartInfo=$info
         $record=@{Process=$proc;Manifest=$ExpectedManifestHash.ToLowerInvariant();State='HOLD';ReportedState='';
@@ -245,15 +264,23 @@ function Start-WdMindManualOwner {
             WorkerDiagnosticsEnabled=[bool]$IncludeWorkerStageDiagnostics;DiagnosticCount=0;StartDiagnostic=$null;
             OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);Line=(New-Object IO.MemoryStream);
             OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false}
-        $global:WdMindManualOwnerRecords[$token]=$record
         $handle=[pscustomobject]@{schema='wd.mind-manual-owner-handle.v1';Token=$token;authority='none'}
+        $registry[$token]=$record
+        if (-not [object]::ReferenceEquals($global:WdMindManualOwnerRecords,$registry) -or
+            -not $registry.ContainsKey($token) -or -not [object]::ReferenceEquals($registry[$token],$record)) {
+            throw 'owner_records'
+        }
+        $registered=$true
         if(-not $proc.Start()){return $handle}
         $record.OutRead=$proc.StandardOutput.BaseStream.ReadAsync($record.OutBuffer,0,$record.OutBuffer.Length)
         $record.ErrRead=$proc.StandardError.BaseStream.ReadAsync($record.ErrBuffer,0,$record.ErrBuffer.Length)
         $record.State='STARTING'
         return $handle
     } catch {
-        if($null -ne $record){return $handle}
+        if($registered -and $null -ne $handle){return $handle}
+        if($IncludeStartupDiagnostics -or $IncludeWorkerStageDiagnostics) {
+            throw ('mind_manual_owner_refused:' + $preflightStage)
+        }
         throw 'mind_manual_owner_refused'
     } finally {
         if($null -ne $policy){[Array]::Clear($policy,0,$policy.Length)}

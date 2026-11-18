@@ -11,6 +11,109 @@ import sys
 import pytest
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner preflight')
+@pytest.mark.parametrize('stage', ['INPUT', 'MANIFEST', 'POLICY', 'HELPER_OR_PYTHON', 'UNKNOWN', 'REGISTERED'])
+@pytest.mark.parametrize('flag', ['', '-IncludeStartupDiagnostics', '-IncludeWorkerStageDiagnostics'])
+def test_pre_spawn_refusal_reports_only_fixed_optin_stage(stage, flag):
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    path = str(helper).replace("'", "''")
+    approval = 'synthetic-private' if stage == 'INPUT' else 'c'*64
+    script = f"""
+$ErrorActionPreference='Stop'
+. '{path}'
+function Read-WdMindManualPinnedBytes {{
+    param([string]$Path,[string]$Sha256,[int]$MaxBytes)
+    $name=[IO.Path]::GetFileName($Path)
+    if (('{stage}' -ceq 'MANIFEST' -and $name -ceq 'deployment-manifest.json') -or
+        ('{stage}' -ceq 'POLICY' -and $name -ceq 'wd-mind-identifier-policy-approval.json') -or
+        ('{stage}' -ceq 'HELPER_OR_PYTHON' -and $name -ceq 'python.exe')) {{ throw 'synthetic-private-path' }}
+    if ($name -ceq 'deployment-manifest.json') {{
+        return ,[Text.Encoding]::UTF8.GetBytes('{{"schema_version":1,"files":{{"wd-mind-identifier-policy-approval.json":"{'a'*64}","Invoke-WdBridgePython.ps1":"{'a'*64}","Start-WdMindManualOwner.ps1":"{'a'*64}","tools-bootstrap/tools/wd_mind_runtime_child.py":"{'a'*64}"}}}}')
+    }}
+    if ($name -ceq 'wd-mind-identifier-policy-approval.json') {{
+        return ,[Text.Encoding]::UTF8.GetBytes('{{"approval_reference_sha256":"{'c'*64}","identifier_policy_sha256":"{'b'*64}","schema":"wd.mind-identifier-policy-approval.v1"}}')
+    }}
+    if ($name -ceq 'Start-WdMindManualOwner.ps1') {{ return ,[Text.Encoding]::UTF8.GetBytes($script:WdMindManualOwnerHelperText) }}
+    return ,[byte[]](1)
+}}
+if ('{stage}' -ceq 'UNKNOWN') {{ $global:WdMindManualOwnerRecords='synthetic-invalid-registry' }}
+if ('{stage}' -ceq 'REGISTERED') {{
+    function New-Object {{
+        if ($args[0] -ceq 'Diagnostics.Process') {{
+            $fake=[pscustomobject]@{{StartInfo=$null}}
+            $fake | Add-Member -MemberType ScriptMethod -Name Start -Value {{ throw 'synthetic-private-start' }}
+            return $fake
+        }}
+        Microsoft.PowerShell.Utility\\New-Object @args
+    }}
+}}
+try {{
+    $h=Start-WdMindManualOwner -Enabled -BundleRoot 'C:\\synthetic' -ExpectedManifestHash '{'a'*64}'
+        -OperatorPolicyPath 'C:\\synthetic\\policy.json' -OperatorPolicySha256 '{'b'*64}'
+        -OperatorApprovalReferenceSha256 '{approval}' -BridgePythonPath 'C:\\synthetic\\python.exe'
+        -BridgePythonSha256 '{'d'*64}' {flag}
+    $message=if ('{stage}' -ceq 'REGISTERED' -and $null -ne $h -and
+        $global:WdMindManualOwnerRecords.ContainsKey([string]$h.Token) -and
+        $global:WdMindManualOwnerRecords[[string]$h.Token].State -ceq 'HOLD') {{'registered-hold'}} else {{'unexpected-success'}}
+}} catch {{ $message=$_.Exception.Message }}
+[pscustomobject]@{{message=$message}} | ConvertTo-Json -Compress
+""".replace("'\n        -", "' `\n        -")
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, text=True, timeout=15, check=True)
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    expected = ('registered-hold' if stage == 'REGISTERED' else
+                'mind_manual_owner_refused:' + stage if flag else 'mind_manual_owner_refused')
+    assert result['message'] == expected
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
+@pytest.mark.parametrize('shell', [
+    str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(shutil.which('pwsh') is None,
+                                                                reason='PowerShell 7 unavailable')),
+], ids=['powershell51', 'pwsh7'])
+@pytest.mark.parametrize('mode', ['v1', 'v2', 'off', 'extra', 'after_status', 'duplicate', 'split', 'forged_hash'])
+def test_preanchor_diagnostic_is_optin_and_never_allows_ready(mode, shell):
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    record = {'authority':'none', 'reason':'IMPORT', 'schema':'wd.mind-local-owner-preanchor-diagnostic.v1'}
+    if mode == 'forged_hash':
+        record['manifest_sha256'] = 'd' * 64
+    line = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+    status = {'authority':'none', 'caller_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED',
+              'manifest_sha256':'a'*64, 'schema':'wd.mind-local-owner-status.v1',
+              'source_authentication':'UNKNOWN', 'state':'READY'}
+    ready = json.dumps(status, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+    wire = (ready + line if mode == 'after_status' else line + ready if mode == 'extra'
+            else line + line if mode == 'duplicate' else line)
+    path = str(helper).replace("'", "''")
+    script = f"""
+$ErrorActionPreference='Stop'
+. '{path}'
+$bytes=[Convert]::FromBase64String('{base64.b64encode(wire).decode()}')
+$stream=New-Object System.IO.MemoryStream
+$process=[pscustomobject]@{{StandardOutput=[pscustomobject]@{{BaseStream=$stream}};HasExited=$false}}
+$record=@{{OutRead=[System.Threading.Tasks.Task]::FromResult($bytes.Length);ErrRead=$null;
+ OutBuffer=$bytes;Line=(New-Object System.IO.MemoryStream);Manifest='{'a'*64}';
+ DiagnosticsEnabled=${str(mode != 'off').lower()};WorkerDiagnosticsEnabled=${str(mode == 'v2').lower()};
+ DiagnosticCount=0;ReportedState='';StartDiagnostic=$null;Process=$process;Stopping=$false;Invalid=$false}}
+Update-WdMindManualOwner $record
+if ('{mode}' -ceq 'split') {{
+  $next=[Convert]::FromBase64String('{base64.b64encode(ready).decode()}')
+  $record.OutBuffer=$next; $record.OutRead=[System.Threading.Tasks.Task]::FromResult($next.Length)
+  Update-WdMindManualOwner $record
+}}
+[pscustomobject]@{{invalid=$record.Invalid;state=$record.State;reason=$record.StartDiagnostic.reason}} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, text=True, timeout=15, check=True)
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    accepted = mode in ('v1', 'v2')
+    assert result == {'invalid': not accepted, 'state': 'HOLD', 'reason': 'IMPORT' if accepted or mode in ('extra', 'duplicate', 'split') else None}
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
 @pytest.mark.parametrize(('reason', 'accepted'), [
     ('ADMISSION_MISSING', True), ('ADMISSION_RESERVED', True),

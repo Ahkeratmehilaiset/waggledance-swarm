@@ -570,6 +570,142 @@ def test_reset_after_later_boot_and_no_runtime_process(tmp_path):
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
 
 
+@pytest.mark.parametrize('damaged', [b'', b'WD_MIND_', child._OWNER_RESERVATION_MAGIC + b'X',
+                                    child._OWNER_RESERVATION_MAGIC + b'RR', b'x'*4096])
+def test_reset_repairs_damaged_marker_only_after_safe_observations(tmp_path, damaged):
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(damaged)
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+
+
+@pytest.mark.parametrize('fault', ['no_later_boot', 'runtime_alive', 'observation_unknown', 'binding_changed'])
+def test_damaged_reset_refuses_uncertain_proof_without_changing_marker(tmp_path, fault):
+    root, runtime, marker = _paths(tmp_path)
+    damaged = b'broken synthetic marker'
+    marker.write_bytes(damaged)
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    program = runtime / 'python.exe'
+    program.write_bytes(b'synthetic')
+    def observe():
+        if fault == 'observation_unknown': raise OSError('private')
+        return (timestamp if fault == 'no_later_boot' else timestamp + 1_000_000_000,
+                ((os.getpid()+1000, str(program)),) if fault == 'runtime_alive' else ())
+    calls = []
+    def binding():
+        calls.append(1)
+        if fault == 'binding_changed' and len(calls) > 1: raise OSError('private')
+    with pytest.raises(admin.ReservationAdminRefused):
+        admin._marker(root, runtime, operation='reset', observe=observe, verify_binding=binding)
+    assert marker.read_bytes() == damaged
+
+
+def test_damaged_reset_guard_denies_other_write_and_replace_during_observation(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'broken')
+    other = tmp_path/'other-marker'
+    other.write_bytes(b'alternate')
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    observed = []
+    def observe():
+        with pytest.raises(OSError):
+            fd = os.open(marker, os.O_RDWR | os.O_BINARY)
+            os.close(fd)
+        with pytest.raises(OSError): os.replace(other, marker)
+        observed.append('guarded')
+        return timestamp + 1_000_000_000, ()
+    admin._marker(root, runtime, operation='reset', observe=observe)
+    assert observed == ['guarded']
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
+    assert other.read_bytes() == b'alternate'
+
+
+def test_damaged_reset_rechecks_binding_after_last_handle_check(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'broken')
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    original = admin._assert_open_directory_identity
+    calls = []
+    def handle_check(*args):
+        original(*args)
+        calls.append('checked')
+    def binding():
+        if len(calls) >= 2: raise ValueError('synthetic binding changed')
+    monkeypatch.setattr(admin, '_assert_open_directory_identity', handle_check)
+    with pytest.raises(admin.ReservationAdminRefused):
+        admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000),
+                      verify_binding=binding)
+    assert calls == ['checked', 'checked']
+    assert marker.read_bytes() == b'broken'
+
+
+@pytest.mark.parametrize('interrupt', [KeyboardInterrupt, SystemExit])
+def test_damaged_reset_propagates_interruption_after_write_started(tmp_path, monkeypatch, interrupt):
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'broken')
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    write = os.write
+    def interrupted_write(fd, data):
+        write(fd, data[:3])
+        raise interrupt('synthetic interruption')
+    with monkeypatch.context() as patch:
+        patch.setattr(admin.os, 'write', interrupted_write)
+        with pytest.raises(interrupt):
+            admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+    assert marker.read_bytes() != b'broken'
+    # The caller has no clean-release proof and must not automatically retry.
+    assert marker.read_bytes() != child._OWNER_RESERVATION_MAGIC + b'C'
+
+
+@pytest.mark.parametrize('operation', ['write', 'ftruncate', 'fsync'])
+def test_damaged_reset_partial_publication_is_reported_unknown(tmp_path, monkeypatch, operation):
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'broken')
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    def fail(*args): raise OSError('private synthetic error')
+    with monkeypatch.context() as patch:
+        patch.setattr(admin.os, operation, fail)
+        with pytest.raises(admin.ReservationAdminRefused, match='^RESET_PUBLICATION_UNCERTAIN$') as exc:
+            admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+    assert 'private' not in str(exc.value)
+    assert marker.exists()
+
+
+def test_damaged_reset_short_write_leaves_publication_uncertain(tmp_path, monkeypatch):
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'broken')
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    original_write = os.write
+    def short_write(fd, data):
+        return original_write(fd, data[:3])
+    with monkeypatch.context() as patch:
+        patch.setattr(admin.os, 'write', short_write)
+        with pytest.raises(admin.ReservationAdminRefused, match='^RESET_PUBLICATION_UNCERTAIN$'):
+            admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+    assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC[:3] + b'ken'
+    assert marker.read_bytes() != child._OWNER_RESERVATION_MAGIC + b'C'
+
+
+def test_damaged_reset_refuses_hardlinked_marker_without_writing(tmp_path):
+    root, runtime, marker = _paths(tmp_path)
+    marker.write_bytes(b'broken')
+    other = tmp_path / 'hardlink'
+    os.link(marker, other)
+    timestamp = 1_600_000_000_000_000_000
+    os.utime(marker, ns=(timestamp, timestamp))
+    with pytest.raises(admin.ReservationAdminRefused):
+        admin._marker(root, runtime, operation='reset', observe=_clear(timestamp + 1_000_000_000))
+    assert marker.read_bytes() == other.read_bytes() == b'broken'
+
+
 def test_reset_fsync_failure_reports_uncertain_without_reverting_clear(tmp_path, monkeypatch):
     root, runtime, marker = _paths(tmp_path)
     _reserved(marker)

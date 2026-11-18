@@ -548,6 +548,61 @@ def _release_verified(guard, verify_binding, *, _scope=_SYNTHETIC_SCOPE):
         raise ReservationAdminRefused('RESET_PUBLICATION_UNCERTAIN') from None
 
 
+def _repair_synthetic_marker(guard, directory_handle, observe, interpreter_root, interpreter, verify_binding):
+    """Repair damaged bytes only in the fixed synthetic scope, while locked.
+
+    This is not the disabled production path. Same-user ABA, the process
+    snapshot/spawn race, and wall-clock movement remain UNKNOWN. An interrupt
+    after a write begins is propagated, but publication remains uncertain and
+    the caller must not treat it as a clean reset or retry automatically.
+    """
+    _assert_synthetic_root(guard.root)
+    initial = os.fstat(guard.fd)
+    identity = (initial.st_dev, initial.st_ino)
+    marker_time, marker_size = initial.st_mtime_ns, initial.st_size
+
+    def check_held():
+        _assert_synthetic_root(guard.root)
+        _assert_open_directory_identity(guard.root, directory_handle)
+        absent._plain(guard.path, directory=False)
+        root = os.lstat(guard.root)
+        path = os.lstat(guard.path)
+        opened = os.fstat(guard.fd)
+        if ((root.st_dev, root.st_ino) != guard.root_id or not identity[1]
+                or (path.st_dev, path.st_ino) != identity
+                or (opened.st_dev, opened.st_ino) != identity
+                or path.st_nlink != 1 or opened.st_nlink != 1
+                or path.st_size != marker_size or opened.st_size != marker_size
+                or path.st_mtime_ns != marker_time or opened.st_mtime_ns != marker_time):
+            raise ValueError('marker_changed')
+
+    check_held()
+    boot_ns, processes = _checked_observe(observe)
+    _validate_observation(boot_ns, processes, interpreter_root, interpreter, marker_time)
+    verify_binding()
+    check_held()
+    os.lseek(guard.fd, 0, os.SEEK_SET)
+    clear = child._OWNER_RESERVATION_MAGIC + b'C'
+    # The binding may have changed during the handle/path revalidation.
+    verify_binding()
+    # Once a write starts, any later error leaves the published state unknown.
+    try:
+        if os.write(guard.fd, clear) != len(clear):
+            raise ValueError('short_write')
+        os.ftruncate(guard.fd, len(clear))
+        os.fsync(guard.fd)
+        guard._check()
+        if guard._read() != clear:
+            raise ValueError('marker_changed')
+        import msvcrt
+        os.lseek(guard.fd, 0, os.SEEK_SET)
+        msvcrt.locking(guard.fd, msvcrt.LK_UNLCK, len(clear))
+        os.close(guard.fd)
+        guard.fd = -1
+    except Exception:
+        raise _AdminReason('RESET_PUBLICATION_UNCERTAIN') from None
+
+
 def _production_marker(*, operation, bundle_root, manifest_sha256):
     """Unconditionally disabled fixed-root candidate; not an operator entrypoint.
 
@@ -677,7 +732,7 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
             except FileNotFoundError:
                 raise _AdminReason('MARKER_MISSING') from None
             absent._plain(path, directory=False)
-            fd = os.open(path, os.O_RDWR | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0))
+            fd = child._open_owned_marker(path)
             os.lseek(fd, 0, os.SEEK_SET)
             try:
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, len(child._OWNER_RESERVATION_MAGIC) + 1)
@@ -688,9 +743,15 @@ def _marker(root, interpreter_root, *, operation, observe, interpreter=None, ver
                 raise ValueError('published_changed')
             guard = child._LocalOwnerReservation(root, path, fd,
                 (root_stat.st_dev, root_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
-            guard._check()
-            if guard._read() != child._OWNER_RESERVATION_MAGIC + b'R':
+            marker = guard._read()
+            if marker == child._OWNER_RESERVATION_MAGIC + b'C':
                 raise _AdminReason('MARKER_NOT_RESERVED')
+            if marker != child._OWNER_RESERVATION_MAGIC + b'R':
+                _repair_synthetic_marker(guard, directory_handle, observe, interpreter_root, interpreter,
+                                         verify_binding)
+                fd = None
+                return
+            guard._check()
             marker_time = os.fstat(fd).st_mtime_ns
             boot_ns, processes = _checked_observe(observe)
             _validate_observation(boot_ns, processes, interpreter_root, interpreter,

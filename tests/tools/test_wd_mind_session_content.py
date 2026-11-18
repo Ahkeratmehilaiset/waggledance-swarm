@@ -430,17 +430,21 @@ def test_local_candidate_budget_exhaustion_never_emits_partial_content(
         # Keep every synthetic worker reachable until target-finally and the
         # physical thread exit are both observed, including error paths.
         deferred = None
-        for worker, state in tuple(private_pending):
-            while True:
-                try:
+        while True:
+            try:
+                all_stopped = True
+                for worker, state in tuple(private_pending):
                     if state['worker_done'].is_set() and worker.ident is not None:
                         worker.join(timeout=0)
                         if not worker.is_alive():
-                            break
-                    time.sleep(0.05)
-                except BaseException as exc:
-                    if deferred is None:
-                        deferred = exc
+                            continue
+                    all_stopped = False
+                if all_stopped:
+                    break
+                time.sleep(0.05)
+            except BaseException as exc:
+                if deferred is None:
+                    deferred = exc
         if deferred is not None:
             raise deferred
 

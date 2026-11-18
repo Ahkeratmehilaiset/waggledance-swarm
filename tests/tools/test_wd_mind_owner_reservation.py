@@ -29,6 +29,65 @@ def _seed(root, state=b'C'):
 
 
 @WINDOWS
+def test_held_reservation_rejects_second_handle_truncation(tmp_path):
+    root = _seed(tmp_path / 'synthetic-audit')
+    marker = root / MARKER
+    guard = child._reserve_local_owner(root)
+    opened = False
+    try:
+        try:
+            fd = os.open(marker, os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_BINARY', 0))
+        except OSError:
+            pass
+        else:
+            opened = True
+            os.close(fd)
+        assert not opened
+        assert guard._read() == PREFIX + b'R'
+        guard.release_clean(service_stopped=True, owner_stopped=True,
+                            owner_owned=False, control_stopped=True)
+    finally:
+        guard.abandon()
+
+
+@WINDOWS
+@pytest.mark.parametrize('mutation', ['write', 'unlink', 'rename'])
+def test_held_reservation_rejects_other_handle_mutation(tmp_path, mutation):
+    root = _seed(tmp_path / 'synthetic-audit')
+    marker = root / MARKER
+    guard = child._reserve_local_owner(root)
+    try:
+        with pytest.raises(OSError):
+            if mutation == 'write':
+                fd = os.open(marker, os.O_WRONLY | getattr(os, 'O_BINARY', 0))
+                try: os.write(fd, b'X')
+                finally: os.close(fd)
+            elif mutation == 'unlink':
+                marker.unlink()
+            else:
+                marker.rename(root / 'synthetic-other-marker')
+        assert guard._read() == PREFIX + b'R'
+        guard.release_clean(service_stopped=True, owner_stopped=True,
+                            owner_owned=False, control_stopped=True)
+        assert marker.read_bytes() == PREFIX + b'C'
+    finally:
+        guard.abandon()
+
+
+@WINDOWS
+def test_reservation_refuses_existing_writable_handle_without_mutating_marker(tmp_path):
+    root = _seed(tmp_path / 'synthetic-audit')
+    marker = root / MARKER
+    fd = os.open(marker, os.O_WRONLY | getattr(os, 'O_BINARY', 0))
+    try:
+        with pytest.raises(child.LaunchRefused):
+            child._reserve_local_owner(root)
+        assert marker.read_bytes() == PREFIX + b'C'
+    finally:
+        os.close(fd)
+
+
+@WINDOWS
 @pytest.mark.parametrize('condition', ['missing', 'reserved', 'invalid', 'locked', 'unreadable'])
 @pytest.mark.parametrize('diagnostics', ['off', 'v1', 'v2'])
 def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch, condition, diagnostics):
@@ -43,10 +102,10 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
     reads = []
     if condition == 'locked':
         import msvcrt
-        original_open, original_read = child.os.open, child.os.read
+        original_open, original_read = child._open_owned_marker, child.os.read
         marker_fds = []
-        def tracked_open(path, *args, **kwargs):
-            fd = original_open(path, *args, **kwargs)
+        def tracked_open(path):
+            fd = original_open(path)
             if Path(path) == marker: marker_fds.append(fd)
             return fd
         def tracked_read(fd, size):
@@ -54,7 +113,7 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
                 reads.append(True)
                 raise AssertionError('marker bytes must not be read without lock')
             return original_read(fd, size)
-        monkeypatch.setattr(child.os, 'open', tracked_open)
+        monkeypatch.setattr(child, '_open_owned_marker', tracked_open)
         monkeypatch.setattr(child.os, 'read', tracked_read)
         monkeypatch.setattr(msvcrt, 'locking', lambda *args: (_ for _ in ()).throw(OSError('private-lock-marker')))
         def forbidden_read(self):
@@ -62,7 +121,7 @@ def test_reservation_refusal_is_fixed_and_never_provisions(tmp_path, monkeypatch
             raise AssertionError('marker must not be read without lock')
         monkeypatch.setattr(child._LocalOwnerReservation, '_read', forbidden_read)
     if condition == 'unreadable':
-        monkeypatch.setattr(child.os, 'open', lambda *args, **kw: (_ for _ in ()).throw(PermissionError('private-open-marker')))
+        monkeypatch.setattr(child, '_open_owned_marker', lambda *args, **kw: (_ for _ in ()).throw(PermissionError('private-open-marker')))
     output = io.BytesIO()
     result = child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
         expected_manifest_sha256='a' * 64, include_start_diagnostics=diagnostics == 'v1',
@@ -252,8 +311,9 @@ def test_other_process_cannot_write_locked_state_byte(tmp_path):
     root = _seed(tmp_path / 'audit')
     guard = child._reserve_local_owner(root)
     script = r'''import os,sys
-fd=os.open(sys.argv[1],os.O_RDWR|os.O_BINARY)
+fd=None
 try:
+    fd=os.open(sys.argv[1],os.O_RDWR|os.O_BINARY)
     os.lseek(fd,int(sys.argv[2]),os.SEEK_SET)
     os.write(fd,b'C')
 except PermissionError:
@@ -261,7 +321,7 @@ except PermissionError:
 else:
     print('WRITTEN')
 finally:
-    os.close(fd)
+    if fd is not None: os.close(fd)
 '''
     result = subprocess.run([sys.executable, '-I', '-c', script, str(root / MARKER), str(len(PREFIX))],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=True,

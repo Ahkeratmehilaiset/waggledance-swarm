@@ -259,6 +259,30 @@ class _LocalAdmission:
             self._guard.abandon()
 
 
+def _open_owned_marker(path):
+    """Open an existing marker, denying other write/delete handles on Windows."""
+    if os.name != 'nt':
+        raise OSError('owner_reservation_platform')
+    import msvcrt
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.HANDLE]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(os.fspath(path), 0x80000000 | 0x40000000,
+                                  0x00000001, None, 3, 0x00200000, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), 'owner_reservation_open')
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_RDWR | getattr(os, 'O_BINARY', 0)
+                                    | getattr(os, 'O_NOINHERIT', 0))
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+
+
 def _reserve_local_owner(root):
     """Reserve only an existing valid CLEAR sentinel; never provision or recover it.
 
@@ -283,7 +307,7 @@ def _reserve_local_owner(root):
         root_stat, path_stat = os.lstat(root), os.lstat(path)
         if not root_stat.st_ino or not path_stat.st_ino or path_stat.st_nlink != 1:
             raise LaunchRefused('owner_reservation_invalid')
-        fd = os.open(path, os.O_RDWR | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0))
+        fd = _open_owned_marker(path)
         os.lseek(fd, 0, os.SEEK_SET)
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, len(_OWNER_RESERVATION_MAGIC) + 1)

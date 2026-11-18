@@ -4,9 +4,13 @@ The only log, roster, policy and records used here are test fixtures. No bridge,
 model, installed bundle or persisted content cache is used.
 """
 import copy
+import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import struct
+import sys
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +20,70 @@ import test_wd_mind_content_query_readonly as fixtures
 
 
 reader = runtime.reader
+
+
+@pytest.fixture(autouse=True)
+def exact_pinned_synthetic_code(monkeypatch):
+    """Test pinned LF bytes and real origin checks in an isolated audit tree."""
+    import tools
+    import waggledance.core
+
+    checkout = Path(__file__).resolve().parents[2]
+    audit = checkout / '.codex-audit'
+    audit.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='mind-old-projection-', dir=audit) as directory:
+        root = Path(directory)
+        for relative, expected in reader._REQUIRED_CODE.items():
+            raw = (checkout / relative).read_bytes()
+            normalized = raw.replace(b'\r\n', b'\n')
+            data = raw if hashlib.sha256(raw).hexdigest() == expected else normalized
+            assert hashlib.sha256(data).hexdigest() == expected, relative
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            assert hashlib.sha256(target.read_bytes()).hexdigest() == expected
+
+        # The test retains the actual loaded reader's logic; only its root is
+        # redirected to an exact copy of its own bytes and pinned dependencies.
+        source = Path(reader.__file__).resolve()
+        query_copy = root / 'tools' / source.name
+        query_copy.write_bytes(source.read_bytes())
+        monkeypatch.setattr(reader, '__file__', str(query_copy))
+
+        def load_exact(name, relative, package, attribute):
+            path = root / relative
+            spec = importlib.util.spec_from_file_location(name, path)
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            monkeypatch.setitem(sys.modules, name, module)
+            spec.loader.exec_module(module)
+            monkeypatch.setattr(package, attribute, module, raising=False)
+
+        load_exact('tools.bridge_compact_view', 'tools/bridge_compact_view.py', tools, 'bridge_compact_view')
+        load_exact('waggledance.core.bridge_log_reader', 'waggledance/core/bridge_log_reader.py',
+                   waggledance.core, 'bridge_log_reader')
+        load_exact('tools.wd_mind_content_prefix_readonly', 'tools/wd_mind_content_prefix_readonly.py',
+                   tools, 'wd_mind_content_prefix_readonly')
+        load_exact('tools.wd_mind_absent_generation_prefix_readonly',
+                   'tools/wd_mind_absent_generation_prefix_readonly.py', tools,
+                   'wd_mind_absent_generation_prefix_readonly')
+        yield
+
+
+def test_synthetic_code_tree_rejects_tampered_pinned_bytes():
+    path = Path(reader.__file__).parent / 'wd_mind_content_prefix_readonly.py'
+    path.write_bytes(path.read_bytes() + b'\n')
+    with pytest.raises(ValueError, match='dependency_changed'):
+        reader._check_code()
+
+
+def test_synthetic_code_tree_rejects_wrong_loaded_module_origin(monkeypatch):
+    module = sys.modules['tools.wd_mind_content_prefix_readonly']
+    monkeypatch.setattr(module, '__file__', str(Path(reader.__file__)))
+    with pytest.raises(ValueError, match='dependency_origin_mismatch'):
+        reader._pinned_dependency('tools.wd_mind_content_prefix_readonly',
+                                  'tools/wd_mind_content_prefix_readonly.py',
+                                  ('read_prefix_rows',))
 
 
 def _synthetic_appended_snapshot(tmp_path):

@@ -712,6 +712,8 @@ def test_lost_prewarm_generation_is_internal_fault_and_holds(monkeypatch):
 def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     _runtime, _adapter, binding, factory, _calls = _full_fixtures._single_owner_synthetic(monkeypatch, tmp_path)
+    # Real prewarm budget requires an exact positive source-prefix offset.
+    binding._PrivateBinding__snapshot['messages'] = {'end_cursor': SimpleNamespace(offset=5)}
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda _self: {
         'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
     seen = []
@@ -738,6 +740,8 @@ def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monk
 @pytest.mark.parametrize('rotating', [False, True], ids=['single', 'rotating'])
 def test_refresh_prewarm_precedes_ready_and_preserves_worker(tmp_path, monkeypatch, fault, rotating):
     _runtime, owner, old, new = _full_fixtures._refresh_generation_test_owner(monkeypatch, tmp_path)
+    # Only the replacement snapshot is prewarmed after the generation swap.
+    new[1]['messages'] = {'end_cursor': SimpleNamespace(offset=5)}
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     old_generation, old_handler, worker = owner._generation, owner._handler, owner._owner
     if rotating:

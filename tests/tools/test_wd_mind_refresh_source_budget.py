@@ -27,7 +27,7 @@ flat_consumer_case = _fixtures.flat_consumer_case
 synthetic_checkout_pins = _fixtures.synthetic_checkout_pins
 
 
-@pytest.mark.parametrize('fault', ['none', 'prewarm_source_mutation', 'prewarm_budget', 'candidate_source_mutation'])
+@pytest.mark.parametrize('fault', ['none', 'prewarm_source_mutation', 'prewarm_budget', 'prewarm_mid_budget', 'candidate_source_mutation'])
 def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
         synthetic_checkout_pins, flat_consumer_case, monkeypatch, tmp_path, fault):
     package, original_owner, _proposals, original_snapshot, clock, _response = flat_consumer_case
@@ -76,6 +76,14 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     if fault == 'prewarm_budget':
         monkeypatch.setattr(runtime, '_STARTUP_PREWARM_SOURCE_READ_LIMIT', 3 * old_cursor.offset + 1)
+    elif fault == 'prewarm_mid_budget':
+        # Inject exhaustion after the real preflight has accepted the budget.
+        original_prewarm = runtime._prewarm_source_budget
+        def limited_prewarm(value):
+            budget = original_prewarm(value)
+            budget._remaining = 3 * old_cursor.offset + 1
+            return budget
+        monkeypatch.setattr(runtime, '_prewarm_source_budget', limited_prewarm)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
     monkeypatch.setattr(runtime, '_stage_refresh_generation',
                         lambda current: _fixtures._full_fixtures._test_staged_refresh(runtime, current, staged))
@@ -83,7 +91,12 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
 
     dependencies = reader._narrow_dependencies()
     original_open = prefix.bridge._open_log
-    readings, budgets = [], []
+    readings, budgets, created_budgets = [], [], []
+    original_init = prefix._SourceReadBudget.__init__
+    def record_init(budget, limit):
+        original_init(budget, limit)
+        created_budgets.append(budget)
+    monkeypatch.setattr(prefix._SourceReadBudget, '__init__', record_init)
     original_reserve = prefix._SourceReadBudget.reserve
     def reserve(budget, size):
         if not any(item is budget for item in budgets):
@@ -108,16 +121,20 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
     monkeypatch.setattr(prefix.bridge, '_open_log', opened)
     monkeypatch.setattr(reader, '_narrow_dependencies', lambda: dependencies)
 
-    if fault in ('prewarm_source_mutation', 'prewarm_budget'):
+    if fault in ('prewarm_source_mutation', 'prewarm_budget', 'prewarm_mid_budget'):
         with pytest.raises(runtime.FullRuntimeRefused):
             owner._refresh_generation(enabled=True)
         assert owner._state == 'HOLD' and owner._generation is old_generation and owner._owner is worker
         assert owner._retained is None and old_handler._retained is None
-        assert readings and owner._source_budget is budgets[0]
-        assert sum(size for state, size in readings if state == 'STARTING') <= 2 * 1024 ** 3
         if fault == 'prewarm_budget':
-            assert sum(size for state, size in readings if state == 'STARTING') == 3 * old_cursor.offset
-            assert budgets[0]._remaining == 1
+            # The worst-case check must refuse before source I/O or allocation.
+            assert not readings and not budgets and not created_budgets and owner._source_budget is None
+        else:
+            assert readings and owner._source_budget is budgets[0]
+            assert sum(size for state, size in readings if state == 'STARTING') <= 2 * 1024 ** 3
+            if fault == 'prewarm_mid_budget':
+                assert sum(size for state, size in readings if state == 'STARTING') == 3 * old_cursor.offset
+                assert budgets[0]._remaining == 1
         return
 
     assert owner._refresh_generation(enabled=True)['status'] == 'REFRESHED'

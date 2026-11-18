@@ -89,6 +89,45 @@ def test_round_trip_and_raw_text_absent(private_dir):
     assert json.loads(raw[len(cache._MAGIC) + 4:header_end]) == cache._header(binding(), rows())
 
 
+def test_cache_accepts_only_exact_directional_compatibility_pair(private_dir):
+    path = private_dir / 'vectors.bin'
+    old = binding()
+    cache.write_cache(path, old, rows())
+    current = dict(old, model_sha256='8' * 64, projection_code_sha256='9' * 64)
+    pair = ((old['model_sha256'], old['projection_code_sha256'],
+             current['model_sha256'], current['projection_code_sha256']),)
+    check = lambda offset, digest: offset == 100 and digest == '3' * 64
+    with pytest.raises(cache.CacheMiss):
+        cache.load_cache(path, current, check)
+    assert cache.load_cache(path, current, check, compatibility_pairs=pair).rows == rows()
+    for wrong in ((pair[0][2], pair[0][3], pair[0][0], pair[0][1]),
+                  (pair[0][0], '0' * 64, pair[0][2], pair[0][3]),
+                  (pair[0][0], pair[0][1], pair[0][2], '0' * 64)):
+        with pytest.raises(cache.CacheMiss):
+            cache.load_cache(path, current, check, compatibility_pairs=(wrong,))
+    for field in ('source_identity_sha256', 'source_generation_sha256', 'policy_sha256'):
+        with pytest.raises(cache.CacheMiss):
+            cache.load_cache(path, dict(current, **{field: '0' * 64}), check,
+                             compatibility_pairs=pair)
+    for field in ('prefix_sha256', 'projection_sha256'):
+        with pytest.raises(cache.CacheMiss):
+            cache.load_cache(path, dict(current, **{field:'0' * 64}), check,
+                             compatibility_pairs=pair)
+    with pytest.raises(cache.CacheMiss):
+        cache.load_cache(path, dict(current, prefix_offset=99), check, compatibility_pairs=pair)
+    with pytest.raises(cache.CacheMiss):
+        cache.load_cache(path, current, lambda *_: False, compatibility_pairs=pair)
+
+
+@pytest.mark.parametrize('pairs', [None, [], ((True, 'a' * 64, 'b' * 64, 'c' * 64),),
+                                   (('a' * 64,) * 4,) * 2, (('A' * 64,) * 4,)])
+def test_cache_refuses_malformed_compatibility_pairs(private_dir, pairs):
+    path = private_dir / 'vectors.bin'
+    cache.write_cache(path, binding(), rows())
+    with pytest.raises(cache.CacheRefused):
+        cache.load_cache(path, binding(), lambda *_: True, compatibility_pairs=pairs)
+
+
 def test_preflight_missing_only_inside_valid_private_root_and_then_present(private_dir):
     path = private_dir / "vectors.bin"
     assert cache.preflight(path) == "MISSING"

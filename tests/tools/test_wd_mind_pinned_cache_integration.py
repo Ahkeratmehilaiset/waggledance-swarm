@@ -32,6 +32,32 @@ def _write_json(path, value):
     return raw
 
 
+def test_compatibility_descriptor_is_closed_and_unpopulated_by_default():
+    from tools import wd_mind_full_runtime as runtime
+    source = ROOT / 'ops/windows/reboot/wd-mind-cache-compatibility.json'
+    assert runtime._parse_cache_compatibility(source.read_bytes()) == ()
+    fields = ('old_model_sha256', 'old_projection_code_sha256',
+              'new_model_sha256', 'new_projection_code_sha256')
+    pair = dict(zip(fields, ('1' * 64, '2' * 64, '3' * 64, '4' * 64)))
+    pair['old_encoder_binding_sha256'] = '5' * 64
+    pair['old_content_pins'] = {path:'6' * 64 for path in runtime._CACHE_CONTENT_PATHS}
+    document = {'schema':'wd.mind-cache-compatibility.v1', 'enabled':True, 'pairs':[pair]}
+    assert runtime._parse_cache_compatibility(fixtures.canonical(document)) == (
+        tuple(pair[k] for k in fields) + (pair['old_encoder_binding_sha256'],
+            tuple(pair['old_content_pins'][path] for path in runtime._CACHE_CONTENT_PATHS)),)
+    for invalid in (
+        dict(document, enabled=False),
+        dict(document, pairs=[pair, pair]),
+        dict(document, pairs=[dict(pair, unexpected='5' * 64)]),
+        dict(document, pairs=[dict(pair, old_model_sha256='A' * 64)]),
+        dict(document, extra=True),
+    ):
+        with pytest.raises(ValueError):
+            runtime._parse_cache_compatibility(fixtures.canonical(invalid))
+    with pytest.raises(ValueError):
+        runtime._parse_cache_compatibility(b'{"schema":"wd.mind-cache-compatibility.v1","enabled":false,"enabled":true,"pairs":[]}')
+
+
 def _synthetic_pair(tmp_path, change):
     case = fixtures.synthetic_bundle.__wrapped__(tmp_path)
     base, source_root = case['bundle'], case['model_root']
@@ -71,6 +97,13 @@ def _synthetic_pair(tmp_path, change):
     base_pin = finalize(base)
     other = tmp_path / 'synthetic-other-bundle'
     shutil.copytree(base, other)
+    if change == 'lifecycle':
+        child = other / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+        child.write_bytes(child.read_bytes() + b'\n# synthetic non-vector lifecycle change\n')
+        manifest_path = other / 'deployment-manifest.json'
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest['files']['tools-bootstrap/tools/wd_mind_runtime_child.py'] = _sha(child.read_bytes()).upper()
+        _write_json(manifest_path, manifest)
     if change in ('model', 'tokenizer'):
         asset_root = tmp_path / 'synthetic-other-assets'
         shutil.copytree(source_root, asset_root)
@@ -108,6 +141,8 @@ if (not bundle.is_absolute() or not cache_root.is_absolute()
     raise RuntimeError('synthetic audit paths required')
 sys.path.insert(0, str(bundle / 'tools-bootstrap'))
 from tools import wd_mind_full_runtime as runtime
+if sys.argv[4] == 'synthetic-enable':
+    runtime._CACHE_COMPATIBILITY_PROTOTYPE_ENABLED = True
 policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
 binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=pin,
     identifier_policy_bytes=policy, expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
@@ -149,13 +184,14 @@ memory = runtime._build_flat_memory_immutable(binding, passage, encoder, hashlib
 after = hashlib.sha256(cache_path.read_bytes()).hexdigest()
 print(json.dumps({'pid':os.getpid(), 'status':memory.cache_status, 'passages':len(calls),
     'records':len(memory.ids), 'before':before, 'after':after, 'binding':cache_binding,
+    'content_pins':runtime._cache_content_pins(binding), 'encoder_sha256':hashlib.sha256(encoder).hexdigest(),
     'vectors_sha256':hashlib.sha256(memory.vectors).hexdigest(),
     'manifest_uppercase':all(v == v.upper() for v in json.loads((bundle/'deployment-manifest.json').read_bytes())['files'].values())},
     sort_keys=True), flush=True)
 '''
 
 
-def _run(bundle, pin, cache_root):
+def _run(bundle, pin, cache_root, *, enable_compat=False):
     allowed = {'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'PATH', 'PATHEXT',
                'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA'}
     env = {key:value for key,value in os.environ.items() if key.upper() in allowed}
@@ -169,7 +205,8 @@ def _run(bundle, pin, cache_root):
         raise ValueError('synthetic_audit_paths_required')
     # Empty input closes the owned stdin pipe; interruption or timeout retains
     # the child through exit and both output EOFs, without killing it.
-    proc = run_owned([sys.executable, '-I', '-B', '-c', ACTOR, str(bundle_path), pin, str(cache_path)],
+    proc = run_owned([sys.executable, '-I', '-B', '-c', ACTOR, str(bundle_path), pin, str(cache_path),
+                      'synthetic-enable' if enable_compat else 'disabled'],
         cwd=bundle_path, env=env, input='', capture_output=True, timeout=90,
         text=True, encoding='utf-8', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     assert proc.returncode == 0, proc.stderr
@@ -258,3 +295,64 @@ def test_pinned_two_process_cache_binding_and_installer_uppercase(tmp_path, chan
     else:
         assert second['passages'] == second['records']
         assert second['binding']['model_sha256'] != cold['binding']['model_sha256']
+
+
+@pytest.mark.parametrize('change', ['lifecycle', 'model', 'tokenizer', 'wrong_worker_pin',
+                                    'wrong_old_aggregate', 'wrong_new_aggregate', 'wrong_encoder'])
+def test_exact_manifest_pinned_pair_reuses_only_unchanged_synthetic_model(tmp_path, change):
+    audit = tmp_path / '.codex-audit'
+    audit.mkdir()
+    base, base_pin, other, other_pin = _synthetic_pair(audit, change if change in ('model', 'tokenizer') else 'lifecycle')
+    old_cache, probe_cache = audit / 'old-cache', audit / 'probe-cache'
+    old_cache.mkdir()
+    probe_cache.mkdir()
+    old = _run(base, base_pin, old_cache)
+    probe = _run(other, other_pin, probe_cache)
+    if change == 'lifecycle':
+        miss_cache = audit / 'missing-approval-cache'
+        shutil.copytree(old_cache, miss_cache)
+        no_pair = _run(other, other_pin, miss_cache)
+        assert no_pair['status'] == 'MISS_STORED' and no_pair['passages'] == no_pair['records']
+    keys = ('model_sha256', 'projection_code_sha256')
+    assert tuple(old['binding'][key] for key in keys) != tuple(probe['binding'][key] for key in keys)
+    pair = {'old_model_sha256':old['binding'][keys[0]], 'old_projection_code_sha256':old['binding'][keys[1]],
+            'new_model_sha256':probe['binding'][keys[0]], 'new_projection_code_sha256':probe['binding'][keys[1]],
+            'old_encoder_binding_sha256':old['encoder_sha256'], 'old_content_pins':old['content_pins']}
+    if change == 'wrong_worker_pin':
+        pair['old_content_pins']['tools-bootstrap/tools/wd_mind_e5_worker.py'] = '0' * 64
+    elif change == 'wrong_old_aggregate':
+        pair['old_projection_code_sha256'] = '0' * 64
+    elif change == 'wrong_new_aggregate':
+        pair['new_projection_code_sha256'] = '0' * 64
+    elif change == 'wrong_encoder':
+        pair['old_encoder_binding_sha256'] = '0' * 64
+    descriptor = other / 'wd-mind-cache-compatibility.json'
+    raw = _write_json(descriptor, {'schema':'wd.mind-cache-compatibility.v1', 'enabled':True, 'pairs':[pair]})
+    manifest_path = other / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'][descriptor.name] = _sha(raw).upper()
+    pin = _sha(_write_json(manifest_path, manifest))
+    # The shipping prototype cannot activate a real mapping merely because
+    # a descriptor is present. Only this isolated synthetic actor flips it.
+    with pytest.raises(AssertionError):
+        _run(other, pin, old_cache)
+    if change != 'lifecycle':
+        with pytest.raises(AssertionError):
+            _run(other, pin, old_cache, enable_compat=True)
+        return
+    loaded = _run(other, pin, old_cache, enable_compat=True)
+    assert loaded['status'] == 'HIT_STORED' and loaded['passages'] == 0
+    assert loaded['binding'] == probe['binding']
+    assert loaded['vectors_sha256'] == old['vectors_sha256']
+    assert loaded['before'] == old['after'] and loaded['after'] != old['after']
+    source = audit / 'runtime' / 'shared' / 'events.jsonl'
+    new_record = json.loads(source.read_bytes().splitlines()[0])
+    new_record['message'] = 'new synthetic work after compatible bundle'
+    with source.open('ab') as stream:
+        stream.write(fixtures.canonical(new_record) + b'\n')
+    appended = _run(other, pin, old_cache, enable_compat=True)
+    assert appended['status'] == 'HIT_STORED' and appended['passages'] == 1
+    assert appended['records'] == loaded['records'] + 1
+    descriptor.write_bytes(raw + b' ')
+    with pytest.raises(AssertionError):
+        _run(other, pin, old_cache, enable_compat=True)

@@ -1202,6 +1202,56 @@ _CACHE_CONTENT_PATHS = (
 )
 
 
+_CACHE_COMPATIBILITY_FILE = 'wd-mind-cache-compatibility.json'
+# This WIP cannot activate real mappings merely by adding a manifest file.
+# A separately reviewed release must implement/approve the real enablement.
+_CACHE_COMPATIBILITY_PROTOTYPE_ENABLED = False
+_CACHE_PAIR_FIELDS = ('old_model_sha256', 'old_projection_code_sha256',
+                      'new_model_sha256', 'new_projection_code_sha256')
+_CACHE_REVIEWABLE_CODE_PATHS = frozenset(('tools-bootstrap/tools/wd_mind_runtime_child.py',
+                                          'tools-bootstrap/tools/wd_mind_full_runtime.py'))
+
+
+def _parse_cache_compatibility(raw):
+    """Parse manifest-pinned assertions, not proof of semantic equivalence.
+
+    A real pair requires independent RCO review and operator approval for
+    that exact pair. Future changes require their own reviewed assertion.
+    The shipped default is disabled and contains no pairs.
+    """
+    if type(raw) is not bytes or len(raw) > prefix.MAX_CONTROL_BYTES:
+        raise ValueError('cache_compatibility')
+    document = json.loads(raw.decode('utf-8'), object_pairs_hook=prefix._unique_object,
+                          parse_constant=reader._bad_constant)
+    if (type(document) is not dict or set(document) != {'schema', 'enabled', 'pairs'}
+            or document['schema'] != 'wd.mind-cache-compatibility.v1'
+            or type(document['enabled']) is not bool or type(document['pairs']) is not list
+            or len(document['pairs']) > 64 or (not document['enabled'] and document['pairs'])
+            or (document['enabled'] and not document['pairs'])):
+        raise ValueError('cache_compatibility')
+    pairs = []
+    for item in document['pairs']:
+        if (type(item) is not dict or set(item) != set(_CACHE_PAIR_FIELDS) | {'old_encoder_binding_sha256', 'old_content_pins'}
+                or any(type(item[field]) is not str or not reader._hex(item[field])
+                       for field in _CACHE_PAIR_FIELDS + ('old_encoder_binding_sha256',))
+                or type(item['old_content_pins']) is not dict
+                or set(item['old_content_pins']) != set(_CACHE_CONTENT_PATHS)
+                or any(type(item['old_content_pins'][name]) is not str
+                       or not reader._hex(item['old_content_pins'][name]) for name in _CACHE_CONTENT_PATHS)):
+            raise ValueError('cache_compatibility')
+        pair = tuple(item[field] for field in _CACHE_PAIR_FIELDS) + (item['old_encoder_binding_sha256'],
+                    tuple(item['old_content_pins'][name] for name in _CACHE_CONTENT_PATHS))
+        if any(existing[:4] == pair[:4] for existing in pairs) or pair[:2] == pair[2:4]:
+            raise ValueError('cache_compatibility')
+        pairs.append(pair)
+    return tuple(pairs)
+
+
+class _CachePins(dict):
+    """Content pins plus compatibility outside the fingerprinted mapping."""
+    __slots__ = ('compatibility',)
+
+
 def _cache_content_pins(binding):
     """Read a closed set of content-affecting pins from the verified bundle."""
     bundle, manifest_pin = binding._PrivateBinding__bundle, binding._PrivateBinding__manifest
@@ -1211,7 +1261,17 @@ def _cache_content_pins(binding):
                           parse_constant=reader._bad_constant)
     if type(document) is not dict or type(document.get('files')) is not dict:
         raise ValueError('cache_manifest')
-    pins = {}
+    pins = _CachePins()
+    pins.compatibility = ()
+    if _CACHE_COMPATIBILITY_FILE in document['files']:
+        compatibility_pin = document['files'][_CACHE_COMPATIBILITY_FILE]
+        if type(compatibility_pin) is not str or not reader._hex(compatibility_pin.lower()):
+            raise ValueError('cache_compatibility_pin')
+        raw = prefix._read_pinned(bundle / _CACHE_COMPATIBILITY_FILE, compatibility_pin.lower(),
+                                  prefix.MAX_CONTROL_BYTES)
+        pins.compatibility = _parse_cache_compatibility(raw)
+        if pins.compatibility and not _CACHE_COMPATIBILITY_PROTOTYPE_ENABLED:
+            raise ValueError('cache_compatibility_disabled')
     for relative in _CACHE_CONTENT_PATHS:
         pin = document['files'].get(relative)
         if type(pin) is not str or not reader._hex(pin.lower()):
@@ -1261,7 +1321,8 @@ def _cache_projection_sha256(projection):
     return reader._sha(reader._canonical(projection['messages']['records']))
 
 
-def _cache_snapshot_binding(binding, snapshot, projection, encoder_binding_bytes, encoder_binding_sha256):
+def _cache_snapshot_binding(binding, snapshot, projection, encoder_binding_bytes, encoder_binding_sha256,
+                            *, compatibility_out=None):
     """Pin inputs that affect screened passages or vectors, independently of bundle ID."""
     if type(binding) is not _PrivateBinding or type(snapshot) is not dict:
         raise ValueError('cache_binding')
@@ -1285,7 +1346,7 @@ def _cache_snapshot_binding(binding, snapshot, projection, encoder_binding_bytes
     projection_code = {'modules': reader.module_sha256s(), 'content_pins': content_pins,
                        'dependencies': reader._REQUIRED_CODE,
                        'passage_algorithm': 'passage-prefix-utf8-truncate-2000-v1'}
-    return {'source_identity_sha256': reader._sha(reader._canonical(cursor.file_identity)),
+    result = {'source_identity_sha256': reader._sha(reader._canonical(cursor.file_identity)),
             'source_generation_sha256': reader._sha(reader._canonical(cursor.generation)),
             'prefix_offset': cursor.offset, 'prefix_sha256': args['expected_prefix_sha256'],
             'projection_sha256': _cache_projection_sha256(projection),
@@ -1293,6 +1354,22 @@ def _cache_snapshot_binding(binding, snapshot, projection, encoder_binding_bytes
                                                            'content_pins': content_pins})),
             'policy_sha256': reader._sha(reader._canonical(policy)),
             'projection_code_sha256': reader._sha(reader._canonical(projection_code))}
+    if compatibility_out is not None:
+        if type(compatibility_out) is not list or compatibility_out:
+            raise ValueError('cache_compatibility_output')
+        for pair in getattr(content_pins, 'compatibility', ()):
+            old = dict(zip(_CACHE_CONTENT_PATHS, pair[5]))
+            if (pair[4] != encoder_binding_sha256 or pair[2] != result['model_sha256']
+                    or pair[3] != result['projection_code_sha256']
+                    or any(old[name] != content_pins[name]
+                           for name in _CACHE_CONTENT_PATHS if name not in _CACHE_REVIEWABLE_CODE_PATHS)):
+                raise ValueError('cache_compatibility_evidence')
+            old_model = reader._sha(reader._canonical({'encoder_binding_sha256':pair[4], 'content_pins':old}))
+            old_projection = dict(projection_code, content_pins=old)
+            if pair[0] != old_model or pair[1] != reader._sha(reader._canonical(old_projection)):
+                raise ValueError('cache_compatibility_evidence')
+            compatibility_out.append(pair[:4])
+    return result
 
 
 def _cache_vectors_from_rows(by_id, rows):
@@ -1389,13 +1466,18 @@ class _PrivateVectorCache:
             raise ValueError('cache_provider')
         self._module, self._path, self._verify = module, path, verify
 
-    def load(self, binding, verify_prefix, *, max_rows=None):
+    def load(self, binding, verify_prefix, *, max_rows=None, compatibility_pairs=()):
         self._verify()
         try:
             if max_rows is None:
+                if compatibility_pairs:
+                    raise ValueError('cache_compatibility_bound')
                 value = self._module.load_cache(self._path, binding, verify_prefix)
-            else:
+            elif not compatibility_pairs:
                 value = self._module.load_cache(self._path, binding, verify_prefix, max_rows=max_rows)
+            else:
+                value = self._module.load_cache(self._path, binding, verify_prefix, max_rows=max_rows,
+                                                compatibility_pairs=compatibility_pairs)
         except Exception:
             self._verify()
             raise
@@ -1543,14 +1625,17 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                         raise _CacheResourceRefused(str(exc)) from None
                     raise
             if vector_cache is not None and prior_memory is None:
+                compatibility = []
                 cache_binding = _cache_snapshot_binding(binding, frozen, projection,
-                                                        encoder_binding_bytes, encoder_binding_sha256)
+                                                        encoder_binding_bytes, encoder_binding_sha256,
+                                                        compatibility_out=compatibility)
                 try:
                     def verify_old_prefix(offset, expected):
                         return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
                                 and reader._hex(expected)
                                 and hmac.compare_digest(reader._sha(immutable_prefix[:offset]), expected))
-                    cached = vector_cache.load(cache_binding, verify_old_prefix, max_rows=len(ids))
+                    cached = vector_cache.load(cache_binding, verify_old_prefix, max_rows=len(ids),
+                                               compatibility_pairs=tuple(compatibility))
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
                     cache_status = 'HIT'
                 except (vector_cache._module.CacheMiss, _CacheProjectionMismatch):

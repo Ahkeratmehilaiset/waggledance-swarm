@@ -476,13 +476,19 @@ def write_cache(path, binding, rows):
         raise CacheRefused("write") from None
 
 
-def load_cache(path, expected_binding, verify_prefix, *, max_rows=_MAX_ROWS):
+def load_cache(path, expected_binding, verify_prefix, *, max_rows=_MAX_ROWS, compatibility_pairs=()):
     """Return complete checked rows, bounded by the caller's verified projection.
 
     Legacy direct callers retain the conservative default; a runtime loading
     a source-verified projection passes its independently derived record count.
     """
     path, expected = _plain_path(path), _binding(expected_binding)
+    if (type(compatibility_pairs) is not tuple or len(compatibility_pairs) > 64
+            or any(type(pair) is not tuple or len(pair) != 4
+                   or any(type(value) is not str or not _HEX.fullmatch(value) for value in pair)
+                   or pair[:2] == pair[2:] for pair in compatibility_pairs)
+            or len(set(compatibility_pairs)) != len(compatibility_pairs)):
+        raise CacheRefused('compatibility')
     if (not callable(verify_prefix) or type(max_rows) is not int or max_rows < 0
             or max_rows > ((1 << 63) - 1 - _MEMORY_FLOOR) // _MEMORY_PER_ROW):
         raise CacheRefused("prefix_verifier")
@@ -536,9 +542,14 @@ def load_cache(path, expected_binding, verify_prefix, *, max_rows=_MAX_ROWS):
                 if os.fstat(source.fileno()).st_size != expected_size:
                     raise CacheMiss("truncated")
                 _resource_preflight(path.parent, header["count"], require_disk=False)
-                for key in _FIELDS - {"prefix_offset", "prefix_sha256", "projection_sha256"}:
+                for key in _FIELDS - {"prefix_offset", "prefix_sha256", "projection_sha256",
+                                      "model_sha256", "projection_code_sha256"}:
                     if stored[key] != expected[key]:
                         raise CacheMiss("binding_changed")
+                old_code = (stored['model_sha256'], stored['projection_code_sha256'])
+                new_code = (expected['model_sha256'], expected['projection_code_sha256'])
+                if old_code != new_code and old_code + new_code not in compatibility_pairs:
+                    raise CacheMiss('binding_changed')
                 if (stored["prefix_offset"] > expected["prefix_offset"]
                         or (stored["prefix_offset"] == expected["prefix_offset"]
                             and (stored["prefix_sha256"] != expected["prefix_sha256"]

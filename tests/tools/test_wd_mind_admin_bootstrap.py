@@ -29,7 +29,15 @@ def _fixture(tmp_path, mode):
     root = store / commit
     source = BOOTSTRAP.read_text(encoding='utf-8').replace(
         r'C:\Python\wd-reboot-bundles', str(store)).replace(r'C:\Python\WD_REBOOT_STATE_CURRENT.json', str(pointer))
-    admin = b'from tools import dependency\ndef main(argv):\n print("SYNTHETIC_ADMIN", dependency.VALUE)\n return 2\n'
+    admin = (b'from tools import dependency\nfrom pathlib import Path\nimport json\n'
+             b'def main(argv):\n'
+             b' assert len(argv) == 5 and argv[0] in ("create", "reset")\n'
+             b' assert argv[1] == "--source-commit" and argv[2] == "a" * 40\n'
+             b' assert argv[3] == "--manifest-sha256" and len(argv[4]) == 64\n'
+             b' assert all(c in "0123456789abcdef" for c in argv[4])\n'
+             b' assert argv[4] == json.loads(Path(' + repr(str(pointer)).encode() + b').read_text())["manifest_sha256"]\n'
+             b' print("SYNTHETIC_ADMIN", dependency.VALUE, argv[0])\n'
+             b' return 2\n')
     if mode == 'unlisted_import':
         admin = b'from tools import unlisted\ndef main(argv):\n print("ATTACK_MAIN")\n return 0\n'
     if mode == 'unsupported_namespace':
@@ -39,10 +47,26 @@ def _fixture(tmp_path, mode):
                  b'def main(argv):\n print("ATTACK_MAIN")\n return 0\n')
     sources = {'tools/__init__.py': b'', 'tools/wd_mind_admin_bootstrap.py': source.encode(),
                'tools/wd_mind_owner_reservation_admin.py': admin, 'tools/dependency.py': b'VALUE = 41\n'}
-    if mode == 'real_disabled':
+    if mode in ('real_disabled', 'real_disabled_current_cli', 'real_validate_loader'):
         definition = json.loads((ROOT / 'ops/windows/reboot/bridge-code-files.json').read_text())
         sources = {p: (ROOT / p).read_bytes() for p in definition['python_files']
                    if p.endswith('.py') and p.startswith(('tools/', 'waggledance/'))}
+        if mode == 'real_disabled_current_cli':
+            # Synthetic legacy-argument probe only: the permanent operator
+            # interface must refuse a caller-provided bundle root.
+            source = source.replace("[operation, '--source-commit', commit, '--manifest-sha256', pin]",
+                                    "[operation, '--bundle-root', str(root), '--manifest-sha256', pin]")
+        if mode == 'real_validate_loader':
+            # Probe the real loader validation under the synthetic bundle only;
+            # do not enter production main or replace its disabled gate.
+            admin_source = sources['tools/wd_mind_owner_reservation_admin.py']
+            prefix, sep, _ = admin_source.partition(b'def main(argv=None):')
+            assert sep
+            sources['tools/wd_mind_owner_reservation_admin.py'] = (prefix +
+                b'def main(argv=None):\n'
+                b' _validate_bootstrap_loader(Path(__file__).parents[2])\n'
+                b' print("SYNTHETIC_REAL_LOADER_VALIDATED")\n'
+                b' return 2\n')
         sources['tools/wd_mind_admin_bootstrap.py'] = source.encode()
     pins = {}
     for relative, raw in sources.items():
@@ -102,7 +126,7 @@ def test_reviewed_literal_pins_loader_pointer_and_package(tmp_path, mode):
     assert result.returncode == 2
     assert 'ATTACK_' not in result.stdout + result.stderr
     if mode == 'valid':
-        assert result.stdout.strip() == 'SYNTHETIC_ADMIN 41'
+        assert result.stdout.strip() == 'SYNTHETIC_ADMIN 41 reset'
         assert not result.stderr
     elif mode == 'real_disabled':
         assert not result.stdout
@@ -117,6 +141,73 @@ def test_direct_filename_execution_refuses(tmp_path):
                             capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 2
     assert result.stderr.strip() == 'owner_marker_bootstrap_requires_verified_literal'
+
+
+@pytest.mark.parametrize('operation', ['create', 'reset'])
+def test_literal_passes_exact_pins_and_operation_without_root_or_observer(tmp_path, operation):
+    root, commit, pin, literal = _fixture(tmp_path, 'valid')
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', literal, commit, pin, operation],
+                            cwd=str(tmp_path), capture_output=True, text=True, timeout=25, check=False)
+    assert result.returncode == 2
+    assert result.stdout.strip() == f'SYNTHETIC_ADMIN 41 {operation}'
+    assert not result.stderr
+
+
+@pytest.mark.parametrize('operation', ['create', 'reset'])
+@pytest.mark.parametrize(('mode', 'expected'), [
+    ('real_disabled', 'owner_marker_production_route_unavailable'),
+    ('real_disabled_current_cli', 'owner_marker_invalid_input'),
+])
+def test_real_admin_refuses_operator_and_legacy_routes(tmp_path, operation, mode, expected):
+    root, commit, pin, literal = _fixture(tmp_path, mode)
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', literal, commit, pin, operation],
+                            cwd=str(tmp_path), capture_output=True, text=True, timeout=25, check=False)
+    assert result.returncode == 2
+    assert not result.stdout
+    assert result.stderr.strip() == expected
+
+
+def test_real_loader_validation_accepts_captured_synthetic_admin(tmp_path):
+    root, commit, pin, literal = _fixture(tmp_path, 'real_validate_loader')
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', literal, commit, pin, 'reset'],
+                            cwd=str(tmp_path), capture_output=True, text=True, timeout=25, check=False)
+    assert result.returncode == 2
+    assert result.stdout.strip() == 'SYNTHETIC_REAL_LOADER_VALIDATED'
+    assert not result.stderr
+
+
+@pytest.mark.parametrize('when', ['before', 'after'])
+def test_finder_insert_interruption_removes_registered_finder(tmp_path, when):
+    root, commit, pin, _ = _fixture(tmp_path, 'valid')
+    script = r'''
+import pathlib, sys
+source = pathlib.Path(sys.argv[1])
+namespace = {'__name__': 'wd_mind_admin_verified_bootstrap', '__file__': str(source), '__package__': None}
+exec(compile(source.read_bytes(), str(source), 'exec', dont_inherit=True), namespace)
+original = list(sys.meta_path)
+class InterruptAfterInsert(list):
+    def insert(self, index, item):
+        if isinstance(item, namespace['_PinnedFinder']) and sys.argv[4] == 'before':
+            raise KeyboardInterrupt('synthetic interruption before registration')
+        super().insert(index, item)
+        if isinstance(item, namespace['_PinnedFinder']):
+            raise KeyboardInterrupt('synthetic interruption after registration')
+sys.meta_path = InterruptAfterInsert(original)
+try:
+    namespace['_run'](sys.argv[2], sys.argv[3], 'reset')
+except KeyboardInterrupt:
+    pass
+else:
+    raise AssertionError('interruption did not propagate')
+assert len(sys.meta_path) == len(original)
+assert all(actual is expected for actual, expected in zip(sys.meta_path, original))
+print('SYNTHETIC_FINDER_CLEAN')
+'''
+    source = root / 'tools-bootstrap/tools/wd_mind_admin_bootstrap.py'
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(source), commit, pin, when],
+                            cwd=str(tmp_path), capture_output=True, text=True, timeout=25, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'SYNTHETIC_FINDER_CLEAN'
 
 
 def test_wrong_external_manifest_or_missing_isolation_refuses(tmp_path):

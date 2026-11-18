@@ -253,15 +253,19 @@ def _run(commit, manifest_sha256, operation):
                 or _read_file(manifest_path, _MAX_CONTROL, pin) != manifest_raw):
             raise ValueError('changed')
         finder = _PinnedFinder(blobs)
-        sys.meta_path.insert(0, finder)
         try:
+            sys.meta_path.insert(0, finder)
             from tools import wd_mind_owner_reservation_admin as admin
             if (_read_file(_CURRENT_POINTER, 65536) != pointer_raw
                     or _read_file(manifest_path, _MAX_CONTROL, pin) != manifest_raw):
                 raise ValueError('changed')
-            result = admin.main([operation, '--bundle-root', str(root), '--manifest-sha256', pin])
+            result = admin.main([operation, '--source-commit', commit, '--manifest-sha256', pin])
         finally:
-            sys.meta_path.remove(finder)
+            try:
+                sys.meta_path.remove(finder)
+            except ValueError:
+                # Registration may itself have failed before insertion.
+                pass
         if type(result) is not int:
             raise ValueError('exit')
         return result

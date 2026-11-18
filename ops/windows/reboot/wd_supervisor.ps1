@@ -18,11 +18,7 @@ param(
     [switch] $Apply,
     [switch] $BridgeWorkersOnly,
     [string] $ConfigPath = '',
-    [string] $LogPath = '',
-    [string] $MindOperatorPolicyPath = '',
-    [string] $MindOperatorPolicySha256 = '',
-    [string] $MindOperatorApprovalReferenceSha256 = '',
-    [switch] $MindRequestedButDisabled
+    [string] $LogPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,29 +28,6 @@ if (-not $ConfigPath) {
 }
 $selfPid = $PID
 $actions = New-Object 'System.Collections.Generic.List[string]'
-
-function Get-WdToolsMindArguments {
-    param([string] $PolicyPath = '', [string] $PolicySha256 = '', [string] $ApprovalReferenceSha256 = '')
-    $count = @($PolicyPath, $PolicySha256, $ApprovalReferenceSha256 |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
-    if ($PolicyPath -ceq '' -and $PolicySha256 -ceq '' -and $ApprovalReferenceSha256 -ceq '') {
-        return [pscustomobject]@{enabled=$false;reason='off';arguments=@()}
-    }
-    $valid = $count -eq 3 -and $PolicyPath -cmatch '\A[Cc]:[\\/]' -and
-        $PolicyPath -notmatch '[\\/]$' -and
-        $PolicyPath.Substring(3) -notmatch '[:*?"<>|&;\x00-\x1f]' -and
-        @($PolicyPath.Substring(3).Split([char[]]'\\/') | Where-Object { $_ -in @('.', '..') -or $_ -match '[. ]$' }).Count -eq 0 -and
-        $PolicySha256 -cmatch '\A[0-9a-fA-F]{64}\z' -and $ApprovalReferenceSha256 -cmatch '\A[0-9a-fA-F]{64}\z'
-    $fullPath = ''
-    if ($valid) {
-        try { $fullPath = [IO.Path]::GetFullPath($PolicyPath) } catch { $valid = $false }
-    }
-    if (-not $valid) { return [pscustomobject]@{enabled=$false;reason='invalid_pins';arguments=@()} }
-    return [pscustomobject]@{enabled=$true;reason='shape_valid';arguments=@(
-        '-MindOperatorPolicyPath',$fullPath,
-        '-MindOperatorPolicySha256',$PolicySha256.ToLowerInvariant(),
-        '-MindOperatorApprovalReferenceSha256',$ApprovalReferenceSha256.ToLowerInvariant())}
-}
 
 function Get-RequiredText {
     param(
@@ -550,48 +523,6 @@ function Assert-SupervisorBundleFileIntegrity {
     ) {
         throw "supervisor bundle dependency hash mismatch: $manifestRelative"
     }
-}
-
-function Test-WdToolsMindPolicyApproval {
-    param([string] $PolicyPath, [string] $PolicySha256, [string] $ApprovalReferenceSha256,
-          [string] $BundleRoot = $PSScriptRoot)
-    # Read the helper from this externally anchored bundle, then extract only
-    # its pin-verifying reader. No policy text or bytes are logged or retained.
-    $policyBytes = $null
-    try {
-        $manifestPath = Join-Path $BundleRoot 'deployment-manifest.json'
-        [void](Assert-WdSupervisorPathWithoutReparse -Path $manifestPath -ExpectedType Leaf)
-        $manifestSnapshot = Read-Utf8SupervisorSnapshot -Path $manifestPath
-        $anchor = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
-        if ($anchor -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
-            [string]$manifestSnapshot.Hash -cne $anchor.ToUpperInvariant()) { throw 'mind_manifest' }
-        $manifest = $manifestSnapshot.Text | ConvertFrom-Json -ErrorAction Stop
-        $helperPin = $manifest.files.PSObject.Properties['Invoke-WdMindStartupRead.ps1']
-        $descriptorPin = $manifest.files.PSObject.Properties['wd-mind-identifier-policy-approval.json']
-        if ($null -eq $helperPin -or $null -eq $descriptorPin -or
-            [string]$helperPin.Value -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
-            [string]$descriptorPin.Value -cnotmatch '\A[0-9a-fA-F]{64}\z') { throw 'mind_descriptor' }
-        $helperPath = Join-Path $BundleRoot 'Invoke-WdMindStartupRead.ps1'
-        [void](Assert-WdSupervisorPathWithoutReparse -Path $helperPath -ExpectedType Leaf)
-        $helper = Read-Utf8SupervisorSnapshot -Path $helperPath
-        if ([string]$helper.Hash -cne ([string]$helperPin.Value).ToUpperInvariant()) { throw 'mind_helper' }
-        $tokens = $null; $errors = $null
-        $ast = [Management.Automation.Language.Parser]::ParseInput([string]$helper.Text, [ref]$tokens, [ref]$errors)
-        if ($errors.Count) { throw 'mind_helper' }
-        $reader = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -ceq 'Read-WdMindSharedPinnedBytes' }, $true)
-        if ($null -eq $reader) { throw 'mind_helper' }
-        . ([scriptblock]::Create($reader.Extent.Text))
-        $policyBytes = Read-WdMindSharedPinnedBytes $PolicyPath $PolicySha256 65536
-        $descriptor = Read-WdMindSharedPinnedBytes (Join-Path $BundleRoot 'wd-mind-identifier-policy-approval.json') `
-            ([string]$descriptorPin.Value) 65536
-        $text = (New-Object Text.UTF8Encoding($false,$true)).GetString($descriptor)
-        $expected = '{"approval_reference_sha256":"' + $ApprovalReferenceSha256.ToLowerInvariant() + '",' +
-            '"identifier_policy_sha256":"' + $PolicySha256.ToLowerInvariant() + '",' +
-            '"schema":"wd.mind-identifier-policy-approval.v1"}'
-        return $text -ceq $expected
-    } catch { return $false }
-    finally { if ($null -ne $policyBytes) { [Array]::Clear($policyBytes, 0, $policyBytes.Length) } }
 }
 
 function Assert-MachineToolsConfigExact {
@@ -2943,7 +2874,6 @@ $tools = $configuration.tools_consumer
 $toolsEnabled = [bool]$tools.enabled
 $toolsAgent = ''
 $toolsGeneration = ''
-$toolsMindArguments = @()
 $toolsExpectedHead = ''
 $toolsLauncher = ''
 $configuredToolsLauncher = ''
@@ -3000,21 +2930,6 @@ if ($toolsEnabled) {
     $toolsGeneration = Resolve-OwnBundleGeneration `
         -ScriptRoot $PSScriptRoot `
         -GitExecutable (Get-RequiredText $configuration.watchers 'git_executable')
-    $toolsMind = Get-WdToolsMindArguments -PolicyPath $MindOperatorPolicyPath `
-        -PolicySha256 $MindOperatorPolicySha256 -ApprovalReferenceSha256 $MindOperatorApprovalReferenceSha256
-    if ($MindRequestedButDisabled) {
-        $toolsMind = [pscustomobject]@{enabled=$false;reason='invalid_pins';arguments=@()}
-    }
-    if ($toolsMind.reason -ceq 'invalid_pins') {
-        $actions.Add('WARN Mind content OFF: invalid or incomplete policy pins; existing Tools state unchanged')
-    } elseif ($toolsMind.enabled) {
-        if (Test-WdToolsMindPolicyApproval -PolicyPath $MindOperatorPolicyPath `
-                -PolicySha256 $MindOperatorPolicySha256 -ApprovalReferenceSha256 $MindOperatorApprovalReferenceSha256) {
-            $toolsMindArguments = @($toolsMind.arguments)
-        } else {
-            $actions.Add('WARN Mind content OFF: policy or approval pin refused; existing Tools state unchanged')
-        }
-    }
     $configuredToolsLauncher = [IO.Path]::GetFullPath(
         (Get-RequiredText $tools 'launcher_script')
     )
@@ -3058,7 +2973,10 @@ if ($toolsEnabled) {
     Assert-SupervisorBundleFileIntegrity `
         -RelativePath 'start-wd-tools-consumer.ps1'
     $toolsValidationOutput = @(
-        & $toolsLauncher -ConfigPath $toolsConfig -Generation $toolsGeneration -ValidateOnly @toolsMindArguments
+        & $toolsLauncher `
+            -ConfigPath $toolsConfig `
+            -Generation $toolsGeneration `
+            -ValidateOnly
     )
     $toolsValidation = @(
         $toolsValidationOutput |
@@ -3810,11 +3728,6 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         '-ConfigPath', $toolsConfig,
         '-Generation', $toolsGeneration
     )
-    $toolsArguments += $toolsMindArguments
-
-    # Do not replace or stop a previously running Tools lane to activate Mind.
-    # A readiness record proves the native lane, not its optional content.
-    $requestedMindMismatch = ($MindRequestedButDisabled -or $toolsMind.reason -cne 'off') -and $wrapperProcesses.Count -gt 0
 
     # Elevated shells are unreadable from this Limited task, so on an operator
     # desktop that runs elevated terminals several opaque hosts are normal. An
@@ -3862,14 +3775,7 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         }
     }
 
-    if ($requestedMindMismatch) {
-        if ($wrapperProcesses.Count -ne 1 -or $legacyConsumers.Count -gt 0) {
-            $actions.Add('CONFLICT Tools process ownership is ambiguous; no process changes')
-        } else {
-            $actions.Add('WARN Mind content for running Tools not verified: controlled handoff required; no process changes')
-        }
-    }
-    elseif ($opaqueHostsBlock) {
+    if ($opaqueHostsBlock) {
         if ($opaqueReadinessTargets.Count -eq 1 -and
             $wrapperProcesses.Count -eq 0 -and $legacyConsumers.Count -eq 0) {
             $actions.Add("UNVERIFIABLE consumer-loop:$toolsAgent unreadable host command line; no process changes")

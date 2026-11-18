@@ -418,11 +418,7 @@ function Get-WdBridgeSupervisorArguments {
     param(
         [Parameter(Mandatory)] [string] $SupervisorScript,
         [Parameter(Mandatory)] [string] $ConfigPath,
-        [Parameter(Mandatory)] [bool] $Apply,
-        [string] $MindOperatorPolicyPath = '',
-        [string] $MindOperatorPolicySha256 = '',
-        [string] $MindOperatorApprovalReferenceSha256 = '',
-        [switch] $MindRequestedButDisabled
+        [Parameter(Mandatory)] [bool] $Apply
     )
 
     # -BridgeWorkersOnly on BOTH runs: the supervisor then only verifies the merge-driver HOLD and
@@ -431,30 +427,6 @@ function Get-WdBridgeSupervisorArguments {
     $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $SupervisorScript)
     if ($Apply) { $arguments += '-Apply' }
     $arguments += @('-BridgeWorkersOnly', '-ConfigPath', $ConfigPath)
-    $mindCount = @($MindOperatorPolicyPath, $MindOperatorPolicySha256, $MindOperatorApprovalReferenceSha256 |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
-    $requested = $MindRequestedButDisabled -or $MindOperatorPolicyPath -cne '' -or
-        $MindOperatorPolicySha256 -cne '' -or $MindOperatorApprovalReferenceSha256 -cne ''
-    if ($requested) {
-        $valid = -not $MindRequestedButDisabled -and $mindCount -eq 3 -and $MindOperatorPolicyPath -cmatch '\A[Cc]:[\\/]' -and
-            $MindOperatorPolicyPath -notmatch '[\\/]$' -and
-            $MindOperatorPolicyPath.Substring(3) -notmatch '[:*?"<>|&;\x00-\x1f]' -and
-            @($MindOperatorPolicyPath.Substring(3).Split([char[]]'\\/') | Where-Object { $_ -in @('.', '..') -or $_ -match '[. ]$' }).Count -eq 0 -and
-            $MindOperatorPolicySha256 -cmatch '\A[0-9a-fA-F]{64}\z' -and
-            $MindOperatorApprovalReferenceSha256 -cmatch '\A[0-9a-fA-F]{64}\z'
-        $fullPath = ''
-        if ($valid) {
-            try { $fullPath = [IO.Path]::GetFullPath($MindOperatorPolicyPath) } catch { $valid = $false }
-        }
-        if ($valid) {
-            $arguments += @('-MindOperatorPolicyPath', $fullPath,
-                '-MindOperatorPolicySha256', $MindOperatorPolicySha256.ToLowerInvariant(),
-                '-MindOperatorApprovalReferenceSha256', $MindOperatorApprovalReferenceSha256.ToLowerInvariant())
-        } else {
-            $arguments += '-MindRequestedButDisabled'
-            Write-Warning 'Mind content is OFF: invalid or incomplete policy pins.' -WarningAction Continue
-        }
-    }
     foreach ($argument in $arguments) {
         if ($argument.Length -eq 0 -or $argument.IndexOf('"') -ge 0 -or
             $argument.EndsWith([string][IO.Path]::DirectorySeparatorChar)) {
@@ -470,20 +442,13 @@ function Invoke-WdBridgeSupervisorOnce {
         [Parameter(Mandatory)] [string] $SupervisorScript,
         [Parameter(Mandatory)] [string] $ConfigPath,
         [Parameter(Mandatory)] [bool] $Apply,
-        [string] $MindOperatorPolicyPath = '',
-        [string] $MindOperatorPolicySha256 = '',
-        [string] $MindOperatorApprovalReferenceSha256 = '',
-        [switch] $MindRequestedButDisabled,
         # The reconcile's bound. Past it the outcome is UNKNOWN: the run is reported as timed_out and
         # its process is left running, because its partial launches are unknown and stopping it could
         # strand a half-started worker.
         [ValidateRange(1, 3600)] [int] $TimeoutSeconds = 900
     )
 
-    $arguments = @(Get-WdBridgeSupervisorArguments -SupervisorScript $SupervisorScript -ConfigPath $ConfigPath -Apply $Apply `
-        -MindOperatorPolicyPath $MindOperatorPolicyPath -MindOperatorPolicySha256 $MindOperatorPolicySha256 `
-        -MindOperatorApprovalReferenceSha256 $MindOperatorApprovalReferenceSha256 `
-        -MindRequestedButDisabled:$MindRequestedButDisabled)
+    $arguments = @(Get-WdBridgeSupervisorArguments -SupervisorScript $SupervisorScript -ConfigPath $ConfigPath -Apply $Apply)
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $HostPath
     $info.Arguments = (@($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' ')
@@ -525,11 +490,7 @@ function Invoke-WdBridgeWrapperBootstrap {
         [Parameter(Mandatory)] [string] $BundleRoot,
         [Parameter(Mandatory)] [string] $FleetManifestPath,
         [Parameter(Mandatory)] [string] $SupervisorScript,
-        [Parameter(Mandatory)] [string] $HostPath,
-        [string] $MindOperatorPolicyPath = '',
-        [string] $MindOperatorPolicySha256 = '',
-        [string] $MindOperatorApprovalReferenceSha256 = '',
-        [switch] $MindRequestedButDisabled
+        [Parameter(Mandatory)] [string] $HostPath
     )
 
     # The fleet wrapper's real ports. SupervisorScript is the installed wd_supervisor.ps1 launcher
@@ -550,10 +511,7 @@ function Invoke-WdBridgeWrapperBootstrap {
         -RunSupervisorOnce {
             param([bool] $ApplyRun)
             Invoke-WdBridgeSupervisorOnce -HostPath $HostPath -SupervisorScript $SupervisorScript `
-                -ConfigPath $wdbConfigPath -Apply $ApplyRun -MindOperatorPolicyPath $MindOperatorPolicyPath `
-                -MindOperatorPolicySha256 $MindOperatorPolicySha256 `
-                -MindOperatorApprovalReferenceSha256 $MindOperatorApprovalReferenceSha256 `
-                -MindRequestedButDisabled:$MindRequestedButDisabled
+                -ConfigPath $wdbConfigPath -Apply $ApplyRun
         } `
         -ReadToolsReadiness { Read-WdBridgeToolsReadiness -Path ([string]$wdbTools.readiness_path) } `
         -GetProcess { param([int] $ProcessId) Get-WdBridgeProcessFacts -ProcessId $ProcessId } `

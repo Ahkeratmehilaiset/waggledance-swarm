@@ -407,11 +407,21 @@ class _LocalCandidateQuery:
         return {'status':status, 'authority':'none', 'sender_authentication':'UNKNOWN',
                 'source_verification':'UNVERIFIED', 'candidate_frame':raw}
 
+    def _thread_exited_locked(self):
+        # done is set in the worker's finally, before native thread exit. An
+        # ambiguous start with no identity is not evidence of non-existence.
+        if self._thread is None or not self._done.is_set():
+            return False
+        try:
+            return self._thread.ident is not None and not self._thread.is_alive()
+        except Exception:
+            return False
+
     def status(self):
         with self._lock:
             state = (('STOPPED' if self._closed else 'NEW') if self._thread is None else
-                     'HOLD' if not self._done.is_set() and (self._timed_out or self._start_uncertain) else
-                     'RUNNING' if not self._done.is_set() else 'STOPPED')
+                     'STOPPED' if self._thread_exited_locked() else
+                     'HOLD' if self._done.is_set() or self._timed_out or self._start_uncertain else 'RUNNING')
         return {'state':state, 'authority':'none', 'sender_authentication':'UNKNOWN'}
 
     def close(self, *, timeout=0):
@@ -423,7 +433,22 @@ class _LocalCandidateQuery:
                 return {'state':'STOPPED', 'authority':'none', 'sender_authentication':'UNKNOWN'}
             self._timed_out = True
             self._result = None
-        stopped = self._done.wait(float(timeout))
+        deadline = time.monotonic() + float(timeout)
+        complete = self._done.wait(max(0.0, deadline - time.monotonic()))
+        join_failed = False
+        if complete:
+            # Never join under _lock: the worker may still need that lock.
+            with self._lock:
+                worker = self._thread
+                already_exited = self._thread_exited_locked()
+            if not already_exited and worker is not None and worker is not threading.current_thread():
+                try:
+                    if worker.ident is not None:
+                        worker.join(max(0.0, deadline - time.monotonic()))
+                except Exception:
+                    join_failed = True
+        with self._lock:
+            stopped = not join_failed and self._thread_exited_locked()
         return {'state':'STOPPED' if stopped else 'HOLD', 'authority':'none',
                 'sender_authentication':'UNKNOWN'}
 

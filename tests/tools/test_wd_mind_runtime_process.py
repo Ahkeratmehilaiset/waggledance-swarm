@@ -81,11 +81,33 @@ def test_candidate_ipc_service_uncertain_thread_start_stays_owned(monkeypatch):
 @pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
 def test_candidate_ipc_client_uncertain_thread_start_stays_owned(monkeypatch):
     import multiprocessing.connection as connection
+    real_thread = threading.Thread
     class UncertainThread:
-        def __init__(self, *args, **kwargs): self.target = kwargs['target']
+        def __init__(self, *args, **kwargs): self.target, self.ident = kwargs['target'], None
         def start(self): raise KeyboardInterrupt()
         def is_alive(self): return False
-        def fire(self): self.target()
+        def fire(self):
+            actual = real_thread(target=self.target)
+            pending = None
+            try:
+                actual.start()
+            except BaseException as exc:
+                pending = exc
+            # Even repeated cancellations cannot discard an uncertain start.
+            import time
+            while True:
+                try:
+                    if actual.ident is not None:
+                        actual.join(1)
+                        if not actual.is_alive(): break
+                except BaseException as exc:
+                    if pending is None: pending = exc
+                try:
+                    time.sleep(0.05)
+                except BaseException as exc:
+                    if pending is None: pending = exc
+            self.ident = actual.ident
+            if pending is not None: raise pending
     monkeypatch.setattr(preflight.threading, 'Thread', UncertainThread)
     def refused(**kwargs): raise OSError('synthetic refusal')
     monkeypatch.setattr(connection, 'Client', refused)

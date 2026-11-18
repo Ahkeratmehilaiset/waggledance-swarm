@@ -1120,10 +1120,11 @@ def test_synthetic_kernel_identity_needs_all_same_handle_facts(
     assert all(handle == 999 for handle in handles)
 
 
+@pytest.mark.parametrize('pid', [4, 123])
 @pytest.mark.parametrize('error,second_has_pid,expected', [(87,False,True), (87,True,False),
                                                            (5,False,False), (31,False,False)])
 def test_synthetic_open_failure_only_error_87_with_second_absence_is_skipped(
-        monkeypatch, error, second_has_pid, expected):
+        monkeypatch, error, second_has_pid, expected, pid):
     class Function:
         def __init__(self, fn): self.fn = fn
         def __call__(self, *args): return self.fn(*args)
@@ -1134,7 +1135,7 @@ def test_synthetic_open_failure_only_error_87_with_second_absence_is_skipped(
     snapshots = []
     def snapshot(kernel):
         snapshots.append(1)
-        return ((123, 4, 'Registry'),) if len(snapshots) == 1 or second_has_pid else ()
+        return ((pid, 4, 'Registry'),) if len(snapshots) == 1 or second_has_pid else ()
     monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **kw: Kernel())
     monkeypatch.setattr(admin, '_process_snapshot', snapshot)
     if expected:
@@ -1146,18 +1147,24 @@ def test_synthetic_open_failure_only_error_87_with_second_absence_is_skipped(
         assert len(snapshots) == (2 if error == 87 else 1)
 
 
-def test_synthetic_unopenable_pid_zero_still_present_is_not_ignored(monkeypatch):
+@pytest.mark.parametrize('error,allowed', [(87, True), (5, False), (31, False)])
+def test_synthetic_idle_pid_zero_skips_only_documented_open_error(monkeypatch, error, allowed):
     class Function:
         def __init__(self, fn): self.fn = fn
         def __call__(self, *args): return self.fn(*args)
     class Kernel:
-        OpenProcess = Function(lambda *a: (ctypes.set_last_error(87), 0)[1])
+        OpenProcess = Function(lambda *a: (ctypes.set_last_error(error), 0)[1])
         QueryFullProcessImageNameW = Function(lambda *a: 0)
         GetExitCodeProcess = Function(lambda *a: 0)
     monkeypatch.setattr(admin.ctypes, 'WinDLL', lambda *a, **kw: Kernel())
-    monkeypatch.setattr(admin, '_process_snapshot', lambda kernel: ((0, 0, 'Idle'),))
-    with pytest.raises(ValueError, match='process_access'):
-        admin._windows_process_images()
+    snapshots = []
+    monkeypatch.setattr(admin, '_process_snapshot', lambda kernel: (snapshots.append(1), ((0, 0, 'Idle'),))[1])
+    if allowed:
+        assert admin._windows_process_images() == ()
+    else:
+        with pytest.raises(ValueError, match='process_access'):
+            admin._windows_process_images()
+    assert len(snapshots) == 1
 
 
 @pytest.mark.parametrize('verify', [True, False])

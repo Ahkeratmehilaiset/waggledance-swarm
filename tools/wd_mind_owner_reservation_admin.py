@@ -188,6 +188,10 @@ def _windows_process_images():
         process = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
         if not process:
             error = ctypes.get_last_error()
+            # Windows reserves PID 0 for the System Idle Process; OpenProcess
+            # documents ERROR_INVALID_PARAMETER for that specific process.
+            if pid == 0 and error == 87:
+                continue
             if error == 87 and all(other_pid != pid for other_pid, _, _ in _process_snapshot(kernel)):
                 continue
             raise ValueError('process_access')

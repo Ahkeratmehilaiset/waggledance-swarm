@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from test_wd_mind_full_runtime import synthetic_bundle, canonical
+from test_wd_mind_full_runtime import synthetic_bundle, canonical, _SYNTHETIC_ADMISSION_SCRIPT
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,13 +33,32 @@ def _run_owned(argv, *, cwd, code):
     return json.loads(output)
 
 
-def test_real_retained_query_charges_both_source_resolutions_and_refuses_exhaustion(synthetic_bundle):
-    source = (ROOT / 'tests/tools/test_wd_mind_full_runtime.py').read_text(encoding='utf-8')
+def _extract_invoke_code(source):
     tree = ast.parse(source)
     invoke = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'invoke')
-    code = next(node.value.value for node in invoke.body if isinstance(node, ast.Assign)
+    expression = next(node.value for node in invoke.body if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == 'code' for target in node.targets)
-        and isinstance(node.value, ast.Constant))
+        and isinstance(node.value, ast.BinOp))
+    assert (isinstance(expression.op, ast.Add) and isinstance(expression.left, ast.Name)
+            and expression.left.id == '_SYNTHETIC_ADMISSION_SCRIPT'
+            and isinstance(expression.right, ast.Constant) and isinstance(expression.right.value, str))
+    return _SYNTHETIC_ADMISSION_SCRIPT + expression.right.value
+
+
+def test_invoke_budget_injection_anchor_is_preserved_without_subprocess():
+    source = Path(__file__).with_name('test_wd_mind_full_runtime.py').read_text(encoding='utf-8')
+    code = _extract_invoke_code(source)
+    anchor = "            owner._bind_policy_anchor(anchor)\n            owner._state = 'READY'\n"
+    assert code.count(anchor) == 1
+    injection = '            # synthetic injected prewarm marker\n'
+    injected = code.replace(anchor, anchor + injection, 1)
+    assert injected.index(injection.strip()) < injected.index('_prepare_direct_owner_for_test(owner)', injected.index(anchor))
+    ast.parse(injected)
+
+
+def test_real_retained_query_charges_both_source_resolutions_and_refuses_exhaustion(synthetic_bundle):
+    source = (ROOT / 'tests/tools/test_wd_mind_full_runtime.py').read_text(encoding='utf-8')
+    code = _extract_invoke_code(source)
     anchor = "            owner._bind_policy_anchor(anchor)\n            owner._state = 'READY'\n"
     addition = "            owner._source_budget = None\n            runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True\n            owner._state = 'STARTING'\n            owner._source_budget = runtime._prewarm_source_budget(owner._snapshot)\n            owner._ensure_retained_locked(source_budget=owner._source_budget)\n            owner._prewarm_generation = owner._generation\n            owner._source_budget = None\n            owner._state = 'READY'\n            from tools import wd_mind_content_snapshot_package as source_package\n            real_resolve = source_package._ConsumerSourceOwner.resolve\n            observed_resolves = []\n            def instrumented_resolve(self, **kwargs):\n                budget = kwargs.get('source_budget')\n                if budget is None:\n                    raise AssertionError('unbudgeted_selected_resolution')\n                before = budget._remaining\n                result = real_resolve(self, **kwargs)\n                if budget._remaining >= before:\n                    raise AssertionError('selected_resolution_did_not_charge_source_reads')\n                observed_resolves.append(budget)\n                return result\n            source_package._ConsumerSourceOwner.resolve = instrumented_resolve\n"
     after = '            path = pathlib.Path(sys.argv[3]); original = path.read_bytes()\n'

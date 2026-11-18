@@ -2448,6 +2448,33 @@ from tools import wd_mind_full_runtime as runtime
 from tools import wd_mind_content_query_readonly as reader
 from tools import wd_mind_absent_generation_prefix_readonly as prefix
 mode = sys.argv[4]
+
+def _prepare_direct_owner_for_test(owner):
+    """Use real prewarm once, or retain an already prewarmed synthetic owner."""
+    if runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is not True:
+        raise ValueError('synthetic_gate_off')
+    prewarmed = getattr(owner, '_prewarm_generation', None)
+    if prewarmed is not None:
+        if (prewarmed is not owner._generation or owner._retained is None
+                or owner._handler._retained is not owner._retained):
+            raise ValueError('synthetic_prewarm_changed')
+        return False
+    if owner._retained is not None or owner._handler._retained is not None:
+        raise ValueError('synthetic_prewarm_partial')
+    owner._state = 'STARTING'
+    try:
+        owner._source_budget = runtime._prewarm_source_budget(owner._snapshot)
+        owner._ensure_retained_locked(source_budget=owner._source_budget)
+        if owner._retained is None or owner._handler._retained is not owner._retained:
+            raise ValueError('synthetic_prewarm_missing')
+        owner._prewarm_generation = owner._generation
+    except BaseException:
+        owner._state = 'HOLD'
+        raise
+    owner._source_budget = None
+    owner._state = 'READY'
+    return True
+
 if mode.startswith(('package', 'handler')):
     path = pathlib.Path(sys.argv[3])
     row = json.loads(path.read_bytes().splitlines()[0])
@@ -3365,6 +3392,11 @@ try:
             owner._policy_pins, owner._state = None, 'NEW'
             owner._bind_policy_anchor(anchor)
             owner._state = 'READY'
+            # This synthetic branch exercises the budgeted candidate path.
+            # Another test injects an already-completed real prewarm at the
+            # two lines above; do not repeat it in that case.
+            runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
+            _prepare_direct_owner_for_test(owner)
             first = (None if mode == 'package_direct_narrow_candidates_first' else
                      owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
                                        query='yhteyskatko uudelleenyritys'))
@@ -3587,6 +3619,62 @@ except Exception:
                           timeout=30, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
+
+
+def test_invoke_direct_fixture_gate_and_single_prewarm_are_in_process():
+    """Exercise only the synthetic fixture's control flow, not source integrity."""
+    import ast
+    from types import SimpleNamespace
+    source = Path(__file__).read_text(encoding='utf-8')
+    tree = ast.parse(source)
+    invoke_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'invoke')
+    expression = next(node.value for node in invoke_node.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == 'code' for target in node.targets))
+    assert (isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Add)
+            and isinstance(expression.left, ast.Name) and expression.left.id == '_SYNTHETIC_ADMISSION_SCRIPT'
+            and isinstance(expression.right, ast.Constant) and isinstance(expression.right.value, str))
+    code = _SYNTHETIC_ADMISSION_SCRIPT + expression.right.value
+    anchor = "            owner._bind_policy_anchor(anchor)\n            owner._state = 'READY'\n"
+    assert code.count(anchor) == 1
+    injected = code.replace(anchor, anchor + '            # synthetic-injected-prewarm\n', 1)
+    assert injected.index('# synthetic-injected-prewarm') < injected.index('_prepare_direct_owner_for_test(owner)', injected.index(anchor))
+    ast.parse(injected)
+    script = ast.parse(code)
+    function = next(node for node in script.body
+                    if isinstance(node, ast.FunctionDef) and node.name == '_prepare_direct_owner_for_test')
+    calls = []
+    budget = object()
+    runtime = SimpleNamespace(_STARTUP_OWNER_SOURCE_BUDGET_ENABLED=False,
+                              _prewarm_source_budget=lambda snapshot: calls.append(snapshot) or budget)
+    namespace = {'runtime':runtime}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<synthetic-prewarm-helper>', 'exec'), namespace)
+    prepare = namespace['_prepare_direct_owner_for_test']
+    class Owner:
+        def __init__(self):
+            self._state, self._source_budget = 'READY', None
+            self._generation, self._snapshot = object(), object()
+            self._handler, self._retained = SimpleNamespace(_retained=None), None
+            self.builds = 0
+        def _ensure_retained_locked(self, *, source_budget):
+            assert source_budget is budget and self._state == 'STARTING'
+            self.builds += 1
+            self._retained = self._handler._retained = object()
+    owner = Owner()
+    with pytest.raises(ValueError, match='synthetic_gate_off'):
+        prepare(owner)
+    assert owner._state == 'READY' and owner.builds == 0 and not calls
+    runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
+    assert prepare(owner) is True and owner.builds == 1 and calls == [owner._snapshot]
+    assert owner._prewarm_generation is owner._generation and owner._source_budget is None and owner._state == 'READY'
+    assert prepare(owner) is False and owner.builds == 1 and calls == [owner._snapshot]
+    injected_owner = Owner()
+    injected_owner._prewarm_generation = injected_owner._generation
+    injected_owner._retained = injected_owner._handler._retained = object()
+    assert prepare(injected_owner) is False and injected_owner.builds == 0 and calls == [owner._snapshot]
+    injected_owner._handler._retained = object()
+    with pytest.raises(ValueError, match='synthetic_prewarm_changed'):
+        prepare(injected_owner)
+    assert injected_owner.builds == 0 and calls == [owner._snapshot]
 
 
 def test_synthetic_manifest_bound_runtime_accepts_screened_records(synthetic_bundle):

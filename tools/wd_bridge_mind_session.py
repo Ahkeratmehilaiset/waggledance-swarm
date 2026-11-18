@@ -1448,12 +1448,75 @@ def query_content_prompt_fragment(*, enabled=False, inputs=None, providers=None)
 
 
 _LOCAL_CANDIDATE_PENDING = []
+_LOCAL_CANDIDATE_PENDING_LOCK = threading.Lock()
+
+
+def _reap_local_candidate_pending():
+    """Erase abandoned state only after each owned thread has really exited.
+
+    Called on later entry and by its owner; this is not a background reaper.
+    An uncertain native start deliberately remains in HOLD.
+    """
+    if not _LOCAL_CANDIDATE_PENDING_LOCK.acquire(blocking=False):
+        return
+    try:
+        for pending in tuple(_LOCAL_CANDIDATE_PENDING):
+            worker, state = pending
+            try:
+                if (not state.get('abandoned') or not state['worker_done'].is_set()
+                        or worker.ident is None or worker.is_alive()):
+                    continue
+                query = state.get('query')
+                if query is not None:
+                    # Completion semantics depend on the separately reviewed
+                    # _LocalCandidateQuery thread-exit fix; unknown types HOLD.
+                    from tools import wd_mind_runtime_process as runtime_process
+                    if type(query) is not runtime_process._LocalCandidateQuery:
+                        continue
+                    if not query._lock.acquire(blocking=False):
+                        continue
+                    try:
+                        thread = query._thread
+                        if thread is not None and not query._thread_exited_locked():
+                            continue
+                    finally:
+                        query._lock.release()
+                state['result'] = None
+                state['resolver'] = None
+                state['query'] = None
+                _LOCAL_CANDIDATE_PENDING.remove(pending)
+            except Exception:
+                continue
+    finally:
+        _LOCAL_CANDIDATE_PENDING_LOCK.release()
+
+
+def _store_local_candidate_result(state, encoded):
+    with state['result_lock']:
+        if not state['abandoned']:
+            state['result'] = encoded
+
+
+def _abandon_local_candidate_state(state):
+    """Do not lose ownership during cancellation before state is cleared."""
+    interrupted = None
+    while True:
+        try:
+            with state['result_lock']:
+                state['abandoned'] = True
+                state['result'] = None
+            return interrupted
+        except BaseException as exc:
+            if interrupted is None:
+                interrupted = exc
 
 
 def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
     """Read candidates as proposals; only locally rederived results may leave."""
     pending = None
+    interrupted = None
     try:
+        _reap_local_candidate_pending()
         names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
         if len(argv) != 11 or argv[0] != '--mind-local-candidate-read':
             raise ValueError('args')
@@ -1470,7 +1533,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
                 or re.fullmatch(r'(?:[1-9]|[1-8][0-9]|90)', timeout_text) is None):
             raise ValueError('args')
         deadline = time.monotonic() + int(timeout_text)
-        state = {'result':None, 'query':None, 'resolver':None}
+        state = {'result':None, 'query':None, 'resolver':None, 'abandoned':False, 'result_lock':threading.Lock(), 'worker_done':threading.Event()}
 
         def work():
             policy = None
@@ -1519,15 +1582,18 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
                                      allow_nan=False).encode('ascii')
                 if not 0 < len(encoded) <= 16384:
                     raise ValueError('result')
-                state['result'] = encoded
+                _store_local_candidate_result(state, encoded)
             except BaseException:
-                state['result'] = None
+                with state['result_lock']:
+                    state['result'] = None
             finally:
                 policy = None
+                state['worker_done'].set()
 
         worker = threading.Thread(target=work, name='mind-local-selected-client', daemon=False)
         pending = (worker, state)
-        _LOCAL_CANDIDATE_PENDING.append(pending)
+        with _LOCAL_CANDIDATE_PENDING_LOCK:
+            _LOCAL_CANDIDATE_PENDING.append(pending)
         worker.start()
         worker.join(max(0, deadline - time.monotonic()))
         if worker.is_alive() or state['result'] is None or time.monotonic() >= deadline:
@@ -1535,22 +1601,30 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
         output.write(state['result'])
         output.flush()
         return 0
-    except BaseException:
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            interrupted = exc
         try:
             error.write(b'{"error":"mind_session_content_refused","authority":"none"}\n')
             error.flush()
-        except Exception:
-            pass
-        return 2
+        except BaseException as err:
+            if interrupted is None and not isinstance(err, Exception):
+                interrupted = err
+        if interrupted is None:
+            return 2
     finally:
         if pending is not None:
-            worker, state = pending
-            query = state.get('query')
+            _, state = pending
+            abandon_interrupted = _abandon_local_candidate_state(state)
+            if interrupted is None:
+                interrupted = abandon_interrupted
             try:
-                if (not worker.is_alive() and (query is None or query.status().get('state') == 'STOPPED')):
-                    _LOCAL_CANDIDATE_PENDING.remove(pending)
-            except Exception:
-                pass
+                _reap_local_candidate_pending()
+            except BaseException as exc:
+                if interrupted is None:
+                    interrupted = exc
+        if interrupted is not None:
+            raise interrupted
 
 
 def main(argv: list[str] | None = None) -> int:

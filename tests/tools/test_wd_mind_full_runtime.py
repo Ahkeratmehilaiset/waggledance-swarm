@@ -2143,13 +2143,25 @@ def test_single_manifest_owner_keeps_owner_if_factory_retargets_during_launch(tm
     assert owner._owner is not None and calls == [True]
 
 
+def _enable_candidate_orchestration(runtime, owner, retained, monkeypatch):
+    """Synthetic prewarm state for dispatch/ownership tests, not source evidence."""
+    from types import SimpleNamespace
+    assert owner._state == 'READY' and owner._handler is not None
+    owner._snapshot['messages'] = {'end_cursor': SimpleNamespace(offset=100)}
+    owner._prewarm_generation = owner._generation
+    owner._retained = owner._handler._retained = retained
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+
+
 @pytest.mark.parametrize('phase', ['before', 'during'])
 def test_single_manifest_owner_holds_and_never_returns_retargeted_candidates(tmp_path, monkeypatch, phase):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
     calls = []
     def candidates(**kwargs):
+        assert type(owner._source_budget) is runtime.prefix._SourceReadBudget
         calls.append(True)
         if phase == 'during': factory._manifest = '0' * 64
         return {'synthetic': 'must not escape'}
@@ -2161,17 +2173,27 @@ def test_single_manifest_owner_holds_and_never_returns_retargeted_candidates(tmp
     request = {'schema':'wd.mind-pipe-request.v1', 'query_id':'startup_work_overview',
                'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
     assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
+    _enable_candidate_orchestration(runtime, owner, object(), monkeypatch)
+    checks = []
+    original_check = runtime._SingleManifestOwner._check_factory_or_hold
+    def tracked_check(self):
+        assert type(self._source_budget) is runtime.prefix._SourceReadBudget
+        checks.append(True)
+        return original_check(self)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory_or_hold', tracked_check)
     if phase == 'before': factory._manifest = '0' * 64
     with pytest.raises(runtime.FullRuntimeRefused, match='^mind_full_runtime_refused$'):
         owner.candidates(request)
     assert owner.status() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
     assert calls == ([] if phase == 'before' else [True])
+    assert len(checks) == (1 if phase == 'before' else 2)
 
 
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
 @pytest.mark.parametrize('phase', ['before', 'after', 'provider'])
 def test_candidate_factory_or_provider_failure_drops_retained_state(tmp_path, monkeypatch, located, phase):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: self._retained)
@@ -2180,34 +2202,47 @@ def test_candidate_factory_or_provider_failure_drops_retained_state(tmp_path, mo
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
     assert owner.start()['state'] == 'READY'
     retained = object()
-    owner._retained = owner._handler._retained = retained
+    _enable_candidate_orchestration(runtime, owner, retained, monkeypatch)
     request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
                'query_id':'startup_work_overview', 'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
+    calls = []
     def candidate(**kwargs):
+        assert type(owner._source_budget) is runtime.prefix._SourceReadBudget
+        calls.append(True)
         if phase in ('after', 'provider'):
             factory._manifest = '0'*64
         if phase == 'provider':
             owner._check_factory_or_hold()
         return {'synthetic':'not returned'}
     monkeypatch.setattr(runtime, 'map_pipe_candidates', candidate)
+    checks = []
+    original_check = runtime._SingleManifestOwner._check_factory_or_hold
+    def tracked_check(self):
+        assert type(self._source_budget) is runtime.prefix._SourceReadBudget
+        checks.append(True)
+        return original_check(self)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory_or_hold', tracked_check)
     if phase == 'before':
         factory._manifest = '0'*64
     with pytest.raises(runtime.FullRuntimeRefused):
         (owner.located_candidates if located else owner.candidates)(request)
     assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
     assert owner._retained is None and owner._handler._retained is None
+    assert calls == ([] if phase == 'before' else [True])
+    assert len(checks) >= (1 if phase == 'before' else 2)
 
 
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
 def test_external_policy_invalidation_drops_retained_and_fences_owner(tmp_path, monkeypatch, located):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
     assert owner.start()['state'] == 'READY'
     retained = object()
-    owner._retained = owner._handler._retained = retained
+    _enable_candidate_orchestration(runtime, owner, retained, monkeypatch)
     assert owner.invalidate_external_policy() == {'state':'HOLD', 'owned':True, 'authority':'none'}
     assert owner._retained is None and owner._handler._retained is None
     request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
@@ -2220,13 +2255,14 @@ def test_external_policy_invalidation_drops_retained_and_fences_owner(tmp_path, 
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
 def test_malformed_candidate_request_preserves_retained_state(tmp_path, monkeypatch, located):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
     assert owner.start()['state'] == 'READY'
     retained = object()
-    owner._retained = owner._handler._retained = retained
+    _enable_candidate_orchestration(runtime, owner, retained, monkeypatch)
     request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
                'query_id':'startup_work_overview', 'nonce':'bad', 'lane':'codex-lead-1', 'scope':'own'}
     with pytest.raises(runtime.FullRuntimeRefused):
@@ -2235,30 +2271,107 @@ def test_malformed_candidate_request_preserves_retained_state(tmp_path, monkeypa
     assert owner._retained is retained and owner._handler._retained is retained
 
 
+def _drain_synthetic_race_worker(worker, done, release, pause, *, attempted, interrupted=None,
+                                 clock=None, notice=None):
+    """Retain an attempted synthetic worker until its physical exit is observed."""
+    import time
+    if not attempted:
+        return
+    if clock is None: clock = time.monotonic
+    if notice is None:
+        def notice():
+            print('HOLD: synthetic request-race worker exit not yet observed',
+                  file=sys.__stderr__, flush=True)
+    next_notice = None
+    while True:
+        try:
+            release.set()
+            if done.is_set() and worker.ident is not None:
+                worker.join(0)
+                if not worker.is_alive(): break
+            now = clock()
+            if next_notice is None: next_notice = now + 2
+            if now >= next_notice:
+                notice()
+                next_notice = now + 2
+            pause.wait(0.05)
+        except BaseException as exc:
+            if interrupted is None: interrupted = exc
+    if interrupted is not None: raise interrupted
+
+
+def test_synthetic_race_worker_drain_handles_unstarted_and_uncertain_start():
+    import threading
+    joined, notes, ticks = [], [], iter([0, 3, 6])
+    class Worker:
+        ident = None
+        def join(self, timeout): joined.append(timeout)
+        def is_alive(self): return False
+    worker = Worker()
+    release, done = threading.Event(), threading.Event()
+    class Pause:
+        count = 0
+        def wait(self, _timeout):
+            self.count += 1
+            if self.count == 2:
+                worker.ident = 123
+                done.set()
+    pause = Pause()
+    _drain_synthetic_race_worker(worker, done, release, pause, attempted=False)
+    assert not joined and not release.is_set()
+    _drain_synthetic_race_worker(worker, done, release, pause, attempted=True,
+        clock=lambda: next(ticks), notice=lambda: notes.append('HOLD'))
+    assert release.is_set() and joined == [0] and notes == ['HOLD']
+
+
+def test_synthetic_race_worker_drain_preserves_first_interrupt_through_exit():
+    import threading
+    first = KeyboardInterrupt('synthetic-interrupt')
+    class Release:
+        calls = 0
+        def set(self):
+            self.calls += 1
+            if self.calls == 1: raise first
+    class Worker:
+        ident, joins = 123, 0
+        def join(self, _timeout):
+            self.joins += 1
+            if self.joins == 1: raise GeneratorExit('later')
+        def is_alive(self): return False
+    worker, release, done, pause = Worker(), Release(), threading.Event(), threading.Event()
+    done.set()
+    with pytest.raises(KeyboardInterrupt) as observed:
+        _drain_synthetic_race_worker(worker, done, release, pause, attempted=True)
+    assert observed.value is first and worker.joins == 2 and release.calls >= 3
+
+
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
 @pytest.mark.parametrize('changed_value', ['shared', None], ids=['valid-string', 'wrong-type'])
 def test_changed_caller_request_refuses_without_dropping_retained_state(tmp_path, monkeypatch, located, changed_value):
     import threading
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: self._retained)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
-    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_candidate_delivery', lambda self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_candidate_delivery', lambda self, **kwargs: None)
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
     assert owner.start()['state'] == 'READY'
     retained = object()
-    owner._retained = owner._handler._retained = retained
+    _enable_candidate_orchestration(runtime, owner, retained, monkeypatch)
     request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
                'query_id':'startup_work_overview', 'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
-    ready, changed = threading.Event(), threading.Event()
+    ready, changed, worker_done, pause = (threading.Event() for _ in range(4))
     def mutate():
-        if ready.wait(5):
-            request['scope'] = changed_value
-            changed.set()
+        try:
+            if ready.wait(5):
+                request['scope'] = changed_value
+                changed.set()
+        finally:
+            worker_done.set()
     worker = threading.Thread(target=mutate)
-    worker.start()
     first = [True]
     def candidate(**kwargs):
         if first[0]:
@@ -2267,13 +2380,19 @@ def test_changed_caller_request_refuses_without_dropping_retained_state(tmp_path
             assert changed.wait(5)
         return {'synthetic':'ok'}
     monkeypatch.setattr(runtime, 'map_pipe_candidates', candidate)
+    attempted = False
     try:
+        # An interrupt after this assignment but before native start remains
+        # indistinguishable from an uncertain start and deliberately HOLDs.
+        attempted = True
+        worker.start()
         with pytest.raises(runtime.FullRuntimeRefused):
             (owner.located_candidates if located else owner.candidates)(request)
     finally:
-        ready.set()
-        worker.join(5)
+        _drain_synthetic_race_worker(worker, worker_done, ready, pause,
+                                     attempted=attempted, interrupted=sys.exc_info()[1])
     assert not worker.is_alive()
+    assert first == [False]  # The ON mapper actually ran before refusal.
     assert owner.status() == {'state':'READY', 'owned':True, 'authority':'none'}
     assert owner._retained is retained and owner._handler._retained is retained
     request['scope'] = 'own'
@@ -2283,6 +2402,7 @@ def test_changed_caller_request_refuses_without_dropping_retained_state(tmp_path
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
 def test_changed_request_cannot_hide_simultaneous_factory_failure(tmp_path, monkeypatch, located):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
     monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: self._retained)
@@ -2291,10 +2411,13 @@ def test_changed_request_cannot_hide_simultaneous_factory_failure(tmp_path, monk
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
     assert owner.start()['state'] == 'READY'
     retained = object()
-    owner._retained = owner._handler._retained = retained
+    _enable_candidate_orchestration(runtime, owner, retained, monkeypatch)
     request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
                'query_id':'startup_work_overview', 'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
+    calls = []
     def candidate(**kwargs):
+        assert type(owner._source_budget) is runtime.prefix._SourceReadBudget
+        calls.append(True)
         request['scope'] = 'shared'
         factory._manifest = '0'*64
         return {'synthetic':'must not escape'}
@@ -2303,6 +2426,7 @@ def test_changed_request_cannot_hide_simultaneous_factory_failure(tmp_path, monk
         (owner.located_candidates if located else owner.candidates)(request)
     assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
     assert owner._retained is None and owner._handler._retained is None
+    assert calls == [True]
 
 
 def test_single_manifest_owner_never_reports_ready_when_owner_status_raises(tmp_path, monkeypatch):

@@ -1830,13 +1830,19 @@ def _startup_owner_source_budget(snapshot):
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
 
 
-def _prewarm_source_budget(snapshot):
-    """Include temporary readline reservation headroom in addition to 5 prefix passes."""
+def _prewarm_source_fits(snapshot, *, extra_prefix_passes=0):
+    """Preflight all planned prefix passes before passage encoding starts."""
     offset = snapshot['messages']['end_cursor'].offset
-    if type(offset) is not int or offset <= 0:
+    if (type(offset) is not int or offset <= 0 or type(extra_prefix_passes) is not int
+            or extra_prefix_passes not in (0, 2)):
         raise ValueError('source_budget')
-    if 5 * offset + 4 * 1024 * 1024 + 1 > _STARTUP_PREWARM_SOURCE_READ_LIMIT:
+    if (5 + extra_prefix_passes) * offset + 4 * 1024 * 1024 + 1 > _STARTUP_PREWARM_SOURCE_READ_LIMIT:
         raise _StartupSourceBudgetRefused('source_budget')
+
+
+def _prewarm_source_budget(snapshot, *, extra_prefix_passes=0):
+    """Reserve readline headroom, prewarm and optional cache-check passes."""
+    _prewarm_source_fits(snapshot, extra_prefix_passes=extra_prefix_passes)
     return prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
 
 
@@ -2584,8 +2590,13 @@ def _stage_refresh_generation(owner):
     binding = assemble_full_runtime(enabled=True, bundle_root=bundle, expected_manifest_sha256=manifest,
         identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_pin)
     snapshot = binding.snapshot_for_query()
+    # A refreshed-cache commit needs two additional budgeted prefix checks.
+    # Refuse before _build starts passage encoding if they cannot fit.
+    if owner._vector_cache_enabled and _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
+        _prewarm_source_fits(snapshot, extra_prefix_passes=2)
     handler = _FlatRequestHandler(binding, snapshot, owner._lane, owner._lanes, owner._client,
-        owner._adapter, owner._factory, owner._timeout, owner._factory._bulk, owner._watcher_lease)
+        owner._adapter, owner._factory, owner._timeout, owner._factory._bulk, owner._watcher_lease,
+        owner._handler._vector_cache)
     handler._build(owner._handler._memory)
     return {'binding':binding, 'snapshot':snapshot, 'memory':handler._memory, 'handler':handler}
 
@@ -2616,6 +2627,48 @@ def _validate_refresh_generation(owner, staged):
     if binding.snapshot_for_query() != snapshot:
         raise ValueError('refresh_candidate_changed')
     return binding, snapshot, handler
+
+
+def _write_refresh_vector_cache(owner, old_handler, *, source_budget=None):
+    """Commit only vectors and pins while the refreshed generation is private."""
+    generation = owner._generation
+    binding, snapshot, handler = generation
+    cache = old_handler._vector_cache
+    memory = handler._memory
+    if (type(cache) is not _PrivateVectorCache or handler._vector_cache is not cache
+            or type(memory) is not _PrivateFlatMemory or memory.binding is not binding
+            or memory.snapshot != snapshot):
+        raise ValueError('refresh_cache_binding')
+
+    def verify_source():
+        if owner._generation is not generation:
+            raise ValueError('refresh_generation_changed')
+        owner._check_factory()
+        if owner._policy_pins is not None:
+            owner._check_policy_anchor()
+        if source_budget is None:
+            _flat_check(memory)
+        else:
+            retained = owner._retained
+            if type(retained) is not _RetainedFlatQueryState:
+                raise ValueError('refresh_retained_missing')
+            retained._prefix(retained._controls(), source_budget=source_budget)
+
+    verify_source()
+    raw = snapshot['projection_bytes']
+    if (type(raw) is not bytes or not reader._hex(snapshot['projection_sha256'])
+            or not hmac.compare_digest(reader._sha(raw), snapshot['projection_sha256'])):
+        raise ValueError('refresh_projection_pin')
+    projection = json.loads(raw.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                            parse_constant=reader._bad_constant)
+    if reader._serialized(projection) != raw:
+        raise ValueError('refresh_projection_changed')
+    encoder_sha = reader._sha(memory.encoder_binding)
+    cache_binding = _cache_snapshot_binding(binding, snapshot, projection, memory.encoder_binding, encoder_sha)
+    rows = _cache_rows_from_screened_projection(projection, memory.ids, memory.vectors)
+    cache.write(cache_binding, rows)
+    verify_source()
+    memory.cache_status = 'REFRESH_STORED'
 
 
 def _local_generation_policy_pin(owner):
@@ -2811,7 +2864,7 @@ class _SingleManifestOwner:
         """Explicit in-process refresh; no scheduling, publishing or activation."""
         previous = staged = generation = old_handler = None
         old_rotation_snapshot = old_adapter_snapshot = None
-        accepted = handler_locked = rotator_locked = contention_only = False
+        accepted = handler_locked = rotator_locked = contention_only = cache_publish_started = False
         pending = None
         if enabled is not True or not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
@@ -2861,10 +2914,16 @@ class _SingleManifestOwner:
                 # follows the existing rollback-to-HOLD path below.
                 self._retained = None
                 self._state = 'STARTING'
-                self._source_budget = _prewarm_source_budget(self._snapshot)
+                self._source_budget = (_prewarm_source_budget(self._snapshot, extra_prefix_passes=2)
+                    if self._vector_cache_enabled else _prewarm_source_budget(self._snapshot))
                 self._ensure_retained_locked(source_budget=self._source_budget)
                 self._prewarm_generation = self._generation
-                self._source_budget = None
+            if self._vector_cache_enabled:
+                # Publication can have reached os.replace even if it raises.
+                cache_publish_started = True
+                _write_refresh_vector_cache(self, old_handler, source_budget=self._source_budget)
+                self._cache_status = 'REFRESH_STORED'
+            self._source_budget = None
             # Retire direct lane views without closing the shared worker.
             old_handler._closed = True
             old_handler._retained = None
@@ -2876,6 +2935,8 @@ class _SingleManifestOwner:
             accepted = True
         except BaseException as exc:
             if not contention_only:
+                if cache_publish_started:
+                    self._cache_status = 'REFRESH_UNKNOWN'
                 if previous is not None:
                     self._generation = previous
                 if rotator_locked:

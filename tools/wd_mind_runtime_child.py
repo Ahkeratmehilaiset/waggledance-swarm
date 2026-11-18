@@ -2638,6 +2638,17 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     break
                 emit('READY')
             stop.wait(0.1)
+        # EOF/STOP can arrive before the first status poll. Do not turn a
+        # startup failure that is already visible into a successful stop.
+        # STARTING and BUSY remain acceptable during an intentional stop.
+        if stop.is_set():
+            try:
+                final_status = adapter.status()
+                if (type(final_status) is not dict
+                        or final_status.get('state') not in ('STARTING', 'READY', 'BUSY')):
+                    failed = True
+            except BaseException:
+                failed = True
     except _HostStopBeforeStart:
         pass
     except BaseException as exc:
@@ -2658,6 +2669,15 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 report_verified_worker_exit_during_hold()
                 try: service_done.wait(0.25)
                 except BaseException: pass
+            # STOP may have arrived while service.start was still in flight;
+            # observe its failure after joining rather than losing it.
+            if service_error:
+                failed = True
+                try: emit('HOLD')
+                except BaseException: pass
+                if (include_worker_stage_diagnostics is True or
+                        (include_start_diagnostics is True and not startup_reported_ready)):
+                    start_diagnostic_worker()
         if service is not None:
             while True:
                 try:

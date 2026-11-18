@@ -28,6 +28,89 @@ def _seed(root, state=b'C'):
     return root
 
 
+def test_synthetic_owner_immediate_control_eof_is_clean_stop_before_ready(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    class Adapter:
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'STARTING', 'owned': None}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    output = io.BytesIO()
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == 0
+    assert states == ['STARTING', 'STOPPED']
+
+
+def test_synthetic_eof_does_not_hide_already_failed_start(monkeypatch):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    class Adapter:
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'HOLD', 'owned': False}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    original_thread = threading.Thread
+    class EagerControlThread(original_thread):
+        def start(self):
+            super().start()
+            if self.name == 'mind-local-control':
+                self.join(3)
+                assert not self.is_alive()
+    monkeypatch.setattr(child.threading, 'Thread', EagerControlThread)
+    output = io.BytesIO()
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == 2
+    assert states == ['STARTING', 'HOLD', 'STOPPED']
+
+
+def test_synthetic_eof_does_not_hide_late_service_start_failure(monkeypatch):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    entered, release = threading.Event(), threading.Event()
+    class Adapter:
+        _owner = object()
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'READY', 'owned': True}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    class Service:
+        def start(self):
+            entered.set()
+            assert release.wait(3)
+            raise ValueError('synthetic-service-start-failure')
+        def close(self, timeout): return {'state': 'STOPPED'}
+    class Input:
+        def read(self, size):
+            assert entered.wait(3)
+            return b''
+    class Output(io.BytesIO):
+        def write(self, data):
+            if b'"state":"HOLD"' in bytes(data): release.set()
+            return super().write(data)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kwargs: 'synthetic')
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    output = Output()
+    code = child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == 2
+    assert states == ['STARTING', 'HOLD', 'STOPPED']
+
+
 @WINDOWS
 def test_held_reservation_rejects_second_handle_truncation(tmp_path):
     root = _seed(tmp_path / 'synthetic-audit')

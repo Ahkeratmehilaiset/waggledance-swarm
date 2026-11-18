@@ -7,6 +7,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,29 @@ def binding():
 def rows():
     return (("a" * 64, "b" * 64, struct.pack("<384f", 1.0, *([0.0] * 383))),
             ("c" * 64, "d" * 64, struct.pack("<384f", 0.0, 1.0, *([0.0] * 382))))
+
+
+def test_resource_preflight_enforces_row_disk_and_memory_bounds(monkeypatch):
+    count = 65537
+    required_disk = len(cache._MAGIC) + 4 + cache._MAX_HEADER + count * cache._ROW_SIZE
+    required_memory = cache._MEMORY_FLOOR + count * cache._MEMORY_PER_ROW
+    monkeypatch.setattr(cache, '_available_memory', lambda: required_memory)
+    monkeypatch.setattr(cache.shutil, 'disk_usage',
+                        lambda _path: SimpleNamespace(free=cache._DISK_FLOOR + required_disk))
+    cache._resource_preflight(Path('.'), count)
+    monkeypatch.setattr(cache, '_available_memory', lambda: required_memory - 1)
+    with pytest.raises(cache.CacheRefused, match='memory_budget'):
+        cache._resource_preflight(Path('.'), count)
+    monkeypatch.setattr(cache, '_available_memory', lambda: required_memory)
+    monkeypatch.setattr(cache.shutil, 'disk_usage',
+                        lambda _path: SimpleNamespace(free=cache._DISK_FLOOR + required_disk - 1))
+    with pytest.raises(cache.CacheRefused, match='disk_budget'):
+        cache._resource_preflight(Path('.'), count)
+    # Read-only cache loads do not need enough additional free space for a write.
+    cache._resource_preflight(Path('.'), count, require_disk=False)
+    for bad in (-1, True, 1.0, 1 << 63):
+        with pytest.raises(cache.CacheRefused, match='row_budget'):
+            cache._resource_preflight(Path('.'), bad)
 
 
 @pytest.fixture

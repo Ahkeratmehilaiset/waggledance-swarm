@@ -23,6 +23,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import struct
 from types import MappingProxyType
 from typing import NamedTuple
@@ -38,6 +39,11 @@ _MAX_HEADER = 8192
 _MAGIC = b"WDMVC1\n"
 _CACHE_ROOT = Path(r"C:\wd-mind-private\vector-cache")
 _CACHE_NAME = "vectors.bin"
+# Existing Windows fleet floor. These are availability checks, not reserved
+# resources or a guarantee against concurrent allocation, OOM or power loss.
+_DISK_FLOOR = 3 * 1024 * 1024 * 1024
+_MEMORY_FLOOR = 64 * 1024 * 1024
+_MEMORY_PER_ROW = 8192
 
 
 class CacheRefused(ValueError):
@@ -66,7 +72,7 @@ def _binding(value):
 
 
 def _rows(rows):
-    if type(rows) is not tuple or len(rows) > _MAX_ROWS:
+    if type(rows) is not tuple:
         raise CacheRefused("rows")
     previous = ""
     for row in rows:
@@ -83,6 +89,51 @@ def _rows(rows):
             raise CacheRefused("vector_norm")
         previous = row[0]
     return rows
+
+
+def _available_memory():
+    """Current available bytes only; this is not a reservation or hard limit."""
+    if os.name == "nt":
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [("length", wintypes.DWORD), ("load", wintypes.DWORD),
+                        ("total_phys", ctypes.c_ulonglong), ("avail_phys", ctypes.c_ulonglong),
+                        ("total_page", ctypes.c_ulonglong), ("avail_page", ctypes.c_ulonglong),
+                        ("total_virtual", ctypes.c_ulonglong), ("avail_virtual", ctypes.c_ulonglong),
+                        ("avail_extended_virtual", ctypes.c_ulonglong)]
+        try:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(MemoryStatus)]
+            kernel.GlobalMemoryStatusEx.restype = wintypes.BOOL
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(status)
+            if not kernel.GlobalMemoryStatusEx(ctypes.byref(status)):
+                raise CacheRefused("memory_unavailable")
+            return min(status.avail_phys, status.avail_virtual)
+        except (OSError, AttributeError):
+            raise CacheRefused("memory_unavailable") from None
+    try:
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, AttributeError):
+        raise CacheRefused("memory_unavailable") from None
+
+
+def _resource_preflight(directory, row_count, *, require_disk=True):
+    """Bound cache resources to a verified row count; checks reserve nothing."""
+    if (type(row_count) is not int or row_count < 0
+            or row_count > ((1 << 63) - 1 - _MEMORY_FLOOR) // _MEMORY_PER_ROW
+            or type(require_disk) is not bool):
+        raise CacheRefused("row_budget")
+    memory = _available_memory()
+    if type(memory) is not int or memory < _MEMORY_FLOOR + row_count * _MEMORY_PER_ROW:
+        raise CacheRefused("memory_budget")
+    if require_disk:
+        try:
+            free = shutil.disk_usage(directory).free
+        except (OSError, ValueError):
+            raise CacheRefused("disk_unavailable") from None
+        required = len(_MAGIC) + 4 + _MAX_HEADER + row_count * _ROW_SIZE
+        if type(free) is not int or free < _DISK_FLOOR + required:
+            raise CacheRefused("disk_budget")
 
 
 def _encoded(rows):
@@ -368,17 +419,21 @@ class _WriterLock:
                 self.fd = None
 
 
-def preflight(path):
+def preflight(path, *, row_count=None):
     """Validate root/ACL/owner/lock and report presence, without reading data.
 
     MISSING is only the OS's exact FILE_NOT_FOUND for the single fixed cache
     entry inside the pinned directory while holding its fixed writer lock. It
     is not proof that a later create/write, disk allocation, or rename succeeds.
     The root must already have been provisioned by an authorized operator.
+    If supplied, row_count is an independently verified projection size; the
+    available-space and memory checks are advisory and reserve no resources.
     """
     path = _plain_path(path)
     try:
         with _Directory(path.parent) as directory, _WriterLock(directory, path):
+            if row_count is not None:
+                _resource_preflight(path.parent, row_count)
             fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY, missing_ok=True)
             if fd is None:
                 return "MISSING"
@@ -398,6 +453,7 @@ def write_cache(path, binding, rows):
         raise CacheRefused("header")
     try:
         with _Directory(path.parent) as directory, _WriterLock(directory, path):
+            _resource_preflight(path.parent, len(rows))
             if os.path.lexists(path):
                 # A pre-existing link or a broadly readable file must not be
                 # silently replaced, even though rename itself is not a read.
@@ -420,10 +476,15 @@ def write_cache(path, binding, rows):
         raise CacheRefused("write") from None
 
 
-def load_cache(path, expected_binding, verify_prefix):
-    """Return a complete, checked cache or raise; compare passage hashes again at use."""
+def load_cache(path, expected_binding, verify_prefix, *, max_rows=_MAX_ROWS):
+    """Return complete checked rows, bounded by the caller's verified projection.
+
+    Legacy direct callers retain the conservative default; a runtime loading
+    a source-verified projection passes its independently derived record count.
+    """
     path, expected = _plain_path(path), _binding(expected_binding)
-    if not callable(verify_prefix):
+    if (not callable(verify_prefix) or type(max_rows) is not int or max_rows < 0
+            or max_rows > ((1 << 63) - 1 - _MEMORY_FLOOR) // _MEMORY_PER_ROW):
         raise CacheRefused("prefix_verifier")
     try:
         with _Directory(path.parent) as directory:
@@ -461,7 +522,7 @@ def load_cache(path, expected_binding, verify_prefix):
                         "count", "payload_sha256", "vectors_sha256", "record_set_sha256"} or _canonical(header) != raw
                         or header["schema"] != "wd.mind-vector-cache.v1" or header["dimension"] != 384
                         or type(header["dimension"]) is not int or header["dtype"] != "f32le"
-                        or type(header["count"]) is not int or not 0 <= header["count"] <= _MAX_ROWS
+                        or type(header["count"]) is not int or not 0 <= header["count"] <= max_rows
                         or any(type(header[key]) is not str or not _HEX.fullmatch(header[key])
                                for key in ("payload_sha256", "vectors_sha256", "record_set_sha256"))):
                     raise CacheMiss("header")
@@ -474,6 +535,7 @@ def load_cache(path, expected_binding, verify_prefix):
                 expected_size = len(_MAGIC) + 4 + length + header["count"] * _ROW_SIZE
                 if os.fstat(source.fileno()).st_size != expected_size:
                     raise CacheMiss("truncated")
+                _resource_preflight(path.parent, header["count"], require_disk=False)
                 for key in _FIELDS - {"prefix_offset", "prefix_sha256", "projection_sha256"}:
                     if stored[key] != expected[key]:
                         raise CacheMiss("binding_changed")

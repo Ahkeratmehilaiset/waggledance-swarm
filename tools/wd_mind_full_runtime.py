@@ -1174,6 +1174,19 @@ class _CacheProjectionMismatch(ValueError):
     """A complete cache does not match the screened source projection."""
 
 
+_CACHE_RESOURCE_REASONS = frozenset(('row_budget', 'memory_budget', 'memory_unavailable',
+                                     'disk_budget', 'disk_unavailable'))
+
+
+class _CacheResourceRefused(FullRuntimeRefused):
+    """Fixed public refusal with a bounded internal resource reason."""
+    def __init__(self, reason):
+        if type(reason) is not str or reason not in _CACHE_RESOURCE_REASONS:
+            raise ValueError('invalid_resource_reason')
+        super().__init__('mind_cache_resource_refused')
+        self.reason = reason
+
+
 _CACHE_CONTENT_PATHS = (
     'wd-mind-runtime-manifest.json',
     'wd-mind-interpreter-identity.json',
@@ -1376,20 +1389,26 @@ class _PrivateVectorCache:
             raise ValueError('cache_provider')
         self._module, self._path, self._verify = module, path, verify
 
-    def load(self, binding, verify_prefix):
+    def load(self, binding, verify_prefix, *, max_rows=None):
         self._verify()
         try:
-            value = self._module.load_cache(self._path, binding, verify_prefix)
+            if max_rows is None:
+                value = self._module.load_cache(self._path, binding, verify_prefix)
+            else:
+                value = self._module.load_cache(self._path, binding, verify_prefix, max_rows=max_rows)
         except Exception:
             self._verify()
             raise
         self._verify()
         return value
 
-    def preflight(self):
+    def preflight(self, *, row_count=None):
         self._verify()
         try:
-            status = self._module.preflight(self._path)
+            if row_count is None:
+                status = self._module.preflight(self._path)
+            else:
+                status = self._module.preflight(self._path, row_count=row_count)
         except Exception:
             self._verify()
             raise
@@ -1511,9 +1530,19 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             ids, vectors = tuple(sorted(by_id)), []
             reusable, cache_binding = {}, None
             cache_status = 'DISABLED' if vector_cache is None else 'MISS'
-            if vector_cache is not None and prior_memory is None:
+            if vector_cache is not None:
                 if type(vector_cache) is not _PrivateVectorCache:
                     raise ValueError('cache_provider')
+                # The source has already been completely re-derived above.
+                # This finite bound precedes all passage encoding; it is not
+                # a reservation and cannot guarantee later allocations.
+                try:
+                    vector_cache.preflight(row_count=len(ids))
+                except vector_cache._module.CacheRefused as exc:
+                    if type(exc) is vector_cache._module.CacheRefused and str(exc) in _CACHE_RESOURCE_REASONS:
+                        raise _CacheResourceRefused(str(exc)) from None
+                    raise
+            if vector_cache is not None and prior_memory is None:
                 cache_binding = _cache_snapshot_binding(binding, frozen, projection,
                                                         encoder_binding_bytes, encoder_binding_sha256)
                 try:
@@ -1521,7 +1550,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                         return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
                                 and reader._hex(expected)
                                 and hmac.compare_digest(reader._sha(immutable_prefix[:offset]), expected))
-                    cached = vector_cache.load(cache_binding, verify_old_prefix)
+                    cached = vector_cache.load(cache_binding, verify_old_prefix, max_rows=len(ids))
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
                     cache_status = 'HIT'
                 except (vector_cache._module.CacheMiss, _CacheProjectionMismatch):
@@ -1616,6 +1645,10 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
         raise BaseExceptionGroup('provider_cancelled', signals) from None
     if held:
         raise FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold') from None
+    if cleanup_problem is None and type(problem) is _CacheResourceRefused:
+        reason = problem.reason
+        problem = None
+        raise _CacheResourceRefused(reason) from None
     if cleanup_problem is not None or problem is not None:
         raise ValueError('snapshot_build_refused') from None
     return output
@@ -1675,7 +1708,7 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
         _flat_snapshot(binding, snapshot)
         result = _PrivateFlatMemory(binding, snapshot, reader._canonical(manifest), ids, vectors,
                                     encoder_binding_bytes)
-    except FullRuntimeSnapshotHold:
+    except (FullRuntimeSnapshotHold, _CacheResourceRefused):
         raise
     except Exception:
         pass
@@ -2155,6 +2188,9 @@ class _FlatRequestHandler:
                 reader._q4_vector(self._adapter.query('Mind startup readiness'))
             self._running_owner()
             return {'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'}
+        except _CacheResourceRefused:
+            self._failed = True
+            raise
         except Exception:
             self._failed = True
         finally:
@@ -2800,6 +2836,7 @@ def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max
 
 
 _START_ERROR_TYPES = {
+    _CacheResourceRefused: 'FullRuntimeRefused',
     ValueError: 'ValueError', TypeError: 'TypeError', RuntimeError: 'RuntimeError',
     OSError: 'OSError', FileNotFoundError: 'FileNotFoundError', PermissionError: 'PermissionError',
     TimeoutError: 'TimeoutError', KeyboardInterrupt: 'KeyboardInterrupt',

@@ -109,10 +109,12 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
     def checked_lock(directory, path):
         assert Path(path) == cache_path
         return nullcontext()
-    def synthetic_fd(native, path, disposition, access, sharing, flags):
+    def synthetic_fd(native, path, disposition, access, sharing, flags, *, missing_ok=False):
         path = Path(path)
         assert path.parent == cache_root
         assert path.name == 'vectors.bin' or (path.name.startswith('vectors.bin.') and path.name.endswith('.tmp'))
+        if missing_ok and not path.exists():
+            return None
         if disposition == 1:
             flags |= os.O_CREAT | os.O_EXCL
         return os.open(path, flags | getattr(os, 'O_BINARY', 0), 0o600)
@@ -194,12 +196,13 @@ def test_invalid_cache_or_changed_prefix_reencodes_entire_screened_set(synthetic
 
 _PROCESS_ACTOR = r'''
 import hashlib, json, os, pathlib, sys
-root, location, phase = sys.argv[1:]
+root, location, phase, test_packages = sys.argv[1:]
 root, location = pathlib.Path(root), pathlib.Path(location)
 if not root.is_absolute() or not location.is_absolute() or '.codex-audit' not in str(location).lower():
     raise RuntimeError('synthetic path required')
 sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / 'tests' / 'tools'))
+sys.path.insert(0, test_packages)
 import pytest
 import test_wd_mind_cache_builder_integration as harness
 patcher = pytest.MonkeyPatch()
@@ -245,7 +248,7 @@ def _run_synthetic_process(location, phase):
     # On timeout/interruption the helper retains the process and both outputs
     # until actual exit/EOF; uncertain spawn remains HOLD and is never killed.
     process = run_owned([sys.executable, '-I', '-B', '-c', _PROCESS_ACTOR,
-        str(root), str(location), phase], cwd=root, env=environment, input='',
+        str(root), str(location), phase, str(Path(pytest.__file__).resolve().parent.parent)], cwd=root, env=environment, input='',
         capture_output=True, text=True, encoding='utf-8', timeout=60,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     assert process.returncode == 0, process.stderr
@@ -322,6 +325,87 @@ def test_incomplete_but_well_formed_cache_is_full_miss(synthetic):
     fresh, _ = synthetic.snapshot()
     assert synthetic.build(fresh).cache_status == 'MISS_STORED'
     assert len(synthetic.passages) == 2
+
+
+def test_cache_more_than_legacy_row_limit_roundtrip_and_append(synthetic):
+    """Real on-disk codec, synthetic rows only; a row bound comes from the caller."""
+    count = 65537
+    vector = VECTOR
+    large = tuple((f'{index:064x}', 'a' * 64, vector) for index in range(count))
+    base = {'source_identity_sha256': '1' * 64, 'source_generation_sha256': '2' * 64,
+            'prefix_offset': 100, 'prefix_sha256': '3' * 64, 'model_sha256': '4' * 64,
+            'policy_sha256': '5' * 64, 'projection_code_sha256': '6' * 64,
+            'projection_sha256': '7' * 64}
+    cache.write_cache(synthetic.cache_path, base, large)
+    loaded = cache.load_cache(synthetic.cache_path, base, lambda *_: True, max_rows=count)
+    assert loaded.rows == large
+    with synthetic.cache_path.open('rb') as stream:
+        assert b'synthetic allowed' not in stream.read(8192)
+    later = dict(base, prefix_offset=101, prefix_sha256='8' * 64, projection_sha256='9' * 64)
+    assert cache.load_cache(synthetic.cache_path, later, lambda *_: True, max_rows=count + 1).rows == large
+    appended = large + ((f'{count:064x}', 'a' * 64, vector),)
+    cache.write_cache(synthetic.cache_path, later, appended)
+    assert cache.load_cache(synthetic.cache_path, later, lambda *_: True, max_rows=count + 1).rows == appended
+
+
+def test_cache_resource_preflight_occurs_before_passage_encoding(synthetic, monkeypatch):
+    binding, _ = synthetic.snapshot()
+    observed = []
+    def refuse(path, *, row_count=None):
+        observed.append(row_count)
+        raise cache.CacheRefused('synthetic_resource_limit')
+    monkeypatch.setattr(cache, 'preflight', refuse)
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        synthetic.build(binding)
+    assert observed == [2]
+    assert synthetic.passages == []
+    assert not synthetic.cache_path.exists()
+
+
+@pytest.mark.parametrize('reason', ['disk_budget', 'memory_budget', 'disk_unavailable',
+                                    'memory_unavailable', 'row_budget'])
+def test_cache_resource_failure_has_fixed_internal_reason(synthetic, monkeypatch, reason):
+    binding, _ = synthetic.snapshot()
+    def refuse(path, *, row_count=None):
+        raise cache.CacheRefused(reason)
+    monkeypatch.setattr(cache, 'preflight', refuse)
+    with pytest.raises(runtime._CacheResourceRefused) as caught:
+        synthetic.build(binding)
+    assert caught.value.reason == reason
+    assert str(caught.value) == 'mind_cache_resource_refused'
+    assert synthetic.passages == []
+
+
+def test_cache_stored_count_over_verified_bound_refuses_before_rows(synthetic, monkeypatch):
+    base = {'source_identity_sha256': '1' * 64, 'source_generation_sha256': '2' * 64,
+            'prefix_offset': 100, 'prefix_sha256': '3' * 64, 'model_sha256': '4' * 64,
+            'policy_sha256': '5' * 64, 'projection_code_sha256': '6' * 64,
+            'projection_sha256': '7' * 64}
+    items = ((f'{index:064x}', 'a' * 64, VECTOR) for index in range(2))
+    cache.write_cache(synthetic.cache_path, base, tuple(items))
+    with synthetic.cache_path.open('rb') as original:
+        initial = original.read(len(cache._MAGIC) + 4)
+    header_size = int.from_bytes(initial[-4:], 'little')
+    reads, open_file = [], cache.os.fdopen
+    class Tracked:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+        def __enter__(self):
+            self.wrapped.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.wrapped.__exit__(*args)
+        def read(self, size):
+            reads.append(size)
+            return self.wrapped.read(size)
+        def fileno(self):
+            return self.wrapped.fileno()
+    monkeypatch.setattr(cache.os, 'fdopen', lambda fd, mode: Tracked(open_file(fd, mode)))
+    monkeypatch.setattr(cache, '_rows', lambda *_a, **_kw: pytest.fail('row validation reached'))
+    with pytest.raises(cache.CacheMiss):
+        cache.load_cache(synthetic.cache_path, base,
+                         lambda *_: pytest.fail('prefix verifier reached'), max_rows=1)
+    assert reads == [len(cache._MAGIC) + 4, header_size]
 
 
 @pytest.mark.parametrize('fault', ['manifest_pin', 'cache_origin', 'unexpected_read',

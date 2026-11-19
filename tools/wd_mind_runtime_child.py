@@ -2565,7 +2565,10 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     last_state, failed, start_failure = None, False, None
     last_diagnostic, diagnostic_count = None, 0
     startup_reported_ready = False
+    ready_publication_started = threading.Event()
     diagnostic_stop, diagnostic_done, diagnostic_thread = threading.Event(), threading.Event(), None
+    worker_exit_snapshot_lock = threading.Lock()
+    worker_exit_snapshot = None
 
     class _HostStopBeforeStart(Exception):
         pass
@@ -2589,6 +2592,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         nonlocal last_state, startup_reported_ready
         if state == last_state:
             return
+        if state == 'READY':
+            ready_publication_started.set()
         raw = json.dumps({'schema':'wd.mind-local-owner-status.v1', 'state':state,
             'manifest_sha256':expected_manifest_sha256, 'authority':'none',
             'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
@@ -2622,7 +2627,11 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         key = (safe['reason'], safe['exception_type'])
         if include_worker_stage_diagnostics is True:
             hint, exit_code = 'UNKNOWN', None
-            if adapter is not None:
+            with worker_exit_snapshot_lock:
+                captured = worker_exit_snapshot
+            if startup_reported_ready and captured is not None:
+                hint, exit_code = captured
+            elif adapter is not None:
                 try: hint, exit_code = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
                 except BaseException: pass
             key = key + (hint, exit_code)
@@ -2673,7 +2682,10 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 or diagnostic_thread is not None or adapter is None):
             return
         try:
-            hint, exit_code = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
+            with worker_exit_snapshot_lock:
+                captured = worker_exit_snapshot
+            hint, exit_code = (captured if captured is not None else
+                               _safe_worker_diagnostic(adapter.worker_exit_diagnostic()))
             if hint != 'UNKNOWN' or (exit_code is not None and exit_code != 0):
                 failed = True
                 start_diagnostic_worker()
@@ -2687,18 +2699,34 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             return (service_done.is_set() and service_thread is not None
                     and not service_thread.is_alive())
 
+    def capture_worker_exit_after_incomplete_close():
+        nonlocal worker_exit_snapshot
+        if include_worker_stage_diagnostics is not True or not ready_publication_started.is_set():
+            return
+        try:
+            hint = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
+            if hint[0] != 'UNKNOWN' or (hint[1] is not None and hint[1] != 0):
+                with worker_exit_snapshot_lock:
+                    if worker_exit_snapshot is None:
+                        worker_exit_snapshot = hint
+        except BaseException:
+            pass
+
     def close_adapter_once():
         if adapter_close_done.is_set():
             return True
         if adapter is None or not adapter_close_gate.acquire(blocking=False):
             return False
+        attempted = False
         try:
             if adapter_close_done.is_set():
                 return True
             if type(adapter) is _LocalManifestQuery:
+                attempted = True
                 value = adapter.close(_service_start_released=service_start_released,
                                       _close_started=adapter_close_started)
             elif service_start_released():
+                attempted = True
                 value = adapter.close()
                 adapter_close_started.set()
             else:
@@ -2707,8 +2735,13 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     and value.get('owned') is False):
                 adapter_close_done.set()
                 return True
+            # A retry may retire the owner before the main cleanup loop gets
+            # to observe its already-verified exit. Preserve only fixed,
+            # sanitized evidence after an incomplete close; never retain text.
+            capture_worker_exit_after_incomplete_close()
         except BaseException:
-            pass
+            if attempted:
+                capture_worker_exit_after_incomplete_close()
         finally:
             adapter_close_gate.release()
         return False
@@ -3016,6 +3049,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     if (include_worker_stage_diagnostics is True or
                             (include_start_diagnostics is True and not startup_reported_ready)):
                         start_diagnostic_worker()
+            # Close may finish on the worker before either cleanup loop polls.
+            # Consume any fixed exit evidence captured before owner retirement.
+            with worker_exit_snapshot_lock:
+                captured = worker_exit_snapshot
+            if captured is not None:
+                try: emit('HOLD')
+                except BaseException: failed = True
+                report_verified_worker_exit_during_hold()
         if control_thread is not None:
             while not control_done.is_set() or control_thread.is_alive():
                 try: emit('HOLD')

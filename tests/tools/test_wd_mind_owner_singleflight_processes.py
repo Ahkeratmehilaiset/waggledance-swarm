@@ -55,6 +55,10 @@ class Owner:
         return {'state': 'STARTING'}
     def status(self):
         return {'state': 'READY', 'owned': True}
+    def start_diagnostic(self):
+        return {'reason': 'NONE', 'exception_type': 'NONE', 'authority': 'none'}
+    def worker_exit_diagnostic(self):
+        return ('UNKNOWN', None)
     def close(self):
         if not (case / 'cleanup-complete').exists():
             if not self.announced:
@@ -66,7 +70,19 @@ class Service:
     def start(self): pass
     def status(self): return {'state': 'RUNNING'}
     def close(self, *, timeout): return {'state': 'STOPPED'}
-child.create_local_manifest_query = lambda **kw: Owner()
+def factory(**kw):
+    adapter = child._LocalManifestQuery(
+        kw['lane'], 'synthetic', kw['expected_manifest_sha256'],
+        kw['identifier_policy_bytes'], kw['expected_identifier_policy_sha256'],
+        kw['operator_approval_reference_sha256'], 1, 0, 1,
+        admission=kw.get('_admission'))
+    adapter._owner, adapter._state = Owner(), 'READY'
+    adapter._owner_start_committed = True
+    if kw.get('_admission') is not None:
+        kw['_admission'].bind_owner(adapter)
+    return adapter
+child._LocalManifestQuery.start = lambda self: self._owner.start()
+child.create_local_manifest_query = factory
 process.create_local_candidate_service = lambda **kw: Service()
 os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH'] = manifest
 if route == 'owner':

@@ -668,6 +668,14 @@ def test_postready_v2_reports_late_exit_without_discarding_owner(monkeypatch):
 def test_postready_v2_clean_stop_emits_no_failure_diagnostic(monkeypatch):
     from tools import wd_mind_runtime_process as process
     control, output, _ = _cli_fixture(monkeypatch, delayed=False, post_ready=True)
+    adapter = _local_adapter()
+    adapter._owner, adapter._state = output.owner, 'READY'
+    adapter._owner_start_committed = True
+    output.owner.start_diagnostic = lambda: {'reason':'NONE', 'exception_type':'NONE', 'authority':'none'}
+    output.owner.worker_exit_diagnostic = lambda: ('UNKNOWN', None)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    monkeypatch.setattr(child._LocalManifestQuery, 'start',
+                        lambda self: {'state':'STARTING', 'owned':None, 'authority':'none'})
     original_write = output.write
     ready = threading.Event()
     def write(data):
@@ -689,12 +697,17 @@ def test_postready_v2_clean_stop_emits_no_failure_diagnostic(monkeypatch):
         def status(self): return {'state':'RUNNING'}
         def close(self, *, timeout): return {'state':'STOPPED'}
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
-    output.owner.worker_exit_diagnostic = lambda: ('serving', None)
+    evidence = {'clean': False}
     assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
         bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
-        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == 0
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True,
+        _cleanup_evidence=evidence) == 0
     rows = [json.loads(raw) for raw in output.lines]
-    assert [row['state'] for row in rows] == ['STARTING', 'READY', 'STOPPED']
+    states = [row['state'] for row in rows]
+    assert states[:2] == ['STARTING', 'READY'] and states[-1] == 'STOPPED'
+    assert all(state == 'HOLD' for state in states[2:-1])
+    assert evidence['clean'] is True and output.owner.closes == 1
+    assert all(row['schema'] == 'wd.mind-local-owner-status.v1' for row in rows)
 
 
 @pytest.mark.parametrize('exit_value,is_failure', [
@@ -742,6 +755,270 @@ def test_postready_v2_detects_worker_exit_during_clean_stop_cleanup(monkeypatch,
     if is_failure:
         assert (diagnostics[0]['worker_exit_stage_hint'], diagnostics[0]['worker_exit_code']) == exit_value
     assert output.owner.closes == 2
+
+
+def test_real_adapter_does_not_lose_exit_hint_when_close_worker_finishes_first(monkeypatch):
+    """Synthetic owner only: this does not model actual rotator exit semantics."""
+    from tools import wd_mind_runtime_process as process
+
+    control, output, _ = _cli_fixture(monkeypatch, delayed=True, post_ready=True)
+    ready, closed_twice = threading.Event(), threading.Event()
+    evidence, close_threads, second_close_observations = {'clean': False}, [], []
+    adapter = _local_adapter()
+    adapter._owner, adapter._state = output.owner, 'READY'
+    adapter._owner_start_committed = True
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    monkeypatch.setattr(child._LocalManifestQuery, 'start',
+                        lambda self: {'state': 'STARTING', 'owned': None, 'authority': 'none'})
+    output.owner.start_diagnostic = lambda: {'reason': 'NONE', 'exception_type': 'NONE', 'authority': 'none'}
+    original_close, original_write = output.owner.close, output.write
+
+    def close():
+        close_threads.append(threading.current_thread())
+        result = original_close()
+        if output.owner.closes == 2:
+            second_close_observations.append((evidence['clean'],
+                any(json.loads(raw).get('state') == 'STOPPED' for raw in output.lines)))
+            closed_twice.set()
+        return result
+
+    def write(data):
+        result = original_write(data)
+        if b'"state":"READY"' in bytes(data):
+            ready.set()
+        return result
+
+    frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy-never-in-output'))
+                       + b'synthetic-policy-never-in-output')
+
+    def read(size):
+        value = frame.read(size)
+        if value:
+            return value
+        assert ready.wait(5)
+        return b'S'
+
+    class Service:
+        def start(self): pass
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, *, timeout):
+            assert closed_twice.wait(5)
+            # Joining ensures close_adapter_once has published its completion;
+            # otherwise the main thread could race the second close's return.
+            close_threads[0].join(timeout=5)
+            assert not close_threads[0].is_alive()
+            return {'state': 'STOPPED'}
+
+    output.owner.close = close
+    output.owner.worker_exit_diagnostic = lambda: (('serving', None) if output.close_called.is_set()
+                                                     else ('UNKNOWN', None))
+    control.read, output.write = read, write
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    result = child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True,
+        _cleanup_evidence=evidence)
+    rows = [json.loads(raw) for raw in output.lines]
+    assert closed_twice.is_set() and output.owner.closes == 2
+    assert len(set(close_threads)) == 1 and second_close_observations == [(False, False)]
+    assert evidence['clean'] is True
+    assert result == 2
+    assert any(row.get('worker_exit_stage_hint') == 'serving' for row in rows)
+
+
+@pytest.mark.parametrize('hint,is_failure', [
+    (('serving', None), True), (('UNKNOWN', 2), True),
+    (('UNKNOWN', 0), False), (('UNKNOWN', None), False),
+])
+def test_real_adapter_retains_worker_hint_after_close_exception(monkeypatch, hint, is_failure):
+    """Use an inert fake owner: an exception followed by success is a test seam."""
+    from tools import wd_mind_runtime_process as process
+
+    control, output, _ = _cli_fixture(monkeypatch, delayed=False, post_ready=True)
+    ready, close_attempted_twice = threading.Event(), threading.Event()
+    evidence, close_threads = {'clean': False}, []
+    adapter = _local_adapter()
+    adapter._owner, adapter._state = output.owner, 'READY'
+    adapter._owner_start_committed = True
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    monkeypatch.setattr(child._LocalManifestQuery, 'start',
+                        lambda self: {'state': 'STARTING', 'owned': None, 'authority': 'none'})
+    output.owner.start_diagnostic = lambda: {'reason': 'NONE', 'exception_type': 'NONE', 'authority': 'none'}
+    original_write = output.write
+
+    def close():
+        close_threads.append(threading.current_thread())
+        output.owner.closes += 1
+        output.close_called.set()
+        if output.owner.closes == 1:
+            raise RuntimeError('synthetic-close-error')
+        close_attempted_twice.set()
+        return {'state': 'STOPPED', 'owned': False}
+
+    def write(data):
+        result = original_write(data)
+        if b'"state":"READY"' in bytes(data):
+            ready.set()
+        return result
+
+    frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy-never-in-output'))
+                       + b'synthetic-policy-never-in-output')
+
+    def read(size):
+        value = frame.read(size)
+        if value:
+            return value
+        assert ready.wait(5)
+        return b'S'
+
+    class Service:
+        timed_out = False
+        def start(self): pass
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, *, timeout):
+            if not close_attempted_twice.wait(5):
+                self.timed_out = True
+                return {'state': 'STOPPED'}
+            close_threads[0].join(timeout=5)
+            if close_threads[0].is_alive():
+                self.timed_out = True
+            return {'state': 'STOPPED'}
+
+    service = Service()
+    output.owner.close = close
+    output.owner.worker_exit_diagnostic = lambda: hint if output.close_called.is_set() else ('UNKNOWN', None)
+    control.read, output.write = read, write
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: service)
+    result = child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True,
+        _cleanup_evidence=evidence)
+    rows = [json.loads(raw) for raw in output.lines]
+    assert not service.timed_out and close_attempted_twice.is_set() and output.owner.closes == 2
+    assert len(set(close_threads)) == 1 and evidence['clean'] is True
+    assert result == (2 if is_failure else 0)
+    diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
+    if is_failure:
+        assert any((row['worker_exit_stage_hint'], row['worker_exit_code']) == hint for row in diagnostics)
+    else:
+        assert not diagnostics
+
+
+@pytest.mark.parametrize('ready_write', ['complete', 'raise', 'short', 'partial_then_raise'])
+def test_real_adapter_worker_hint_during_ready_publication(monkeypatch, ready_write):
+    """Exercise READY ordering with a fake owner, not a native rotator."""
+    from tools import wd_mind_runtime_process as process
+
+    control, output, _ = _cli_fixture(monkeypatch, delayed=True, post_ready=True)
+    publication_entered, second_close = threading.Event(), threading.Event()
+    evidence, close_threads, observations, timeouts = {'clean': False}, [], [], []
+    wire, partial_pending = bytearray(), [False]
+    adapter = _local_adapter()
+    adapter._owner, adapter._state = output.owner, 'READY'
+    adapter._owner_start_committed = True
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    monkeypatch.setattr(child._LocalManifestQuery, 'start',
+                        lambda self: {'state': 'STARTING', 'owned': None, 'authority': 'none'})
+    output.owner.start_diagnostic = lambda: {'reason': 'NONE', 'exception_type': 'NONE', 'authority': 'none'}
+    original_close = output.owner.close
+
+    def close():
+        close_threads.append(threading.current_thread())
+        result = original_close()
+        if output.owner.closes == 2:
+            observations.append(('second_close', evidence['clean']))
+            second_close.set()
+        return result
+
+    def worker_diagnostic():
+        if (output.close_called.is_set() and output.owner.closes == 1 and close_threads
+                and threading.current_thread() is close_threads[0]):
+            observations.append(('hint', output.owner.closes, threading.current_thread()))
+            return ('serving', None)
+        return ('UNKNOWN', None)
+
+    def write(data):
+        raw = bytes(data)
+        if partial_pending[0]:
+            partial_pending[0] = False
+            raise OSError('synthetic-ready-write-error')
+        if b'"state":"READY"' not in raw:
+            wire.extend(raw)
+            return len(raw)
+        if ready_write == 'complete':
+            wire.extend(raw)
+        elif ready_write == 'partial_then_raise':
+            wire.extend(raw[:8])
+            partial_pending[0] = True
+        publication_entered.set()
+        if not second_close.wait(5):
+            timeouts.append('second_close')
+        elif close_threads:
+            close_threads[0].join(timeout=5)
+            if close_threads[0].is_alive():
+                timeouts.append('close_thread')
+        if ready_write == 'raise':
+            raise OSError('synthetic-ready-write-error')
+        if ready_write == 'short':
+            return 0
+        return 8 if ready_write == 'partial_then_raise' else len(raw)
+
+    frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy')) + b'synthetic-policy')
+
+    def read(size):
+        value = frame.read(size)
+        if value:
+            return value
+        if not publication_entered.wait(5):
+            timeouts.append('ready_publication')
+        return b'S'
+
+    class Service:
+        def start(self): pass
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, *, timeout): return {'state': 'STOPPED'}
+
+    output.owner.close = close
+    output.owner.worker_exit_diagnostic = worker_diagnostic
+    control.read, output.write = read, write
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    result = child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True,
+        _cleanup_evidence=evidence)
+    rows, malformed = [], []
+    for raw in bytes(wire).splitlines():
+        try:
+            rows.append(json.loads(raw))
+        except (ValueError, UnicodeError):
+            malformed.append(raw)
+    statuses = [row['state'] for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1']
+    diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
+    assert not timeouts and second_close.is_set() and output.owner.closes == 2
+    assert len(set(close_threads)) == 1 and ('second_close', False) in observations
+    assert any(item[0] == 'hint' and item[1] == 1 and item[2] is close_threads[0]
+               for item in observations)
+    assert evidence['clean'] is True and result == 2
+    assert statuses[0] == 'STARTING' and statuses[-1] == 'STOPPED'
+    if ready_write == 'complete':
+        assert not malformed
+        assert statuses.count('READY') == 1
+        assert any(row['reason'] == row['exception_type'] == 'UNKNOWN'
+                   and row['worker_exit_stage_hint'] == 'serving' for row in diagnostics)
+    else:
+        if ready_write == 'partial_then_raise':
+            # The stream contains an incomplete READY prefix followed by the
+            # next status; it must not be accepted as a complete READY frame.
+            assert len(malformed) == 1 and malformed[0].startswith(b'{"author')
+        else:
+            assert not malformed
+        assert 'READY' not in statuses
+        assert diagnostics and all(row['reason'] == 'OWNER_ENTRY' for row in diagnostics)
+        assert all(row['exception_type'] == ('ValueError' if ready_write == 'short' else 'OSError')
+                   for row in diagnostics)
+        assert all(row['worker_exit_stage_hint'] == 'UNKNOWN' and row['worker_exit_code'] is None
+                   for row in diagnostics)
+    assert b'synthetic-ready-write-error' not in wire
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual helper is Windows-specific')

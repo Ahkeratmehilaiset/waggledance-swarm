@@ -142,8 +142,7 @@ def test_selected_preflight_accepts_deploy_style_uppercase_module_pins(tmp_path,
         session._selected_pin_module(tmp_path, files, 'synthetic_unloaded_module', relative)
 
 
-@pytest.mark.parametrize('tampered', [False, True])
-def test_selected_preflight_loads_missing_module_with_uppercase_manifest(tmp_path, monkeypatch, tampered):
+def _run_selected_preflight_with_missing_module(tmp_path, monkeypatch, tampered):
     from types import ModuleType
     root = tmp_path / 'bundle'
     modules = ('wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
@@ -180,7 +179,10 @@ def test_selected_preflight_loads_missing_module_with_uppercase_manifest(tmp_pat
     loaded = ModuleType('waggledance.core.bridge_log_reader')
     loaded.__file__ = str(path)
     monkeypatch.setitem(sys.modules, loaded.__name__, loaded)
-    monkeypatch.delitem(sys.modules, 'tools.wd_mind_runtime_process', raising=False)
+    # Record the original mapping even when the module was absent.  The
+    # preflight may insert a synthetic module before monkeypatch unwinds.
+    monkeypatch.setitem(sys.modules, 'tools.wd_mind_runtime_process', None)
+    monkeypatch.delitem(sys.modules, 'tools.wd_mind_runtime_process')
     raw = json.dumps({'schema_version': 1, 'files': files}).encode()
     (root / 'deployment-manifest.json').write_bytes(raw)
     if tampered:
@@ -191,7 +193,25 @@ def test_selected_preflight_loads_missing_module_with_uppercase_manifest(tmp_pat
     else:
         session._preflight_selected_resolver_code(str(root), hashlib.sha256(raw).hexdigest())
         assert sys.modules['tools.wd_mind_runtime_process'].synthetic_value == 1
-        monkeypatch.delitem(sys.modules, 'tools.wd_mind_runtime_process', raising=False)
+
+
+@pytest.mark.parametrize('tampered', [False, True])
+@pytest.mark.parametrize('initially_loaded', [False, True])
+def test_selected_preflight_loads_missing_module_with_uppercase_manifest(
+        tmp_path, monkeypatch, tampered, initially_loaded):
+    from types import ModuleType
+    name = 'tools.wd_mind_runtime_process'
+    original = ModuleType(name)
+    if initially_loaded:
+        monkeypatch.setitem(sys.modules, name, original)
+    else:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    with monkeypatch.context() as scoped:
+        _run_selected_preflight_with_missing_module(tmp_path, scoped, tampered)
+    if initially_loaded:
+        assert sys.modules[name] is original
+    else:
+        assert name not in sys.modules
 
 
 @pytest.mark.parametrize('target', ['wd_mind_content_query_readonly',

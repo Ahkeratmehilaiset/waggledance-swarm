@@ -94,6 +94,7 @@ def test_located_adapter_stays_independent_of_local_query_gate(monkeypatch):
     adapter = object.__new__(child._LocalManifestQuery)
     adapter._lock, adapter._cancel = threading.Lock(), threading.Event()
     adapter._state, adapter._policy_invalid, adapter._owner = 'READY', False, Owner()
+    adapter._candidate_inflight, adapter._candidate_accounting_uncertain = 0, False
     monkeypatch.setattr(child._LocalManifestQuery, '_check_external_policy', lambda _self: None)
     request = {'synthetic':'request'}
     assert adapter.located_candidates(request) == {'status':'ABSTAIN'}

@@ -172,11 +172,13 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
         stop.set()
         if hold_service:
             assert wake_entered.wait(3)
-            assert entry.is_alive() and owners[0][1].status()['owned'] is True
+            assert entry.is_alive()
             assert services[0].status()['state'] == 'HOLD'
+            assert 'STOPPED' not in statuses
             admission = owners[0][2]._admission
             with admission._lock:
                 assert admission._guard._read() == child._OWNER_RESERVATION_MAGIC + b'R'
+                assert admission._cleanup_evidence['clean'] is False
             wake_release.set()
         entry.join(timeout=5)
         assert not entry.is_alive()

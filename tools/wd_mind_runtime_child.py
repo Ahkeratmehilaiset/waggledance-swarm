@@ -2448,6 +2448,19 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
     return 2
 
 
+_LOCAL_SERVICE_CLOSE_GRACE_SECONDS = 60.0
+_LOCAL_ADAPTER_CLOSE_RETRY_SECONDS = 1.0
+
+
+def _local_service_close_clock():
+    """A failed clock disables early close; it never abandons retained state."""
+    try:
+        now = time.monotonic()
+        return now if type(now) in (int, float) and math.isfinite(now) else None
+    except BaseException:
+        return None
+
+
 def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
                                  policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
                                  _admission=None, _host_start_gate=None, _host_stop=None,
@@ -2701,7 +2714,17 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 if (include_worker_stage_diagnostics is True or
                         (include_start_diagnostics is True and not startup_reported_ready)):
                     start_diagnostic_worker()
+        early_adapter_closed = False
         if service is not None:
+            # Do not let an unresponsive candidate service indefinitely defer
+            # the owner's cooperative close.  The exact adapter type protects
+            # this early cancellation path: its close sets cancellation and
+            # the owner serializes close against any in-flight candidate.
+            # The service itself remains owned and in HOLD until its close is
+            # actually confirmed; the grace deadline never proves cleanup.
+            clock = _local_service_close_clock()
+            next_adapter_close = (clock + _LOCAL_SERVICE_CLOSE_GRACE_SECONDS
+                                  if clock is not None else None)
             while True:
                 try:
                     service_status = service.close(timeout=0)
@@ -2721,13 +2744,29 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                         break
                 except BaseException:
                     pass
+                clock = _local_service_close_clock()
+                if clock is None:
+                    next_adapter_close = None
+                if (not early_adapter_closed and next_adapter_close is not None
+                        and clock is not None and clock >= next_adapter_close
+                        and type(adapter) is _LocalManifestQuery):
+                    try:
+                        early_result = adapter.close()
+                        early_adapter_closed = (type(early_result) is dict
+                            and early_result.get('state') == 'STOPPED'
+                            and early_result.get('owned') is False)
+                    except BaseException:
+                        pass  # The owner remains retained in HOLD.
+                    clock = _local_service_close_clock()
+                    next_adapter_close = (clock + _LOCAL_ADAPTER_CLOSE_RETRY_SECONDS
+                                          if clock is not None else None)
                 try: emit('HOLD')
                 except BaseException: failed = True
                 report_verified_worker_exit_during_hold()
                 try: time.sleep(0.25)
                 except BaseException: pass
         if adapter is not None:
-            while True:
+            while not early_adapter_closed:
                 try:
                     owner_status = adapter.close()
                     if (type(owner_status) is dict and owner_status.get('state') == 'STOPPED'

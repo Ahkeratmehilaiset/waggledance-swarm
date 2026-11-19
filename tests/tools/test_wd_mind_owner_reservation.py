@@ -22,6 +22,173 @@ PREFIX = b'WD_MIND_OWNER_V1\n'
 WINDOWS = pytest.mark.skipif(os.name != 'nt', reason='Windows reservation uses byte-range locking')
 
 
+@pytest.mark.parametrize('unproven_owner', [False, True])
+def test_held_service_allows_cooperative_owner_close_after_bounded_grace(monkeypatch, unproven_owner):
+    """Keep service ownership while allowing the real adapter to stop its owner."""
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_LOCAL_SERVICE_CLOSE_GRACE_SECONDS', 0.05, raising=False)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    service_started, release_service, adapter_closed = threading.Event(), threading.Event(), threading.Event()
+    close_calls = []
+    adapter = object.__new__(child._LocalManifestQuery)
+    adapter._owner = object()
+    monkeypatch.setattr(child._LocalManifestQuery, 'start', lambda self: {'state': 'STARTING'})
+    monkeypatch.setattr(child._LocalManifestQuery, 'status', lambda self: {'state': 'READY', 'owned': True})
+    monkeypatch.setattr(child._LocalManifestQuery, 'start_failure_observed', lambda self: False)
+
+    def close_adapter(self):
+        close_calls.append(1)
+        adapter_closed.set()
+        if unproven_owner and not release_service.is_set():
+            return {'state': 'HOLD', 'owned': True}
+        release_service.set()
+        return {'state': 'STOPPED', 'owned': False}
+
+    monkeypatch.setattr(child._LocalManifestQuery, 'close', close_adapter)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+
+    class Service:
+        def start(self): service_started.set()
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, timeout):
+            return {'state': 'STOPPED' if release_service.is_set() else 'HOLD'}
+
+    class Input:
+        def read(self, size):
+            assert service_started.wait(3)
+            return b''
+
+    monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kwargs: 'synthetic')
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    result, output = [], io.BytesIO()
+    def run():
+        result.append(child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+            bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+            policy_sha256='b' * 64, approval_reference_sha256='c' * 64))
+    owner_thread = threading.Thread(target=run, daemon=True)
+    owner_thread.start()
+    try:
+        assert adapter_closed.wait(2), 'service HOLD blocked cooperative adapter close'
+        if unproven_owner:
+            assert owner_thread.is_alive(), 'unproven service must remain held'
+            assert b'"state":"STOPPED"' not in output.getvalue()
+            release_service.set()
+        owner_thread.join(3)
+        assert not owner_thread.is_alive()
+        assert result == [0]
+        if not unproven_owner:
+            assert len(close_calls) == 1, 'confirmed owner close must not be repeated'
+        assert [json.loads(line)['state'] for line in output.getvalue().splitlines()][-1] == 'STOPPED'
+    finally:
+        release_service.set()
+        owner_thread.join(4)
+        assert not owner_thread.is_alive(), 'synthetic owner did not close cooperatively'
+
+
+def test_cooperative_adapter_close_retains_busy_owner():
+    """Early cancellation never closes an owner while its query lock is held."""
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._lock = threading.Lock()
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1)
+    adapter._owner = owner
+    adapter._state = 'READY'
+    owner._lock.acquire()
+    try:
+        assert adapter.close() == {'state': 'BUSY', 'owned': None, 'authority': 'none'}
+        assert adapter._cancel.is_set()
+        assert adapter._state == 'HOLD'
+        assert adapter._owner is owner
+    finally:
+        owner._lock.release()
+
+
+@pytest.mark.parametrize('bad_clock', [float('nan'), float('inf'), -float('inf'), True, None, 'invalid'])
+def test_close_clock_invalid_values_disable_early_close(monkeypatch, bad_clock):
+    class Clock:
+        @staticmethod
+        def monotonic(): return bad_clock
+    monkeypatch.setattr(child, 'time', Clock())
+    assert child._local_service_close_clock() is None
+
+
+@pytest.mark.parametrize('fail_call', [1, 2])
+@pytest.mark.parametrize('failure', [KeyboardInterrupt, RuntimeError])
+def test_close_clock_failure_retains_service_until_confirmed(monkeypatch, fail_call, failure):
+    """A clock error cannot skip service ownership or report a false stop."""
+    import threading
+    import time
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+
+    class Clock:
+        calls = 0
+        @staticmethod
+        def sleep(seconds): time.sleep(seconds)
+        def monotonic(self):
+            self.calls += 1
+            if self.calls == fail_call:
+                raise failure('synthetic-clock-failure')
+            return time.monotonic()
+
+    monkeypatch.setattr(child, 'time', Clock())
+    monkeypatch.setattr(child, '_LOCAL_SERVICE_CLOSE_GRACE_SECONDS', 0.05)
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    started, close_seen, release, adapter_closed = (threading.Event() for _ in range(4))
+    adapter = object.__new__(child._LocalManifestQuery)
+    adapter._owner = object()
+    monkeypatch.setattr(child._LocalManifestQuery, 'start', lambda self: {'state': 'STARTING'})
+    monkeypatch.setattr(child._LocalManifestQuery, 'status', lambda self: {'state': 'READY', 'owned': True})
+    monkeypatch.setattr(child._LocalManifestQuery, 'start_failure_observed', lambda self: False)
+    def close_adapter(self):
+        adapter_closed.set()
+        return {'state': 'STOPPED', 'owned': False}
+    monkeypatch.setattr(child._LocalManifestQuery, 'close', close_adapter)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+
+    class Service:
+        def start(self): started.set()
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, timeout):
+            close_seen.set()
+            return {'state': 'STOPPED' if release.is_set() else 'HOLD'}
+    class Input:
+        def read(self, size):
+            assert started.wait(3)
+            return b''
+    monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kwargs: 'synthetic')
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    result, output = [], io.BytesIO()
+    def run():
+        result.append(child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+            bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+            policy_sha256='b' * 64, approval_reference_sha256='c' * 64))
+    owner_thread = threading.Thread(target=run, daemon=True)
+    owner_thread.start()
+    try:
+        assert close_seen.wait(3)
+        assert not adapter_closed.wait(0.6), 'clock failure must disable early adapter close'
+        assert owner_thread.is_alive()
+        assert b'"state":"STOPPED"' not in output.getvalue()
+        release.set()
+        owner_thread.join(3)
+        assert not owner_thread.is_alive()
+        assert adapter_closed.is_set()
+        assert result == [0]
+    finally:
+        release.set()
+        owner_thread.join(4)
+        assert not owner_thread.is_alive(), 'synthetic owner did not close cooperatively'
+
+
 def _seed(root, state=b'C'):
     root.mkdir()
     (root / MARKER).write_bytes(PREFIX + state)

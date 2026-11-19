@@ -31,6 +31,9 @@ synthetic_checkout_pins = _fixtures.synthetic_checkout_pins
 def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
         synthetic_checkout_pins, flat_consumer_case, monkeypatch, tmp_path, fault):
     package, original_owner, _proposals, original_snapshot, clock, _response = flat_consumer_case
+    # This synthetic bundle omits the pinned watcher module. Exercise real
+    # source-budget accounting here; verified loader coverage is separate.
+    monkeypatch.setattr(runtime._PrivateBinding, '_snapshot_support', lambda _self: package)
     snapshot = dict(original_snapshot, messages=dict(original_snapshot['messages']))
     source = Path(snapshot['messages']['source_path'])
     sidecar = Path(snapshot['messages']['generation_path'])
@@ -63,9 +66,10 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
     policy_pin = reader._sha(snapshot['identifier_policy_binding'][0])
     old_binding = owner._binding
     old_binding._PrivateBinding__bundle = Path(original_owner._root)
-    old_binding._PrivateBinding__manifest = original_owner._pin
+    manifest_pin = reader._sha((Path(original_owner._root) / 'deployment-manifest.json').read_bytes())
+    old_binding._PrivateBinding__manifest = manifest_pin
     old_binding._PrivateBinding__policy_pin = policy_pin
-    new_binding = runtime._PrivateBinding(snapshot, Path(original_owner._root), original_owner._pin,
+    new_binding = runtime._PrivateBinding(snapshot, Path(original_owner._root), manifest_pin,
                                          old_binding._PrivateBinding__controls, {}, policy_pin)
     memory = runtime._PrivateFlatMemory(new_binding, snapshot, flat_bytes, gate._ids, gate._vectors, gate._encoder)
     class Adapter:

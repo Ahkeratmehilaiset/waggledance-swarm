@@ -15,7 +15,9 @@ from tools import wd_mind_runtime_bootstrap as bootstrap
 
 @pytest.fixture(autouse=True)
 def _restore_cache_env(monkeypatch):
-    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+    # Record an initially absent key before _args assigns it directly.
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "")
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR")
 
 
 def _args(root):
@@ -291,3 +293,23 @@ def test_wrong_worker_pin_fails_before_worker_exec(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="worker_pin_mismatch"):
         bootstrap._load_e5_worker("0" * 64)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("initial", [None, "synthetic-original-cache-value"])
+def test_restore_cache_env_tracks_initial_presence(monkeypatch, tmp_path, initial):
+    key = "TORCHINDUCTOR_CACHE_DIR"
+    if initial is None:
+        monkeypatch.delenv(key, raising=False)
+    else:
+        monkeypatch.setenv(key, initial)
+    local_patch = pytest.MonkeyPatch()
+    try:
+        _restore_cache_env.__wrapped__(local_patch)
+        _args(tmp_path / "synthetic-runtime")
+    finally:
+        local_patch.undo()
+    if initial is None:
+        if key in os.environ:
+            pytest.fail("initially absent cache environment variable leaked")
+    else:
+        assert os.environ.get(key) == initial

@@ -2988,11 +2988,20 @@ if mode in ('rewrite', 'rotation'):
             os.replace(replacement, path)
         return result
     prefix.observe_prefix = changed
-if mode in ('refresh_real_delivery', 'refresh_real_delivery_error_adapter'):
+if mode in ('refresh_real_delivery', 'refresh_real_delivery_error_adapter',
+            'refresh_real_delivery_error_adapter_boundary_early',
+            'refresh_real_delivery_error_adapter_boundary_late'):
     import datetime
     path = pathlib.Path(sys.argv[3]); rows = path.read_bytes().splitlines()
     event = json.loads(rows[0])
-    event['ts_utc'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=1)).isoformat()
+    boundary_instant = None
+    if mode.endswith(('boundary_early', 'boundary_late')):
+        boundary_instant = datetime.datetime.now(datetime.timezone.utc).replace(
+            second=0, microsecond=500000 if mode.endswith('early') else 100000)
+        if mode.endswith('late'):
+            boundary_instant += datetime.timedelta(seconds=1)
+    event_base = boundary_instant if boundary_instant is not None else datetime.datetime.now(datetime.timezone.utc)
+    event['ts_utc'] = (event_base - datetime.timedelta(minutes=2)).isoformat()
     rows[0] = json.dumps(event, sort_keys=True, separators=(',', ':')).encode()
     path.write_bytes(b'\n'.join(rows) + b'\n')
 if mode == 'policy_during':
@@ -3100,6 +3109,21 @@ try:
         if mode.startswith('refresh_real_delivery_error_'):
             import traceback
             fault = mode.removeprefix('refresh_real_delivery_error_')
+            if fault in ('adapter_boundary_early', 'adapter_boundary_late'):
+                # Freeze only this synthetic child's reader clock on either side
+                # of the one-second availability fence at a minute boundary.
+                import types
+                instant = boundary_instant
+                original_datetime = reader.dt
+                class BoundaryDateTime(original_datetime.datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+                synthetic_clock = types.SimpleNamespace(**vars(original_datetime))
+                synthetic_clock.datetime = BoundaryDateTime
+                reader.dt = synthetic_clock
+                runtime.reader.dt = synthetic_clock
+                fault = 'adapter'
             nonce = 'd' * 64
             request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
                        'nonce':nonce,'lane':'codex-lead-1','scope':'own'}
@@ -3109,7 +3133,10 @@ try:
                 path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
             elif fault == 'manifest': (root / 'deployment-manifest.json').write_bytes(b'{}')
             elif fault == 'adapter':
-                def fail_query(text): raise ValueError('synthetic-secret-marker')
+                adapter_query_calls = []
+                def fail_query(text):
+                    adapter_query_calls.append(text)
+                    raise ValueError('synthetic-secret-marker')
                 owner._adapter.query = fail_query
             elif fault == 'bad_request': request['schema'] = 'wd.synthetic-invalid.v1'
             elif fault == 'size': limit = 1
@@ -3123,6 +3150,8 @@ try:
                     expected_identifier_policy_sha256=caller_pin, max_total_bytes=limit)
                 print(json.dumps({'result':'unexpected_success'})); sys.exit(0)
             except runtime.FullRuntimeRefused as exc:
+                if fault == 'adapter':
+                    assert len(adapter_query_calls) == 1
                 trace = traceback.TracebackException.from_exception(exc, capture_locals=True)
                 frame = next(item for item in trace.stack if item.name == '_prepare_consistent_delivery')
                 shown = ' '.join((frame.locals or {}).values())
@@ -4305,6 +4334,12 @@ def test_generation_delivery_real_worker_failure_preserves_hold_and_private_loca
 def test_generation_delivery_integrity_failure_differs_from_user_refusal(synthetic_bundle, fault, state):
     assert invoke(synthetic_bundle, 'refresh_real_delivery_error_' + fault) == {
         'result':'refused', 'state':state, 'clean':True}
+
+
+@pytest.mark.parametrize('edge', ['early', 'late'])
+def test_generation_adapter_failure_holds_at_minute_availability_boundary(synthetic_bundle, edge):
+    assert invoke(synthetic_bundle, 'refresh_real_delivery_error_adapter_boundary_' + edge) == {
+        'result':'refused', 'state':'HOLD', 'clean':True}
 
 
 @pytest.mark.parametrize('scenario', ['package_owner_build_multibatch', 'package_owner_build_append'])

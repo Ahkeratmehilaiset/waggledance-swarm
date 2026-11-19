@@ -78,6 +78,14 @@ def test_mind_vector_cache_is_packaged_and_smoke_imported_without_entrypoint():
     assert path not in definition['python_entrypoints'].values()
 
 
+def test_mind_startup_delivery_is_packaged_as_a_pinned_internal_module():
+    definition = _definition()
+    path = 'tools/wd_mind_startup_delivery.py'
+    assert definition['python_files'].count(path) == 1
+    assert definition['import_smoke']['package_modules'].count('tools.wd_mind_startup_delivery') == 1
+    assert path not in definition['python_entrypoints'].values()
+
+
 def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
     definition = _definition()
     capability = definition["manual_execution_capability"]

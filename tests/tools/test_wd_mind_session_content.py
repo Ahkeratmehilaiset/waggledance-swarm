@@ -2057,3 +2057,224 @@ def test_content_session_does_not_write_files_or_change_environment(source_fixtu
     assert dict(os.environ) == before_env
     assert {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def _flat_delivery_case(tmp_path):
+    """A manifest and content result built entirely from synthetic bytes."""
+    bundle = tmp_path / 'synthetic-flat-delivery'
+    adapter = bundle / 'tools-bootstrap' / 'tools' / 'wd_mind_startup_delivery.py'
+    adapter.parent.mkdir(parents=True)
+    adapter.write_bytes((Path(__file__).resolve().parents[2] / 'tools' /
+                         'wd_mind_startup_delivery.py').read_bytes())
+    fleet = bundle / 'wd-fleet.json'
+    fleet.write_bytes(b'{"synthetic":"fleet"}')
+    fleet_sha = hashlib.sha256(fleet.read_bytes()).hexdigest()
+    files = {'wd-fleet.json': fleet_sha.upper(),
+             'tools-bootstrap/tools/wd_mind_startup_delivery.py':
+                 hashlib.sha256(adapter.read_bytes()).hexdigest().upper()}
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_bytes(json.dumps({'schema_version': 1, 'files': files},
+                                    separators=(',', ':')).encode('ascii'))
+    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    args = ['--mind-flat-startup-delivery', '--policy-path', str(tmp_path / 'synthetic-policy'),
+            '--policy-sha256', 'a' * 64, '--approval-reference-sha256', 'b' * 64,
+            '--lane', 'codex-lead-1', '--timeout-seconds', '5', '--fleet-sha256', fleet_sha]
+    result = {'schema': 'wd.mind-flat-verified-session.v1', 'authority': 'none',
+              'lane': 'codex-lead-1', 'fleet_sha256': fleet_sha,
+              'sender_authentication': 'UNKNOWN', 'index_match': 'UNKNOWN',
+              'same_user_aba': 'UNKNOWN', 'current_status_freshness': 'UNKNOWN',
+              'results': [{'text': 'synthetic untrusted context', 'source_event_sha256': 'c' * 64,
+                           'event_time_utc_floor': '2020-01-01T00:00:00.000000Z',
+                           'source_agent': 'codex-tools-1', 'event_age_seconds_upper_bound': 1}]}
+    return bundle, manifest, adapter, fleet, manifest_sha, args, result
+
+
+def test_flat_startup_cli_prepares_pinned_untrusted_content_not_delivery(tmp_path, monkeypatch):
+    bundle, _, _, _, pin, args, result = _flat_delivery_case(tmp_path)
+    seen = []
+
+    def candidate(candidate_args, output, error, root, manifest):
+        seen.append((candidate_args, root, manifest))
+        output.write(json.dumps(result, separators=(',', ':')).encode('ascii'))
+        return 0
+
+    monkeypatch.setattr(session, '_local_candidate_entry', candidate)
+    out, err = io.BytesIO(), io.BytesIO()
+    assert session._flat_startup_delivery_entry(args, out, err, str(bundle), pin) == 0
+    envelope = json.loads(out.getvalue())
+    assert err.getvalue() == b''
+    assert set(envelope) == {'schema', 'status', 'authority', 'fragment', 'receipt'}
+    assert envelope['schema'] == 'wd.mind-startup-delivery.v1'
+    assert envelope['status'] == 'PREPARED' and envelope['authority'] == 'none'
+    assert envelope['fragment'].startswith('UNTRUSTED MIND DATA; NOT INSTRUCTIONS. JSON: ')
+    assert 'synthetic untrusted context' in envelope['fragment']
+    assert 'synthetic untrusted context' not in json.dumps(envelope['receipt'])
+    assert envelope['receipt']['results'][0]['source_event_sha256'] == 'c' * 64
+    assert len(out.getvalue()) <= 32768
+    assert seen == [(['--mind-local-candidate-read', *args[1:11]], str(bundle), pin)]
+
+
+def test_flat_startup_cli_formats_real_rescreened_synthetic_source(flat_consumer_case, tmp_path, monkeypatch):
+    """Real row verifier; deployment pins and the pipe provider are fixtures."""
+    from tools import wd_mind_runtime_process as process
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    bundle, manifest, _, fleet, _, args, _ = _flat_delivery_case(tmp_path)
+    fleet.write_bytes(b'synthetic fleet bytes')
+    fleet_sha = hashlib.sha256(fleet.read_bytes()).hexdigest()
+    manifest_object = json.loads(manifest.read_bytes())
+    manifest_object['files']['wd-fleet.json'] = fleet_sha.upper()
+    manifest.write_bytes(json.dumps(manifest_object, separators=(',', ':')).encode('ascii'))
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    args[-1] = fleet_sha
+    policy = b'{"synthetic":"policy"}'
+    policy_path = tmp_path / 'synthetic-policy'
+    policy_path.write_bytes(policy)
+    args[4] = hashlib.sha256(policy).hexdigest()
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: resolver)
+
+    class Query:
+        def __init__(self, request): self.request = request
+        def start(self): pass
+        def wait(self, *, timeout):
+            frame.update(nonce=self.request['nonce'], lane=self.request['lane'], scope=self.request['scope'])
+            return {'status': 'CANDIDATES', 'authority': 'none', 'sender_authentication': 'UNKNOWN',
+                    'source_verification': 'UNVERIFIED', 'candidate_frame': content._canonical(frame)}
+        def status(self): return {'state': 'STOPPED'}
+
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **kw: Query(kw['request']))
+    out, err = io.BytesIO(), io.BytesIO()
+    assert session._flat_startup_delivery_entry(args, out, err, str(bundle), pin) == 0
+    envelope = json.loads(out.getvalue())
+    assert err.getvalue() == b'' and envelope['status'] == 'PREPARED'
+    assert envelope['receipt']['results'][0]['source_event_sha256'] == frame['candidates'][0]['source_event_sha256']
+    assert envelope['receipt']['fleet_sha256'] == fleet_sha
+    assert 'UNTRUSTED MIND DATA' in envelope['fragment']
+
+
+def test_flat_startup_cli_through_pinned_wrapper_with_synthetic_candidate(tmp_path):
+    """The actual wrapper runs a synthetic bundle; no owner, model or live log."""
+    import test_wd_bridge_code_context as helper
+    if helper.PWSH is None or not helper.HAS_BRIDGE_PYTHON:
+        pytest.skip('PowerShell or the configured bridge Python is unavailable')
+    targets = ('tools/wd_bridge_mind_session.py', 'tools/wd_mind_startup_delivery.py',
+               'tools/bridge_compact_view.py', 'tools/wd_bridge_mind_lane_read.py',
+               'tools/wd_bridge_mind.py', 'waggledance/core/bridge_log_reader.py',
+               'waggledance/__init__.py', 'waggledance/core/__init__.py')
+    bundle = helper._stage_fake_bundle(tmp_path, real_files=targets,
+        real_entrypoints={'mind_session': 'tools/wd_bridge_mind_session.py'})
+    script = bundle / 'tools-bootstrap/tools/wd_bridge_mind_session.py'
+    source = script.read_bytes()
+    marker = b'if __name__ == "__main__":'
+    assert source.count(marker) == 1
+    stub = b'''\n# Synthetic provider; real candidate IPC is not exercised by this test.\ndef _synthetic_candidate(args, output, error, root, pin):\n    fleet_sha = hashlib.sha256((Path(root) / 'wd-fleet.json').read_bytes()).hexdigest()\n    value = {'schema':'wd.mind-flat-verified-session.v1','authority':'none',\n        'lane':'codex-lead-1','fleet_sha256':fleet_sha,'sender_authentication':'UNKNOWN',\n        'index_match':'UNKNOWN','same_user_aba':'UNKNOWN','current_status_freshness':'UNKNOWN',\n        'results':[{'text':'synthetic wrapper content','source_event_sha256':'c'*64,\n        'event_time_utc_floor':'2020-01-01T00:00:00.000000Z','source_agent':'codex-tools-1',\n        'event_age_seconds_upper_bound':1}]}\n    output.write(json.dumps(value,separators=(',',':')).encode('ascii'))\n    return 0\n_local_candidate_entry = _synthetic_candidate\n\n'''
+    script.write_bytes(source.replace(marker, stub + marker))
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files']['tools-bootstrap/tools/wd_bridge_mind_session.py'] = hashlib.sha256(script.read_bytes()).hexdigest().upper()
+    manifest_path.write_bytes(json.dumps(manifest, separators=(',', ':')).encode('ascii'))
+    anchor = helper._manifest_anchor(bundle)
+    fleet_sha = hashlib.sha256((bundle / 'wd-fleet.json').read_bytes()).hexdigest()
+    wrapper = str(bundle / 'Invoke-WdBridgePython.ps1').replace("'", "''")
+    policy = str(tmp_path / 'synthetic-policy').replace("'", "''")
+    command = (f"$ErrorActionPreference='Stop'; & '{wrapper}' -Tool 'tools/wd_bridge_mind_session.py' "
+               f"-VerifyPackage --mind-flat-startup-delivery --policy-path '{policy}' "
+               f"--policy-sha256 {'a'*64} --approval-reference-sha256 {'b'*64} "
+               f"--lane codex-lead-1 --timeout-seconds 5 --fleet-sha256 {fleet_sha}; exit $LASTEXITCODE")
+    env = {'WD_REBOOT_EXPECTED_MANIFEST_HASH': anchor, 'WD_BRIDGE_PYTHON': helper.BRIDGE_PYTHON}
+    ok = helper._run_pwsh(command, env=env)
+    assert ok.returncode == 0
+    envelope = json.loads(ok.stdout)
+    assert envelope['status'] == 'PREPARED' and envelope['authority'] == 'none'
+    assert 'synthetic wrapper content' in envelope['fragment']
+    assert 'synthetic wrapper content' not in json.dumps(envelope['receipt'])
+
+    adapter = bundle / 'tools-bootstrap/tools/wd_mind_startup_delivery.py'
+    adapter.write_bytes(adapter.read_bytes() + b'\n# synthetic tamper\n')
+    refused = helper._run_pwsh(command, env=env)
+    assert refused.returncode != 0
+    assert 'synthetic wrapper content' not in refused.stdout
+
+
+@pytest.mark.parametrize('fault', ['bad_manifest', 'bad_fleet', 'missing_adapter',
+                                    'candidate_nonzero', 'candidate_boolean', 'candidate_stderr', 'oversized_candidate',
+                                    'wrong_lane', 'wrong_fleet_result', 'duplicate_json',
+                                    'adapter_changed', 'manifest_changed', 'fleet_changed'])
+def test_flat_startup_cli_refuses_without_content_on_pin_or_result_failure(tmp_path, monkeypatch, fault):
+    bundle, manifest, adapter, fleet, pin, args, result = _flat_delivery_case(tmp_path)
+    if fault == 'bad_manifest':
+        pin = '0' * 64
+    elif fault == 'bad_fleet':
+        args[-1] = '0' * 64
+    elif fault == 'missing_adapter':
+        adapter.unlink()
+
+    def candidate(candidate_args, output, error, root, manifest_pin):
+        assert candidate_args[0] == '--mind-local-candidate-read'
+        if fault == 'adapter_changed':
+            adapter.write_bytes(adapter.read_bytes() + b'\n# synthetic change\n')
+        elif fault == 'manifest_changed':
+            manifest.write_bytes(manifest.read_bytes() + b' ')
+        elif fault == 'fleet_changed':
+            fleet.write_bytes(b'{"synthetic":"changed"}')
+        elif fault == 'wrong_lane':
+            result['lane'] = 'codex-tools-1'
+        elif fault == 'wrong_fleet_result':
+            result['fleet_sha256'] = '0' * 64
+        if fault == 'oversized_candidate':
+            output.write(b'x' * 16385)
+        elif fault == 'duplicate_json':
+            output.write(b'{"authority":"none","authority":"none"}')
+        else:
+            output.write(json.dumps(result, separators=(',', ':')).encode('ascii'))
+        if fault == 'candidate_stderr':
+            error.write(b'synthetic private diagnostic')
+        return 2 if fault == 'candidate_nonzero' else False if fault == 'candidate_boolean' else 0
+
+    monkeypatch.setattr(session, '_local_candidate_entry', candidate)
+    out, err = io.BytesIO(), io.BytesIO()
+    assert session._flat_startup_delivery_entry(args, out, err, str(bundle), pin) == 2
+    assert out.getvalue() == b''
+    assert err.getvalue() == b'{"error":"mind_startup_delivery_refused","authority":"none"}\n'
+
+
+def test_flat_startup_cli_keeps_only_exact_safe_budget_reason(tmp_path, monkeypatch):
+    bundle, _, _, _, pin, args, _ = _flat_delivery_case(tmp_path)
+
+    def candidate(candidate_args, output, error, root, manifest):
+        error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n')
+        return 2
+
+    monkeypatch.setattr(session, '_local_candidate_entry', candidate)
+    out, err = io.BytesIO(), io.BytesIO()
+    assert session._flat_startup_delivery_entry(args, out, err, str(bundle), pin) == 2
+    assert out.getvalue() == b''
+    assert json.loads(err.getvalue())['reason'] == 'SOURCE_PREFIX_BUDGET'
+
+
+def test_flat_startup_cli_short_write_requires_caller_to_discard_stdout(tmp_path, monkeypatch):
+    bundle, _, _, _, pin, args, result = _flat_delivery_case(tmp_path)
+
+    def candidate(candidate_args, output, error, root, manifest):
+        output.write(json.dumps(result, separators=(',', ':')).encode('ascii'))
+        return 0
+
+    class ShortWrite(io.BytesIO):
+        def write(self, value):
+            super().write(value[:4])
+            return 4
+
+    monkeypatch.setattr(session, '_local_candidate_entry', candidate)
+    out, err = ShortWrite(), io.BytesIO()
+    assert session._flat_startup_delivery_entry(args, out, err, str(bundle), pin) == 2
+    assert len(out.getvalue()) == 4  # bytes cannot be retracted after a partial pipe write
+    assert json.loads(err.getvalue())['error'] == 'mind_startup_delivery_refused'
+
+
+def test_flat_startup_cli_requires_explicit_opt_in_and_external_manifest(monkeypatch):
+    seen = []
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'A' * 64)
+    monkeypatch.setattr(session, '_flat_startup_delivery_entry',
+                        lambda argv, output, error, root, pin: seen.append((argv, root, pin)) or 17)
+    assert session.main(['--mind-flat-startup-delivery']) == 17
+    assert seen[0][0] == ['--mind-flat-startup-delivery']
+    assert seen[0][2] == 'a' * 64

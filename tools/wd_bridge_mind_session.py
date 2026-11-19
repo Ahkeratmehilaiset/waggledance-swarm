@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import importlib.util
+import io
 import json
 import math
 import os
@@ -1675,9 +1676,112 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
             raise interrupted
 
 
+def _flat_startup_delivery_entry(argv, output, error, bundle_root, manifest_pin):
+    """Prepare an untrusted fragment; the caller must gate delivery on EOF/exit.
+
+    This opt-in path does not start an owner or authenticate its caller.  It is
+    synchronous: an external controller must bound the *entire* child process,
+    including manifest and filesystem preflight, and retain any timed-out child.
+    A successful return means prepared output, never model-context delivery.
+    """
+    raw = None
+    reason = None
+    try:
+        names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256',
+                 '--lane', '--timeout-seconds', '--fleet-sha256'}
+        if len(argv) != 13 or argv[0] != '--mind-flat-startup-delivery':
+            raise ValueError('args')
+        pairs = list(zip(argv[1::2], argv[2::2]))
+        if len(pairs) != 6 or {key for key, _ in pairs} != names:
+            raise ValueError('args')
+        args = dict(pairs)
+        if (type(manifest_pin) is not str or not _SHA256.fullmatch(manifest_pin)
+                or not _SHA256.fullmatch(args['--fleet-sha256'])):
+            raise ValueError('anchor')
+        root, files = _selected_manifest(bundle_root, manifest_pin)
+        if _selected_manifest_file_pin(files, 'wd-fleet.json') != args['--fleet-sha256']:
+            raise ValueError('fleet_pin')
+        _selected_pin_read(root / 'wd-fleet.json', args['--fleet-sha256'], _FLEET_LIMIT)
+        relative = 'tools-bootstrap/tools/wd_mind_startup_delivery.py'
+        adapter_path = root.joinpath(*relative.split('/'))
+        adapter_pin = _selected_manifest_file_pin(files, relative)
+        adapter_source = _selected_pin_read(adapter_path, adapter_pin, 1024 * 1024)
+
+        # Buffer the existing verified reader's output.  Its exit code is not
+        # itself a delivery receipt, and diagnostics never carry policy bytes.
+        class BoundedCapture(io.BytesIO):
+            def __init__(self, maximum):
+                super().__init__()
+                self.maximum = maximum
+
+            def write(self, data):
+                if type(data) is not bytes or self.tell() + len(data) > self.maximum:
+                    raise ValueError('capture_limit')
+                return super().write(data)
+
+        candidate_output, candidate_error = BoundedCapture(16384), BoundedCapture(1024)
+        candidate_args = ['--mind-local-candidate-read']
+        for name in ('--policy-path', '--policy-sha256', '--approval-reference-sha256',
+                     '--lane', '--timeout-seconds'):
+            candidate_args.extend((name, args[name]))
+        candidate_code = _local_candidate_entry(candidate_args, candidate_output, candidate_error,
+                                                str(root), manifest_pin)
+        if (type(candidate_code) is not int or candidate_code != 0 or candidate_error.getvalue()):
+            if (candidate_code == 2 and candidate_error.getvalue() ==
+                    b'{"error":"mind_session_content_refused","reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n'):
+                reason = 'SOURCE_PREFIX_BUDGET'
+            raise ValueError('candidate')
+        raw = candidate_output.getvalue()
+        if not 0 < len(raw) <= 16384:
+            raise ValueError('candidate')
+
+        # Execute only the manifest-pinned source bytes; do not use import hooks
+        # or a stale bytecode cache. Recheck the manifest and file after the
+        # source read, and once more before making any output available.
+        _selected_manifest(bundle_root, manifest_pin)
+        if _selected_pin_read(adapter_path, adapter_pin, 1024 * 1024) != adapter_source:
+            raise ValueError('adapter_changed')
+        namespace = {'__name__': '_wd_mind_pinned_startup_delivery'}
+        exec(compile(adapter_source, str(adapter_path), 'exec', dont_inherit=True), namespace)
+        formatted = namespace['format_startup_delivery'](
+            raw, expected_lane=args['--lane'], expected_fleet_sha256=args['--fleet-sha256'],
+            expected_result_sha256=hashlib.sha256(raw).hexdigest(), verified_at_utc=datetime.now(timezone.utc))
+        envelope = {'schema': 'wd.mind-startup-delivery.v1', 'status': 'PREPARED',
+                    'authority': 'none', 'fragment': formatted['fragment'], 'receipt': formatted['receipt']}
+        encoded = json.dumps(envelope, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
+                             allow_nan=False).encode('ascii')
+        if not 0 < len(encoded) <= 32768:
+            raise ValueError('output')
+        _selected_manifest(bundle_root, manifest_pin)
+        _selected_pin_read(adapter_path, adapter_pin, 1024 * 1024)
+        _selected_pin_read(root / 'wd-fleet.json', args['--fleet-sha256'], _FLEET_LIMIT)
+        if output.write(encoded) != len(encoded):
+            raise ValueError('output')
+        output.flush()
+        return 0
+    except Exception:
+        # A caller must discard all buffered stdout on any error, missing EOF,
+        # timeout, or nonzero exit; the stream cannot retract a short write.
+        try:
+            if reason == 'SOURCE_PREFIX_BUDGET':
+                error.write(b'{"error":"mind_startup_delivery_refused","reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n')
+            else:
+                error.write(b'{"error":"mind_startup_delivery_refused","authority":"none"}\n')
+            error.flush()
+        except Exception:
+            pass
+        return 2
+    finally:
+        raw = None
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    if '--mind-flat-startup-delivery' in argv:
+        pin = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
+        root = str(Path(__file__).absolute().parents[2])
+        return _flat_startup_delivery_entry(argv, sys.stdout.buffer, sys.stderr.buffer, root, pin)
     if '--mind-local-candidate-read' in argv or '--mind-local-candidate-read-controlled' in argv:
         pin = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         root = str(Path(__file__).absolute().parents[2])

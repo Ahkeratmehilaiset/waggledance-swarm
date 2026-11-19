@@ -33,7 +33,7 @@ _FIELDS = frozenset(("source_identity_sha256", "source_generation_sha256", "pref
                      "prefix_sha256", "model_sha256", "policy_sha256", "projection_code_sha256",
                      "projection_sha256"))
 _ROW_SIZE = 64 + 384 * 4
-_MAX_ROWS = 65536
+_MAX_ROWS = 250000
 _MAX_HEADER = 8192
 _MAGIC = b"WDMVC1\n"
 _CACHE_ROOT = Path(r"C:\wd-mind-private\vector-cache")

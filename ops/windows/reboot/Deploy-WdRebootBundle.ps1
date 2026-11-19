@@ -36,6 +36,8 @@ param(
     # Explicit, optional startup configuration; omission does not enable or
     # stage a content-read path. The policy itself remains outside the bundle.
     [switch] $EnableMindStartupContent,
+    # Independent operator opt-in. A read-only content descriptor never starts an owner.
+    [switch] $EnableMindOwnerAutomation,
     # This is an independently operator-approved policy digest, not a digest
     # inferred from the file at installation time.
     [string] $ExpectedMindIdentifierPolicySha256 = '',
@@ -576,6 +578,58 @@ function Add-WdMindStartupConfigDescriptor {
     $SourceHashes[$name] = $hash.ToUpperInvariant()
     $SourcePaths[$name] = $path
     Assert-WdMindPolicyApprovalInput $Approval
+}
+
+function Add-WdMindOwnerAutomationDescriptor {
+    param([switch] $Enabled, $RuntimeDescriptors, [string] $SourceCommit,
+          $SourceHashes, $SourcePaths, [string] $StagingRoot)
+    $name = 'wd-mind-owner-automation.json'
+    if ($SourceHashes.Contains($name) -or $SourcePaths.Contains($name)) {
+        throw 'Mind owner automation descriptor already exists'
+    }
+    if (-not $Enabled) { return }
+    if ($SourceCommit -cnotmatch '\A[0-9a-f]{40}\z' -or $null -eq $RuntimeDescriptors) {
+        throw 'Mind owner automation requires source-bound runtime descriptors'
+    }
+    foreach ($required in @('wd-mind-runtime-manifest.json', 'wd-mind-interpreter-identity.json',
+                            'wd-mind-e5-encoder-binding.json', 'wd-mind-runtime-location.json',
+                            'wd-mind-message-policy.json', 'wd-mind-startup-config.json',
+                            'Start-WdMindOwnerSupervisor.ps1', 'Start-WdMindOwnerHost.ps1',
+                            'Start-WdMindManualOwner.ps1', 'Invoke-WdBridgePython.ps1',
+                            'tools-bootstrap/tools/wd_mind_runtime_child.py', 'start-wd-agent.ps1',
+                            'wd-fleet.json', 'Start-WdMindStatusController.ps1',
+                            'Invoke-WdMindStartupRead.ps1', 'Start-WdMindContentController.ps1',
+                            'Invoke-WdMindContentStartupRead.ps1',
+                            'tools-bootstrap/tools/wd_bridge_mind_session.py',
+                            'tools-bootstrap/tools/wd_mind_startup_delivery.py')) {
+        if (-not $SourceHashes.Contains($required) -or -not $SourcePaths.Contains($required) -or
+            [string]$SourceHashes[$required] -cnotmatch '\A[0-9A-Fa-f]{64}\z') {
+            throw 'Mind owner automation requires its pinned code, approved content configuration and runtime descriptors'
+        }
+    }
+    $config = Read-WdMindRuntimeFileSnapshot -Path ([string]$SourcePaths['wd-mind-startup-config.json']) -Limit 16384
+    if ($config.Hash -cne ([string]$SourceHashes['wd-mind-startup-config.json']).ToLowerInvariant()) {
+        throw 'Mind owner automation startup configuration changed'
+    }
+    [void](Assert-WdPathWithoutReparse -Path $StagingRoot -TrustedRoot 'C:\' -ExpectedType Directory)
+    $descriptor = [ordered]@{
+        schema = 'wd.mind-owner-automation.v1'
+        enabled = $true
+        agent = 'codex-lead-1'
+        source_commit = $SourceCommit
+        startup_config_sha256 = $config.Hash
+    }
+    $bytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes((ConvertTo-Json -InputObject $descriptor -Compress))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    $path = Join-Path $StagingRoot $name
+    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+    $staged = Read-WdMindRuntimeFileSnapshot -Path $path -Limit 16384
+    if ($staged.Hash -cne $hash) { throw 'Mind owner automation descriptor staging hash differs' }
+    $SourceHashes[$name] = $hash.ToUpperInvariant()
+    $SourcePaths[$name] = $path
 }
 
 function Assert-ChildPath {
@@ -1572,6 +1626,9 @@ if ($EnableMindStartupContent -and ($ExpectedMindIdentifierPolicySha256 -cnotmat
 if (-not $EnableMindStartupContent -and $ExpectedMindIdentifierPolicySha256 -cne '') {
     throw 'Mind startup policy pin requires explicit enablement'
 }
+if ($EnableMindOwnerAutomation -and (-not $EnableMindStartupContent -or $null -eq $mindRuntimeDescriptors -or $null -eq $mindPolicyApproval)) {
+    throw 'Mind owner automation requires separately approved startup content and runtime descriptors'
+}
 $manualFleetAgents = @()
 $manualActivation = $null
 if ($null -ne $manualApprovalText) {
@@ -1605,6 +1662,9 @@ Add-WdMindPolicyApprovalDescriptor -Approval $mindPolicyApproval -SourceHashes $
     -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
 Add-WdMindStartupConfigDescriptor -Enabled:$EnableMindStartupContent -Approval $mindPolicyApproval `
     -ExpectedPolicyHash $ExpectedMindIdentifierPolicySha256 -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
+    -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
+Add-WdMindOwnerAutomationDescriptor -Enabled:$EnableMindOwnerAutomation -RuntimeDescriptors $mindRuntimeDescriptors `
+    -SourceCommit $head -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
     -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
 foreach ($stagedName in @($bridgePythonStage.Wheels.Keys)) {
     $sourceHashes['tools-bootstrap/' + $stagedName] = [string]$bridgePythonStage.Wheels[$stagedName]

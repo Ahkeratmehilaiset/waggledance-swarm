@@ -18,6 +18,16 @@ IDENTITY = "wd-mind-interpreter-identity.json"
 ENCODER = "wd-mind-e5-encoder-binding.json"
 LOCATION = "wd-mind-runtime-location.json"
 MESSAGE_POLICY = "wd-mind-message-policy.json"
+OWNER_RUNTIME_FILES = (
+    'Start-WdMindOwnerSupervisor.ps1', 'Start-WdMindOwnerHost.ps1',
+    'Start-WdMindManualOwner.ps1', 'Invoke-WdBridgePython.ps1',
+    'tools-bootstrap/tools/wd_mind_runtime_child.py', 'start-wd-agent.ps1',
+    'wd-fleet.json', 'Start-WdMindStatusController.ps1',
+    'Invoke-WdMindStartupRead.ps1', 'Start-WdMindContentController.ps1',
+    'Invoke-WdMindContentStartupRead.ps1',
+    'tools-bootstrap/tools/wd_bridge_mind_session.py',
+    'tools-bootstrap/tools/wd_mind_startup_delivery.py',
+)
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows installer contract")
 
 
@@ -250,6 +260,155 @@ def test_startup_configuration_is_default_off(tmp_path):
     assert code == 0 and result['accepted'] and result['hashes'] == {}
     assert not list(stage.iterdir())
     assert 'wd-mind-startup-config.json' not in result['manifest']['files']
+
+
+def test_owner_automation_requires_a_separate_installer_opt_in():
+    # Read-only content configuration is not permission to launch an owner.
+    source = DEPLOY.read_text(encoding='utf-8')
+    assert '[switch] $EnableMindOwnerAutomation' in source
+    assert 'function Add-WdMindOwnerAutomationDescriptor' in source
+
+
+def _owner_automation_probe(tmp_path, *, enabled=True, fault='none'):
+    stage = tmp_path / 'stage'
+    stage.mkdir()
+    names = [RUNTIME, IDENTITY, ENCODER, LOCATION, MESSAGE_POLICY, 'wd-mind-startup-config.json',
+             *OWNER_RUNTIME_FILES]
+    source_lines = []
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps({'synthetic': name}).encode()
+        path.write_bytes(data)
+        if fault == 'missing_' + name:
+            continue
+        digest = hashlib.sha256(data).hexdigest().upper()
+        if fault == 'changed_config' and name == 'wd-mind-startup-config.json':
+            path.write_bytes(b'changed')
+        source_lines.append(f"$hashes[{_quote(name)}]='{digest}';$paths[{_quote(name)}]={_quote(path)}")
+    if fault == 'collision':
+        source_lines.append("$hashes['wd-mind-owner-automation.json']='occupied'")
+    script = tmp_path / 'owner-probe.ps1'
+    script.write_text(
+        "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+        f". {_quote(ROOT / '.agent-bridge/bin/BridgeLogReader.ps1')}\n"
+        "$tokens=$null;$errors=$null\n"
+        f"$ast=[Management.Automation.Language.Parser]::ParseFile({_quote(DEPLOY)},[ref]$tokens,[ref]$errors)\n"
+        "if($errors.Count){throw 'PARSE_FAILED'}\n"
+        "$names=@('Resolve-FullPath','Assert-WdPathWithoutReparse','Read-WdMindRuntimeFileSnapshot',"
+        "'Add-WdMindOwnerAutomationDescriptor')\n"
+        "foreach($name in $names){$f=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true));"
+        "if($f.Count -ne 1){throw 'HELPER_MISSING'};. ([scriptblock]::Create($f[0].Extent.Text))}\n"
+        "$hashes=[ordered]@{};$paths=[ordered]@{}\n"
+        + '\n'.join(source_lines) + '\n'
+        + "try {\n"
+        + (" $set=$null\n" if fault == 'missing_set' else " $set=[pscustomobject]@{synthetic=$true}\n")
+        + f" Add-WdMindOwnerAutomationDescriptor -Enabled:${str(enabled).lower()} -RuntimeDescriptors $set "
+        + f"-SourceCommit {_quote('x' * 40 if fault == 'bad_commit' else COMMIT)} -SourceHashes $hashes -SourcePaths $paths -StagingRoot {_quote(stage)}\n"
+        + " [ordered]@{accepted=$true;hashes=$hashes}|ConvertTo-Json -Compress -Depth 8\n"
+        + "} catch { [ordered]@{accepted=$false;reason=$_.Exception.Message}|ConvertTo-Json -Compress;exit 23 }\n", encoding='utf-8')
+    allowed = ('SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'PATH', 'PATHEXT', 'TEMP', 'TMP',
+               'USERPROFILE', 'LOCALAPPDATA', 'APPDATA')
+    env = {name: os.environ[name] for name in allowed if name in os.environ}
+    run = subprocess.run([str(POWERSHELL), '-NoProfile', '-NonInteractive', '-ExecutionPolicy',
+                          'Bypass', '-File', str(script)], stdin=subprocess.DEVNULL,
+                         capture_output=True, env=env, timeout=45)
+    assert run.stdout, run.stderr
+    return run.returncode, json.loads(run.stdout.decode('utf-8-sig').strip().splitlines()[-1]), stage
+
+
+def test_owner_automation_default_off_even_with_content(tmp_path):
+    code, result, stage = _owner_automation_probe(tmp_path, enabled=False)
+    assert code == 0 and result['accepted'], result
+    assert 'wd-mind-owner-automation.json' not in result['hashes']
+    assert not list(stage.iterdir())
+
+
+def test_owner_automation_descriptor_exact_bytes_and_manifest_pin(tmp_path):
+    code, result, stage = _owner_automation_probe(tmp_path)
+    assert code == 0 and result['accepted'], result
+    data = (stage / 'wd-mind-owner-automation.json').read_bytes()
+    config = (tmp_path / 'wd-mind-startup-config.json').read_bytes()
+    expected = {'schema': 'wd.mind-owner-automation.v1', 'enabled': True, 'agent': 'codex-lead-1',
+                'source_commit': COMMIT, 'startup_config_sha256': hashlib.sha256(config).hexdigest()}
+    assert data == json.dumps(expected, separators=(',', ':')).encode('utf-8')
+    assert result['hashes']['wd-mind-owner-automation.json'] == hashlib.sha256(data).hexdigest().upper()
+    assert config not in data
+
+
+@pytest.mark.parametrize('fault', ['missing_set', 'bad_commit', 'collision', 'changed_config',
+    *['missing_' + name for name in (RUNTIME, IDENTITY, ENCODER, LOCATION, MESSAGE_POLICY,
+                                     'wd-mind-startup-config.json', *OWNER_RUNTIME_FILES)]])
+def test_owner_automation_refuses_unbound_inputs_before_staging(tmp_path, fault):
+    code, result, stage = _owner_automation_probe(tmp_path, fault=fault)
+    assert code != 0 and not result['accepted']
+    assert not list(stage.iterdir())
+
+
+@pytest.mark.parametrize('staged,requested,wrong_pair,accepted', [
+    (False, False, False, True), (True, True, False, True),
+    (True, False, False, False), (False, True, False, False), (True, True, True, False),
+])
+def test_owner_automation_install_pair_and_file_set_refuse_mismatch(tmp_path, staged, requested, wrong_pair, accepted):
+    # Execute the installer's real manifest-file-set and final-pair guards on
+    # synthetic state. No installer, StageOnly, machine path, or process is run.
+    source = {'wd-mind-startup-config.json': 'A' * 64}
+    installed = dict(source)
+    if staged:
+        installed['wd-mind-owner-automation.json'] = 'B' * 64
+    if requested:
+        source['wd-mind-owner-automation.json'] = 'B' * 64
+    script = tmp_path / 'pair-probe.ps1'
+    source_json = json.dumps(source, separators=(',', ':'))
+    installed_json = json.dumps({'files': installed}, separators=(',', ':'))
+    script.write_text(
+        "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+        "$tokens=$null;$errors=$null\n"
+        f"$ast=[Management.Automation.Language.Parser]::ParseFile({_quote(DEPLOY)},[ref]$tokens,[ref]$errors)\n"
+        "if($errors.Count){throw 'PARSE_FAILED'}\n"
+        f"$installedManifest=ConvertFrom-Json {_quote(installed_json)}\n"
+        f"$entries=(ConvertFrom-Json {_quote(source_json)}).PSObject.Properties\n"
+        "$sourceHashes=[ordered]@{};foreach($entry in $entries){$sourceHashes[$entry.Name]=$entry.Value}\n"
+        f"$head='{COMMIT}';$ExpectedFinalCommit='{COMMIT}'\n"
+        f"$installedManifestHash={'A' * 64!r};$ExpectedFinalManifestHash={('B' if wrong_pair else 'A') * 64!r}\n"
+        "try {\n"
+        " $installedHashProperties=@($installedManifest.files.PSObject.Properties)\n"
+        " $count=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith('if ($installedHashProperties.Count -ne $sourceHashes.Count)')},$true))\n"
+        " $files=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Extent.Text.StartsWith('foreach ($name in $sourceHashes.Keys)') -and $n.Extent.Text.Contains('$installedProperty')},$true))\n"
+        " $pair=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.Contains('refusing to activate: the operator-pinned final pair')},$true))\n"
+        " if($count.Count -ne 1 -or $files.Count -ne 1 -or $pair.Count -ne 1){throw 'GUARD_MISSING'}\n"
+        " . ([scriptblock]::Create($count[0].Extent.Text));. ([scriptblock]::Create($files[0].Extent.Text));. ([scriptblock]::Create($pair[0].Extent.Text))\n"
+        " 'ACCEPTED'\n"
+        "} catch { if($_.Exception.Message -eq 'GUARD_MISSING'){throw};'REFUSED';exit 23 }\n", encoding='utf-8')
+    run = subprocess.run([str(POWERSHELL), '-NoProfile', '-NonInteractive', '-ExecutionPolicy',
+                          'Bypass', '-File', str(script)], stdin=subprocess.DEVNULL,
+                         capture_output=True, text=True, timeout=45)
+    assert ('ACCEPTED' in run.stdout) == accepted, run.stderr
+    assert run.returncode == (0 if accepted else 23)
+
+
+@pytest.mark.parametrize('owner,content,runtime,approval,accepted', [
+    (False, False, False, False, True), (False, True, True, True, True),
+    (True, True, True, True, True), (True, False, True, True, False),
+    (True, True, False, True, False), (True, True, True, False, False),
+])
+def test_owner_automation_installer_admission_guard(tmp_path, owner, content, runtime, approval, accepted):
+    script = tmp_path / 'admission-probe.ps1'
+    script.write_text(
+        "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+        "$tokens=$null;$errors=$null\n"
+        f"$ast=[Management.Automation.Language.Parser]::ParseFile({_quote(DEPLOY)},[ref]$tokens,[ref]$errors)\n"
+        f"$EnableMindOwnerAutomation=${str(owner).lower()};$EnableMindStartupContent=${str(content).lower()}\n"
+        f"$mindRuntimeDescriptors={'@{}' if runtime else '$null'};$mindPolicyApproval={'@{}' if approval else '$null'}\n"
+        " $guard=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith('if ($EnableMindOwnerAutomation -and')},$true))\n"
+        " if($errors.Count -or $guard.Count -ne 1){throw 'GUARD_MISSING'}\n"
+        " try { . ([scriptblock]::Create($guard[0].Extent.Text));'ACCEPTED' } catch { 'REFUSED';exit 23 }\n",
+        encoding='utf-8')
+    run = subprocess.run([str(POWERSHELL), '-NoProfile', '-NonInteractive', '-ExecutionPolicy',
+                          'Bypass', '-File', str(script)], stdin=subprocess.DEVNULL,
+                         capture_output=True, text=True, timeout=45)
+    assert ('ACCEPTED' in run.stdout) == accepted, run.stderr
+    assert run.returncode == (0 if accepted else 23)
 
 
 def test_startup_configuration_binds_only_path_and_approved_hashes(tmp_path):

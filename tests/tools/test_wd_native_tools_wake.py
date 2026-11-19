@@ -19,6 +19,146 @@ TOOLS = REBOOT / 'start-wd-tools-consumer.ps1'
 THREAD = '01a0a07b-ca98-71e1-90cb-d588435a2d8d'
 
 
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['late_success', 'queued', 'stdout_over', 'stderr_over'])
+def test_native_queue_bounded_streams_and_timeout_keep_ownership(ps, case):
+    """Exercise the actual send loop with in-memory streams and a synthetic process."""
+    source = TOOLS.read_text(encoding='utf-8')
+    start = source.index('function Send-WdNativeToolsQueueMessage {')
+    end = source.index('\nfunction Get-WdInlineNativeWakeMessage {', start)
+    send = source[start:end]
+    # Only the process factory and its clock budget are replaced. The actual
+    # stream loop, classifier, timeout and cleanup logic remain unchanged.
+    factory = 'function New-WdNativeQueueProcess { return (New-Object Diagnostics.Process) }'
+    timeout = 'function Get-WdNativeQueueTimeoutMilliseconds { return 30000 }'
+    assert send.count(factory) == send.count(timeout) == 1
+    send = send.replace(factory, 'function New-WdNativeQueueProcess { return (Get-SyntheticQueueProcess) }')
+    send = send.replace(timeout, 'function Get-WdNativeQueueTimeoutMilliseconds { return '
+                        + ('25' if case == 'late_success' else '5000') + ' }')
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(TOOLS, 'ConvertTo-WdToolsNativeArgument')
+    script += r'''
+$script:started=0;$script:killed=0;$script:disposed=0;$script:observedAlive=$false
+$script:aliveKilled=-1;$script:aliveDisposed=-1
+$script:fixtureClock=[Diagnostics.Stopwatch]::new()
+function Get-SyntheticQueueProcess {
+ $p=[pscustomobject]@{StartInfo=$null;StandardOutput=$script:fakeOut;StandardError=$script:fakeErr;ExitCode=0}
+ $p | Add-Member ScriptMethod Start {$script:started++;$script:fixtureClock.Restart();return $true}
+ $p | Add-Member ScriptProperty HasExited {
+  $elapsed=$script:fixtureClock.ElapsedMilliseconds
+  if ($script:fixtureExitMs -gt 0 -and $elapsed -ge 60 -and $elapsed -lt $script:fixtureExitMs) {
+   $script:observedAlive=$true;$script:aliveKilled=$script:killed;$script:aliveDisposed=$script:disposed
+  }
+  return ($elapsed -ge $script:fixtureExitMs)
+ }
+ $p | Add-Member ScriptMethod Kill {$script:killed++}
+ $p | Add-Member ScriptMethod Dispose {$script:disposed++}
+ return $p
+}
+'''
+    queued = f'Queued message 01a0adff-4558-7e80-8936-6aad0d6df821 for thread {THREAD}.\n'
+    queued_b64 = base64.b64encode(queued.encode('utf-8')).decode('ascii')
+    out_expr = "[Text.Encoding]::ASCII.GetBytes(('X'*70000))" if case == 'stdout_over' else (
+        f"[Convert]::FromBase64String('{queued_b64}')")
+    err_expr = "[Text.Encoding]::ASCII.GetBytes(('E'*70000))" if case == 'stderr_over' else '[byte[]]@()'
+    script += f'''
+$script:fixtureExitMs={250 if case == 'late_success' else 0}
+$script:fakeOut=[pscustomobject]@{{BaseStream=[IO.MemoryStream]::new({out_expr})}}
+$script:fakeErr=[pscustomobject]@{{BaseStream=[IO.MemoryStream]::new({err_expr})}}
+'''
+    script += send
+    script += f'''
+$errorText='';$queueId=''
+try {{$queueId=Send-WdNativeToolsQueueMessage -CliPath 'fake-queue.exe' -ThreadId '{THREAD}' -Message 'synthetic' -Worktree '.'}}
+catch {{$errorText=$_.Exception.Message}}
+@{{started=$script:started;killed=$script:killed;disposed=$script:disposed;error=$errorText;queue_id=$queueId;
+ alive_seen=$script:observedAlive;alive_killed=$script:aliveKilled;alive_disposed=$script:aliveDisposed}} | ConvertTo-Json -Compress
+'''
+    stdout = _run_powershell(script, executable=ps).stdout
+    result = json.loads(next(line for line in reversed(stdout.splitlines()) if line.startswith('{')))
+    assert result['started'] == 1 and result['killed'] == 0 and result['disposed'] == 1, result
+    if case == 'late_success':
+        assert result['alive_seen'] and result['alive_killed'] == result['alive_disposed'] == 0, result
+        assert 'timed out' in result['error'] and not result['queue_id'], result
+    elif case == 'queued':
+        assert not result['error'] and result['queue_id'] == '01a0adff-4558-7e80-8936-6aad0d6df821', result
+    else:
+        assert result['error'] and len(result['error']) < 512 and not result['queue_id'], result
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='synthetic Windows batch process')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_timed_out_synthetic_queue_process_exits_on_its_own(tmp_path, ps):
+    """The real process API retains a harmless delayed child until its natural exit."""
+    marker = tmp_path / 'natural-exit.txt'
+    cli = tmp_path / 'synthetic-queue.cmd'
+    child_command = "Start-Sleep -Milliseconds 700; [IO.File]::WriteAllText(" + q(marker) + ",'exited')"
+    cli.write_text(
+        '@echo off\n'
+        '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -NonInteractive -Command "' + child_command + '"\n'
+        f'echo Queued message 01a0adff-4558-7e80-8936-6aad0d6df821 for thread {THREAD}.\n'
+        'exit /b 0\n', encoding='ascii')
+    source = TOOLS.read_text(encoding='utf-8')
+    start = source.index('function Send-WdNativeToolsQueueMessage {')
+    end = source.index('\nfunction Get-WdInlineNativeWakeMessage {', start)
+    send = source[start:end]
+    timeout = 'function Get-WdNativeQueueTimeoutMilliseconds { return 30000 }'
+    assert send.count(timeout) == 1
+    send = send.replace(timeout, 'function Get-WdNativeQueueTimeoutMilliseconds { return 100 }')
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(TOOLS, 'ConvertTo-WdToolsNativeArgument') + send
+    script += f'''
+$errorText='';$queueId=''
+try {{$queueId=Send-WdNativeToolsQueueMessage -CliPath {q(cli)} -ThreadId '{THREAD}' -Message 'synthetic' -Worktree {q(tmp_path)}}}
+catch {{$errorText=$_.Exception.Message}}
+@{{error=$errorText;queue_id=$queueId}}|ConvertTo-Json -Compress
+'''
+    stdout = _run_powershell(script, executable=ps).stdout
+    result = json.loads(next(line for line in reversed(stdout.splitlines()) if line.startswith('{')))
+    assert marker.read_text(encoding='ascii') == 'exited'
+    assert 'timed out' in result['error'] and not result['queue_id'], result
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('agent', ['codex-lead-1', 'codex-tools-1'])
+def test_timed_out_relay_never_retries_even_after_synthetic_child_exits(tmp_path, ps, agent):
+    """The actual wake state machine keeps the ambiguous submission and new wake."""
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / ('wake_' + agent)
+    wake.write_text('first synthetic wake', encoding='utf-8')
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += f'''
+$script:calls=0; $script:childExited=$false; $errors=@()
+function Get-WdVerifiedNativeWakeMessage {{param($Agent,$DeliveryId) return 'synthetic wake'}}
+function Send-WdNativeToolsQueueMessage {{
+ param($CliPath,$ThreadId,$Message,$Worktree)
+ $script:calls++
+ if ($script:childExited) {{return '01a0adff-4558-7e80-8936-6aad0d6df821'}}
+ throw 'synthetic timeout; delivery outcome remains unknown'
+}}
+try {{Invoke-WdNativeToolsWakeStep -CliPath 'unused' -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation 'fixture' -NativePid 123 -Agent '{agent}' | Out-Null}}
+catch {{$errors += $_.Exception.Message}}
+$script:childExited=$true
+[IO.File]::WriteAllText({q(wake)},'later synthetic wake')
+try {{Invoke-WdNativeToolsWakeStep -CliPath 'unused' -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation 'fixture' -NativePid 123 -Agent '{agent}' | Out-Null}}
+catch {{$errors += $_.Exception.Message}}
+@{{calls=$script:calls;errors=$errors;child_exited=$script:childExited}}|ConvertTo-Json -Compress
+'''
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    state = json.loads(state_path.read_text(encoding='utf-8-sig'))
+    assert result['child_exited'] and result['calls'] == 1 and len(result['errors']) == 2, result
+    assert state['status'] == 'submitting' and state['task_completion_verified'] is False
+    snapshot, = tmp_path.glob('native-bridge-wake.json.wake.*')
+    assert snapshot.name.endswith('.' + state['snapshot_id'])
+    assert snapshot.read_text(encoding='utf-8') == 'first synthetic wake'
+    assert wake.read_text(encoding='utf-8') == 'later synthetic wake'
+
+
 def notice_registry(bundle):
     path = bundle / 'tools-bootstrap/configs/bridge_identity_registry.json'
     path.parent.mkdir(parents=True, exist_ok=True)

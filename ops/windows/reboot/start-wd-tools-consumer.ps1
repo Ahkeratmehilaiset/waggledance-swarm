@@ -501,18 +501,60 @@ function Send-WdNativeToolsQueueMessage {
     $info.Arguments = @(@('queue','--thread',$ThreadId,'--message',$Message) | ForEach-Object {
         ConvertTo-WdToolsNativeArgument $_
     }) -join ' '
-    $queueProcess = New-Object Diagnostics.Process
+    # These private seams are replaced only in synthetic tests of this function.
+    function New-WdNativeQueueProcess { return (New-Object Diagnostics.Process) }
+    function Get-WdNativeQueueTimeoutMilliseconds { return 30000 }
+    $queueProcess = New-WdNativeQueueProcess
     $queueProcess.StartInfo = $info
+    $started = $false; $drained = $false
+    $outDone = $false; $errDone = $false; $outRead = $null; $errRead = $null
+    $outBuffer = New-Object byte[] 4096; $errBuffer = New-Object byte[] 4096
     try {
         if (-not $queueProcess.Start()) { throw 'Codex queue process did not start' }
-        $stdout = $queueProcess.StandardOutput.ReadToEndAsync()
-        $stderr = $queueProcess.StandardError.ReadToEndAsync()
-        if (-not $queueProcess.WaitForExit(30000)) {
-            $queueProcess.Kill()
-            throw 'Codex queue timed out; delivery outcome is uncertain, automatic retry is blocked'
-        }
-        $output = $stdout.GetAwaiter().GetResult()
-        $errorText = $stderr.GetAwaiter().GetResult()
+        $started = $true
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $limit = Get-WdNativeQueueTimeoutMilliseconds
+        $timedOut = $false; $invalid = $false; $drainUnknown = $false
+        $outBytes = New-Object IO.MemoryStream; $errBytes = New-Object IO.MemoryStream
+        try {
+            while ($true) {
+                if (-not $timedOut -and $clock.ElapsedMilliseconds -ge $limit) {
+                    $timedOut = $true
+                    Write-Warning -WarningAction Continue 'Codex queue timed out; delivery remains UNKNOWN and the relay retains the child in HOLD'
+                }
+                foreach ($which in @('out','err')) {
+                    if (($which -ceq 'out' -and $outDone) -or ($which -ceq 'err' -and $errDone)) { continue }
+                    try {
+                        if ($which -ceq 'out') {
+                            if ($null -eq $outRead) { $outRead = $queueProcess.StandardOutput.BaseStream.ReadAsync($outBuffer,0,$outBuffer.Length) }
+                            $pending = $outRead; $buffer = $outBuffer; $capture = $outBytes
+                        } else {
+                            if ($null -eq $errRead) { $errRead = $queueProcess.StandardError.BaseStream.ReadAsync($errBuffer,0,$errBuffer.Length) }
+                            $pending = $errRead; $buffer = $errBuffer; $capture = $errBytes
+                        }
+                        if (-not $pending.IsCompleted) { continue }
+                        $count = $pending.GetAwaiter().GetResult()
+                        if ($which -ceq 'out') { $outRead = $null } else { $errRead = $null }
+                        if ($count -eq 0) {
+                            if ($which -ceq 'out') { $outDone = $true } else { $errDone = $true }
+                        } elseif ($capture.Length + $count -gt 65536) {
+                            $invalid = $true; $capture.SetLength(0)
+                        } elseif (-not $invalid -and -not $timedOut) {
+                            $capture.Write($buffer,0,$count)
+                        }
+                    } catch { $invalid = $true; $drainUnknown = $true }
+                }
+                try { $exited = [bool]$queueProcess.HasExited } catch { $exited = $false; $drainUnknown = $true }
+                if ($exited -and $outDone -and $errDone -and -not $drainUnknown) { $drained = $true; break }
+                # A failed read or unknown process status is HOLD, never a reason to abandon a live child.
+                [Threading.Thread]::Sleep(10)
+            }
+            if ($clock.ElapsedMilliseconds -ge $limit) { $timedOut = $true }
+            if ($timedOut) { throw 'Codex queue timed out; delivery outcome is uncertain, automatic retry is blocked' }
+            if ($invalid) { throw 'Codex queue output unavailable or over budget; delivery outcome is uncertain, automatic retry is blocked' }
+            $output = [Text.Encoding]::UTF8.GetString($outBytes.ToArray())
+            $errorText = [Text.Encoding]::UTF8.GetString($errBytes.ToArray())
+        } finally { $outBytes.Dispose(); $errBytes.Dispose() }
         $outcome = Get-WdNativeQueueOutcome -ExitCode $queueProcess.ExitCode -Stdout $output -Stderr $errorText -ThreadId $ThreadId
         if ($outcome.outcome -ceq 'queued') { return $outcome.queue_id }
         if ($outcome.outcome -ceq 'rejected') {
@@ -532,7 +574,27 @@ function Send-WdNativeToolsQueueMessage {
         $ambiguous.Data['wd_stdout'] = [string]$output
         $ambiguous.Data['wd_stderr'] = [string]$errorText
         throw $ambiguous
-    } finally { $queueProcess.Dispose() }
+    } finally {
+        # Unexpected failures must not orphan a started queue process. Retain its
+        # handle and drain/discard both pipes until exit and actual EOF; a failed
+        # pipe or inaccessible process remains HOLD, not presumed complete.
+        while ($started -and -not $drained) {
+            foreach ($which in @('out','err')) {
+                try {
+                    if ($which -ceq 'out' -and -not $outDone) {
+                        if ($null -eq $outRead) { $outRead=$queueProcess.StandardOutput.BaseStream.ReadAsync($outBuffer,0,$outBuffer.Length) }
+                        if ($outRead.IsCompleted) { $count=$outRead.GetAwaiter().GetResult();$outRead=$null;if ($count -eq 0) {$outDone=$true} }
+                    } elseif ($which -ceq 'err' -and -not $errDone) {
+                        if ($null -eq $errRead) { $errRead=$queueProcess.StandardError.BaseStream.ReadAsync($errBuffer,0,$errBuffer.Length) }
+                        if ($errRead.IsCompleted) { $count=$errRead.GetAwaiter().GetResult();$errRead=$null;if ($count -eq 0) {$errDone=$true} }
+                    }
+                } catch { }
+            }
+            try { if ($queueProcess.HasExited -and $outDone -and $errDone) { $drained=$true } } catch { }
+            if (-not $drained) { [Threading.Thread]::Sleep(10) }
+        }
+        if (-not $started -or $drained) { $queueProcess.Dispose() }
+    }
 }
 
 function Get-WdInlineNativeWakeMessage {

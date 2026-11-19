@@ -11,11 +11,13 @@ function Invoke-WdMindStartupRead {
         [Parameter(Mandatory)] [string] $ExpectedManifestHash,
         [Parameter(Mandatory)] [string] $Lane,
         [string] $Worktree = '',
-        [ValidateRange(1, 90)] [int] $TimeoutSeconds = 15
+        [ValidateRange(1, 90)] [int] $TimeoutSeconds = 15,
+        [switch] $RetainUntilExit
     )
     $result = [ordered]@{schema='wd.mind-startup-status.v1';outcome='refused';reason='package_refused';
         authority='none';view_json='';view_sha256='';cleanup='not_started';record_written=$false}
     $process = $null
+    $outRead=$null;$errRead=$null;$outDone=$false;$errDone=$false;$completed=$false
     function Read-WdMindPinnedSnapshot {
         param([string] $Path, [string] $Pin, [int] $Limit=1048576)
         if ($Pin -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or -not [IO.Path]::IsPathRooted($Path)) { throw 'pin' }
@@ -80,6 +82,11 @@ function Invoke-WdMindStartupRead {
         $asOf=[DateTimeOffset]::MinValue
         if (-not [DateTimeOffset]::TryParse($View.as_of_utc, [Globalization.CultureInfo]::InvariantCulture,
                 [Globalization.DateTimeStyles]::None, [ref]$asOf) -or $asOf.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+        # The source timestamp belongs to the source snapshot, not this later
+        # read. Never advance it to make an old bounded view appear current.
+        $now=[DateTimeOffset]::UtcNow
+        if ($asOf -gt $now) { throw 'future_status' }
+        if (($now-$asOf).TotalSeconds -gt 900) { throw 'mind_status_stale' }
         if (@('OBSERVED','UNKNOWN') -cnotcontains $View.observation_status -or
             ($View.facts.Count -eq 0 -and $View.observation_status -cne 'UNKNOWN')) { throw 'shape' }
         if ($Fleet -isnot [pscustomobject] -or $Fleet.lanes -isnot [array] -or
@@ -110,6 +117,9 @@ function Invoke-WdMindStartupRead {
             if ($calculatedAge -lt 0 -or [Math]::Abs($calculatedAge-[double]$fact.age_seconds) -gt 1 -or
                 ($calculatedAge -le 900 -and $View.observation_status -cne 'OBSERVED') -or
                 ($calculatedAge -gt 900 -and $View.observation_status -cne 'UNKNOWN')) { throw 'shape' }
+            $currentAge=($now-$observed).TotalSeconds
+            if ($currentAge -lt 0) { throw 'future_status' }
+            if ($currentAge -gt 900 -and $View.observation_status -ceq 'OBSERVED') { throw 'mind_status_stale' }
         }
     }
     function Assert-WdMindNestedView($View) {
@@ -166,6 +176,19 @@ function Invoke-WdMindStartupRead {
                 $reasons -cnotcontains $View.source.blocked.reason) { throw 'shape' }
         }
         Assert-WdMindObject $View.lanes $lanes
+        if ($RetainUntilExit) {
+            # Lane observation ages come from the stored source projection,
+            # whose horizon may be older than this lane-read's outer as_of.
+            $laneSourceAsOf=[DateTimeOffset]::MinValue
+            if (-not [DateTimeOffset]::TryParse($View.source.as_of_utc,[Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::None,[ref]$laneSourceAsOf) -or $laneSourceAsOf.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+            if ($View.source.max_event_utc -cne 'UNKNOWN') {
+                $sourceMaxEvent=[DateTimeOffset]::MinValue
+                if (-not [DateTimeOffset]::TryParse($View.source.max_event_utc,[Globalization.CultureInfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::None,[ref]$sourceMaxEvent) -or
+                    $sourceMaxEvent.Offset -ne [TimeSpan]::Zero -or $sourceMaxEvent -gt $laneSourceAsOf) { throw 'shape' }
+            }
+        }
         foreach ($laneName in $lanes) {
             $row=$View.lanes.PSObject.Properties[$laneName].Value
             if ($row.observed_in_window -is [bool] -and $row.observed_in_window) {
@@ -173,6 +196,13 @@ function Invoke-WdMindStartupRead {
                 if ($row.identity_verification -cne 'roster_bound' -or $row.claims -isnot [array]) { throw 'shape' }
                 Assert-WdMindString $row.last_event_utc $time
                 Assert-WdMindNumber $row.observation_age_seconds
+                if ($RetainUntilExit) {
+                    $laneEventAt=[DateTimeOffset]::MinValue
+                    if (-not [DateTimeOffset]::TryParse($row.last_event_utc,[Globalization.CultureInfo]::InvariantCulture,
+                            [Globalization.DateTimeStyles]::None,[ref]$laneEventAt) -or $laneEventAt.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+                    $sourceAge=($laneSourceAsOf-$laneEventAt).TotalSeconds
+                    if ($sourceAge -lt 0 -or [Math]::Abs($sourceAge-[double]$row.observation_age_seconds) -gt 1) { throw 'shape' }
+                }
                 foreach ($claim in $row.claims) {
                     Assert-WdMindObject $claim @('task_id','lease_expires_utc','expired')
                     Assert-WdMindString $claim.task_id '\A[A-Za-z0-9][A-Za-z0-9._-]{0,120}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,120})?\z'
@@ -306,7 +336,7 @@ function Invoke-WdMindStartupRead {
                     $result.outcome='unknown';$result.reason='timeout';break
                 }
                 if (-not $outDone -and $outRead.IsCompleted) {
-                    $count=$outRead.Result
+                    $count=$outRead.Result; $outRead=$null
                     if ($count -eq 0) { $outDone=$true }
                     else {
                         if ($outText.Length+$count -gt 65536) { $result.reason='output_over_budget';break }
@@ -315,7 +345,7 @@ function Invoke-WdMindStartupRead {
                     }
                 }
                 if (-not $errDone -and $errRead.IsCompleted) {
-                    $count=$errRead.Result
+                    $count=$errRead.Result; $errRead=$null
                     if ($count -eq 0) { $errDone=$true }
                     else {
                         $errChars+=$count
@@ -379,6 +409,29 @@ function Invoke-WdMindStartupRead {
                         $view.freshness.status -cne 'fresh' -or $age -lt 0 -or $maxAge -le 0 -or
                         $maxAge -gt 900 -or $age -gt $maxAge -or [double]::IsNaN([double]$age) -or
                         [double]::IsNaN([double]$maxAge)) { throw 'shape' }
+                    if ($RetainUntilExit) {
+                        # The producer's freshness is relative to its own as-of
+                        # timestamp; account for elapsed wall time since then.
+                        $nestedAsOf=[DateTimeOffset]::MinValue
+                        if (-not [DateTimeOffset]::TryParse($view.as_of_utc,[Globalization.CultureInfo]::InvariantCulture,
+                                [Globalization.DateTimeStyles]::None,[ref]$nestedAsOf) -or $nestedAsOf.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+                        $nestedNow=[DateTimeOffset]::UtcNow
+                        if ($nestedAsOf -gt $nestedNow) { throw 'future_status' }
+                        $eventTimes=@($view.source.as_of_utc)
+                        if ($view.source.max_event_utc -cne 'UNKNOWN') { $eventTimes+=@($view.source.max_event_utc) }
+                        foreach ($laneProperty in $view.lanes.PSObject.Properties) {
+                            if ($laneProperty.Value.observed_in_window -is [bool] -and $laneProperty.Value.observed_in_window) {
+                                $eventTimes+=@($laneProperty.Value.last_event_utc)
+                            }
+                        }
+                        foreach ($eventTime in $eventTimes) {
+                            $parsedEventTime=[DateTimeOffset]::MinValue
+                            if (-not [DateTimeOffset]::TryParse($eventTime,[Globalization.CultureInfo]::InvariantCulture,
+                                    [Globalization.DateTimeStyles]::None,[ref]$parsedEventTime) -or $parsedEventTime.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+                            if ($parsedEventTime -gt $nestedNow) { throw 'future_status' }
+                        }
+                        if (([double]$age+($nestedNow-$nestedAsOf).TotalSeconds) -gt [double]$maxAge) { throw 'mind_status_stale' }
+                    }
                     }
                     # Forward only the validated object. The original text can
                     # retain duplicate members that the parser already discarded.
@@ -392,10 +445,35 @@ function Invoke-WdMindStartupRead {
             }
         }
     } catch {
-        $result.outcome='refused';$result.reason='startup_read_refused'
+        if ($_.Exception.Message -ceq 'mind_status_stale') {
+            $result.outcome='unknown';$result.reason='status_stale'
+        } else { $result.outcome='refused';$result.reason='startup_read_refused' }
         $result.view_json='';$result.view_sha256=''
     } finally {
-        # Never kill or retry. An unfinished wrapper/pipe remains explicitly UNKNOWN.
+        # The opt-in background host must retain the wrapper even after refusal.
+        # Its caller owns the host process and can discard the result immediately;
+        # never report cleanup complete until the child and both pipes are proven done.
+        if ($RetainUntilExit -and $null -ne $process -and -not $completed) {
+            $drainUnknown=$false
+            if ($null -eq $outBuffer) {$outBuffer=New-Object char[] 4096}
+            if ($null -eq $errBuffer) {$errBuffer=New-Object char[] 4096}
+            while ($true) {
+                foreach ($which in @('out','err')) {
+                    try {
+                        if ($which -ceq 'out' -and -not $outDone) {
+                            if ($null -eq $outRead) {$outRead=$process.StandardOutput.ReadAsync($outBuffer,0,$outBuffer.Length)}
+                            if ($outRead.IsCompleted) {$n=$outRead.GetAwaiter().GetResult();$outRead=$null;if($n -eq 0){$outDone=$true}}
+                        } elseif ($which -ceq 'err' -and -not $errDone) {
+                            if ($null -eq $errRead) {$errRead=$process.StandardError.ReadAsync($errBuffer,0,$errBuffer.Length)}
+                            if ($errRead.IsCompleted) {$n=$errRead.GetAwaiter().GetResult();$errRead=$null;if($n -eq 0){$errDone=$true}}
+                        }
+                    } catch { $drainUnknown=$true }
+                }
+                try {if (-not $drainUnknown -and $process.HasExited -and $outDone -and $errDone) { $completed=$true;break }} catch { $drainUnknown=$true }
+                [Threading.Thread]::Sleep(100)
+            }
+        }
+        # Never kill or retry. Legacy callers retain their existing UNKNOWN behavior.
         if ($null -ne $process) { $process.Dispose() }
     }
     if ($Worktree) {

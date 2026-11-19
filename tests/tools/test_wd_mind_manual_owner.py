@@ -115,6 +115,47 @@ if ('{mode}' -ceq 'split') {{
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
+@pytest.mark.parametrize('fault', ['none', 'missing', 'truncated', 'duplicate', 'wrong_manifest',
+                                   'wrong_exit', 'stderr', 'missing_eof', 'crlf'])
+def test_preowner_refusal_requires_bound_complete_proof_and_eof(fault):
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    manifest = 'a' * 64
+    proof = json.dumps({'authority':'none', 'manifest_sha256':manifest,
+        'schema':'wd.mind-local-owner-admission.v1', 'state':'PRE_OWNER_REFUSED'},
+        sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+    if fault == 'missing': proof = b''
+    if fault == 'truncated': proof = proof[:-1]
+    if fault == 'crlf': proof = proof[:-1] + b'\r\n'
+    if fault == 'duplicate': proof += proof
+    if fault == 'wrong_manifest': proof = proof.replace(b'a' * 64, b'b' * 64)
+    path = str(helper).replace("'", "''")
+    script = f"""
+$ErrorActionPreference='Stop'
+. '{path}'
+$bytes=[Convert]::FromBase64String('{base64.b64encode(proof).decode()}')
+$stream=New-Object System.IO.MemoryStream
+$process=[pscustomobject]@{{StandardOutput=[pscustomobject]@{{BaseStream=$stream}};
+ HasExited=$true;ExitCode={0 if fault == 'wrong_exit' else 2}}}
+$record=@{{OutRead=[System.Threading.Tasks.Task]::FromResult($bytes.Length);
+ ErrRead=[System.Threading.Tasks.Task]::FromResult({1 if fault == 'stderr' else 0});
+ OutBuffer=$bytes;ErrBuffer=[byte[]]@(65);Line=(New-Object System.IO.MemoryStream);
+ Manifest='{manifest}';PreOwnerProofEnabled=$true;PreOwnerProofSeen=$false;
+ ReportedState='';Process=$process;Stopping=$false;Invalid=$false;OutDone=$false;ErrDone=$false}}
+Update-WdMindManualOwner $record
+if ('{fault}' -cne 'missing_eof') {{ Update-WdMindManualOwner $record }}
+[pscustomobject]@{{invalid=$record.Invalid;state=$record.State}} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    names = ('SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA')
+    env = {name: os.environ[name] for name in names if name in os.environ}
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, text=True, timeout=15, check=True, env=env)
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    assert (result['state'] == 'PRE_OWNER_REFUSED' and not result['invalid']) == (fault == 'none')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
 @pytest.mark.parametrize(('reason', 'accepted'), [
     ('ADMISSION_MISSING', True), ('ADMISSION_RESERVED', True),
     ('ADMISSION_LOCK_UNAVAILABLE', True), ('ADMISSION_OTHER', False),

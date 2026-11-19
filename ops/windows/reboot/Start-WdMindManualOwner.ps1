@@ -76,10 +76,19 @@ function Update-WdMindManualOwner {
                     if ($Record.Line.Length -eq 0 -or $Record.Line.Length -gt 1024) { throw 'mind_manual_status' }
                     $lineBytes=$Record.Line.ToArray()
                     $lineLength=$lineBytes.Length
-                    if($lineLength -gt 0 -and $lineBytes[$lineLength-1] -eq 13){$lineLength--}
+                    $hadCR=($lineLength -gt 0 -and $lineBytes[$lineLength-1] -eq 13)
+                    if($hadCR){$lineLength--}
                     $line=[Text.Encoding]::ASCII.GetString($lineBytes,0,$lineLength)
                     $Record.Line.SetLength(0)
                     $matched=$false
+                    if ($Record.ContainsKey('PreOwnerProofSeen') -and $Record.PreOwnerProofSeen) { throw 'mind_manual_status' }
+                    $preOwnerProof='{"authority":"none","manifest_sha256":"'+$Record.Manifest+'",'+
+                        '"schema":"wd.mind-local-owner-admission.v1","state":"PRE_OWNER_REFUSED"}'
+                    if ($Record.ContainsKey('PreOwnerProofEnabled') -and $Record.PreOwnerProofEnabled -and
+                        -not $hadCR -and $Record.ReportedState -ceq '' -and $line -ceq $preOwnerProof) {
+                        $Record.PreOwnerProofSeen=$true
+                        $matched=$true
+                    }
                     if ($Record.ContainsKey('PreAnchorFailed') -and $Record.PreAnchorFailed) { throw 'mind_manual_status' }
                     $preAnchor='{"authority":"none","reason":"IMPORT","schema":"wd.mind-local-owner-preanchor-diagnostic.v1"}'
                     if ($line -ceq $preAnchor -and $Record.ContainsKey('DiagnosticsEnabled') -and $Record.DiagnosticsEnabled -and
@@ -163,7 +172,10 @@ function Update-WdMindManualOwner {
             }
         }
         if($Record.Process.HasExited) {
-            if($Record.Process.ExitCode -eq 0 -and $Record.OutDone -and $Record.ErrDone -and
+            if($Record.ContainsKey('PreOwnerProofSeen') -and $Record.PreOwnerProofSeen -and
+               $Record.Process.ExitCode -eq 2 -and $Record.OutDone -and $Record.ErrDone -and
+               $Record.Line.Length -eq 0) {$Record.State='PRE_OWNER_REFUSED'}
+            elseif($Record.Process.ExitCode -eq 0 -and $Record.OutDone -and $Record.ErrDone -and
                $Record.Line.Length -eq 0 -and $Record.ReportedState -ceq 'STOPPED') {$Record.State='STOPPED'}
             elseif($Record.OutDone -and $Record.ErrDone) {$Record.State='FAILED'}
             else {$Record.State='HOLD'}
@@ -183,9 +195,10 @@ function Start-WdMindManualOwner {
           [Parameter(Mandatory)][string] $OperatorApprovalReferenceSha256,
           [Parameter(Mandatory)][string] $BridgePythonPath,
           [Parameter(Mandatory)][string] $BridgePythonSha256, [switch] $IncludeStartupDiagnostics,
+          [switch] $IncludePreOwnerProof,
           [switch] $IncludeWorkerStageDiagnostics)
     if (-not $Enabled) { throw 'mind_manual_owner_disabled' }
-    if ($IncludeStartupDiagnostics -and $IncludeWorkerStageDiagnostics) { throw 'mind_manual_diagnostics_option' }
+    if (([int][bool]$IncludeStartupDiagnostics + [int][bool]$IncludeWorkerStageDiagnostics + [int][bool]$IncludePreOwnerProof) -gt 1) { throw 'mind_manual_diagnostics_option' }
     $policy=$null; $record=$null; $handle=$null; $registered=$false; $preflightStage='INPUT'
     try {
         if(-not [IO.Path]::IsPathRooted($BundleRoot) -or $BundleRoot -match '(^|[\\/])\.\.([\\/]|$)' -or
@@ -234,7 +247,7 @@ function Start-WdMindManualOwner {
             ' tools/wd_mind_runtime_child.py -VerifyPackage --mind-local-candidate-owner --policy-path '+
             (& $quote ([IO.Path]::GetFullPath($OperatorPolicyPath)))+' --policy-sha256 '+
             (& $quote $OperatorPolicySha256.ToLowerInvariant())+' --approval-reference-sha256 '+
-            (& $quote $OperatorApprovalReferenceSha256.ToLowerInvariant())+$(if($IncludeWorkerStageDiagnostics){' --start-diagnostics-v2'}elseif($IncludeStartupDiagnostics){' --start-diagnostics'}else{''})+'; exit $LASTEXITCODE'
+            (& $quote $OperatorApprovalReferenceSha256.ToLowerInvariant())+$(if($IncludeWorkerStageDiagnostics){' --start-diagnostics-v2'}elseif($IncludeStartupDiagnostics){' --start-diagnostics'}elseif($IncludePreOwnerProof){' --preowner-proof-v1'}else{''})+'; exit $LASTEXITCODE'
         $info=New-Object Diagnostics.ProcessStartInfo
         $shell=if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'}
         $info.FileName=Join-Path $PSHOME $shell
@@ -261,6 +274,7 @@ function Start-WdMindManualOwner {
         $proc=New-Object Diagnostics.Process; $proc.StartInfo=$info
         $record=@{Process=$proc;Manifest=$ExpectedManifestHash.ToLowerInvariant();State='HOLD';ReportedState='';
             Stopping=$false;Invalid=$false;DiagnosticsEnabled=[bool]($IncludeStartupDiagnostics -or $IncludeWorkerStageDiagnostics);
+            PreOwnerProofEnabled=[bool]$IncludePreOwnerProof;PreOwnerProofSeen=$false;
             WorkerDiagnosticsEnabled=[bool]$IncludeWorkerStageDiagnostics;DiagnosticCount=0;StartDiagnostic=$null;
             OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);Line=(New-Object IO.MemoryStream);
             OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false}

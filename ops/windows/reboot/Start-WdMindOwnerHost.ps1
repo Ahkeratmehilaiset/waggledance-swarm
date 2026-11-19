@@ -22,6 +22,7 @@ param(
     [string] $StopEventName = '',
     [int] $ControllerPid = 0,
     [string] $ControllerStartUtc = ''
+    , [switch] $SourceBoundScriptBlock
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -92,7 +93,7 @@ $queuedState = ''
 $outputBroken = $false
 $totalOutputBytes = 0
 function Queue-WdHostState([string] $State) {
-    if ($State -cnotin @('DISABLED','STARTING','READY','HOLD','STOPPED','REFUSED')) { throw 'state' }
+    if ($State -cnotin @('DISABLED','STARTING','READY','HOLD','STOPPED','REFUSED','PRE_OWNER_REFUSED')) { throw 'state' }
     if ($State -cne $script:lastSent) { $script:queuedState = $State }
 }
 function Flush-WdHostState {
@@ -176,9 +177,12 @@ try {
     $self = $manifest.files.PSObject.Properties['Start-WdMindOwnerHost.ps1']
     $helper = $manifest.files.PSObject.Properties['Start-WdMindManualOwner.ps1']
     if ($null -eq $self -or $self.Value -isnot [string] -or $null -eq $helper -or $helper.Value -isnot [string]) { throw 'manifest' }
-    $ownPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
-    if (-not $ownPath.Equals((Join-Path $root 'Start-WdMindOwnerHost.ps1'), [StringComparison]::OrdinalIgnoreCase)) { throw 'host_path' }
-    [void](Read-WdHostPinnedBytes $ownPath $self.Value 1048576)
+    $ownPath = Join-Path $root 'Start-WdMindOwnerHost.ps1'
+    $ownBytes = Read-WdHostPinnedBytes $ownPath $self.Value 1048576
+    if ($SourceBoundScriptBlock) {
+        if ($null -eq $MyInvocation.MyCommand.ScriptBlock -or
+            $MyInvocation.MyCommand.ScriptBlock.ToString() -cne $utf8.GetString($ownBytes).TrimStart([char]0xFEFF)) { throw 'host_source' }
+    } elseif (-not [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path).Equals($ownPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'host_path' }
     $helperBytes = Read-WdHostPinnedBytes (Join-Path $root 'Start-WdMindManualOwner.ps1') $helper.Value 1048576
     [void](Read-WdHostPinnedBytes $manifestPath $ExpectedManifestHash 4194304)
     . ([scriptblock]::Create($utf8.GetString($helperBytes).TrimStart([char]0xFEFF)))
@@ -189,13 +193,19 @@ try {
     $owner = Start-WdMindManualOwner -Enabled -BundleRoot $root -ExpectedManifestHash $ExpectedManifestHash `
         -OperatorPolicyPath $OperatorPolicyPath -OperatorPolicySha256 $OperatorPolicySha256 `
         -OperatorApprovalReferenceSha256 $OperatorApprovalReferenceSha256 `
-        -BridgePythonPath $BridgePythonPath -BridgePythonSha256 $BridgePythonSha256
+        -BridgePythonPath $BridgePythonPath -BridgePythonSha256 $BridgePythonSha256 -IncludePreOwnerProof
     if ($null -eq $owner) { throw 'owner' }
     while ($true) {
         if (-not $stop -and ($outputBroken -or $controller.HasExited -or $stopEvent.WaitOne(0))) { $stop = $true }
         if ($stop) { $status = Stop-WdMindManualOwner -Owner $owner }
         else { $status = Get-WdMindManualOwnerStatus -Owner $owner }
-        if ($null -eq $status -or $status.state -cnotin @('STARTING','READY','HOLD','STOPPED','FAILED')) { throw 'owner_status' }
+        if ($null -eq $status -or $status.state -cnotin @('STARTING','READY','HOLD','STOPPED','FAILED','PRE_OWNER_REFUSED')) { throw 'owner_status' }
+        if ($status.state -ceq 'PRE_OWNER_REFUSED') {
+            Queue-WdHostState 'PRE_OWNER_REFUSED'; Flush-WdHostState
+            [void](Finish-WdHostOutput)
+            $stopEvent.Dispose(); $controller.Dispose()
+            exit 2
+        }
         if ($status.state -ceq 'STOPPED') {
             Queue-WdHostState 'STOPPED'
             Flush-WdHostState

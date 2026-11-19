@@ -22,6 +22,25 @@ from tools import wd_mind_e5_client as e5_client
 from test_wd_mind_runtime_process import candidate
 
 
+@pytest.mark.parametrize('reason', ['owner_reservation_missing', 'owner_reservation_reserved',
+                                     'owner_reservation_lock_unavailable', 'owner_reservation_hold'])
+def test_preowner_proof_refusal_never_calls_entry_or_claims_clear(monkeypatch, reason):
+    called = []
+    def refuse(_root):
+        raise child.LaunchRefused(reason)
+    def entry(**_kwargs):
+        called.append(True)
+    monkeypatch.setattr(child, '_reserve_local_owner', refuse)
+    monkeypatch.setattr(child, '_local_candidate_owner_entry', entry)
+    output = io.BytesIO()
+    result = child._guarded_local_entry(entry, output_stream=output,
+        expected_manifest_sha256='a' * 64, _include_preowner_proof=True)
+    assert result == 2
+    assert json.loads(output.getvalue()) == {'schema':'wd.mind-local-owner-admission.v1',
+        'state':'PRE_OWNER_REFUSED', 'manifest_sha256':'a' * 64, 'authority':'none'}
+    assert called == []
+
+
 def _verified_parent_result(*, timestamp, age, freshness='UNKNOWN'):
     return {
         'schema': 'wd.mind-flat-verified-session.v1', 'authority': 'none',

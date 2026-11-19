@@ -1,5 +1,6 @@
 """Synthetic owner-host integration; no installed bundle, model or live bridge."""
 import hashlib
+import base64
 import ctypes
 import json
 import os
@@ -108,7 +109,7 @@ def _bundle(tmp_path, control, *, bad_manifest=False, bad_policy=False, tamper_h
     [Parameter(ValueFromRemainingArguments)][string[]]$Rest)
 if ($env:SYNTHETIC_ENV_CANARY) { exit 9 }
 if (-not $VerifyPackage -or $Tool -cne 'tools/wd_mind_runtime_child.py' -or
-    $Rest.Count -ne 7 -or $Rest[0] -cne '--mind-local-candidate-owner' -or
+    $Rest.Count -ne 8 -or $Rest[7] -cne '--preowner-proof-v1' -or $Rest[0] -cne '--mind-local-candidate-owner' -or
     $Rest[1] -cne '--policy-path' -or $Rest[3] -cne '--policy-sha256' -or
     $Rest[5] -cne '--approval-reference-sha256') { exit 7 }
 & ''' + _quote(PYTHON) + ' -I -S -B ' + _quote(child) + ' $Rest[2] $Rest[4] ' + _quote(marker) + '''
@@ -236,3 +237,28 @@ def test_real_helper_owns_synthetic_child_until_cooperative_stop(tmp_path, contr
     assert b'synthetic_only' not in stderr
     assert b'synthetic-canary-not-for-child' not in stderr
     assert stderr == b''
+
+
+@pytest.mark.skipif(os.name != 'nt' or not SHELL.exists(), reason='Windows PowerShell required')
+def test_verified_scriptblock_host_runs_without_a_path_reopen(tmp_path, control):
+    host, marker, args = _bundle(tmp_path, control)
+    parts = ['-Enabled']
+    for index in range(1, len(args), 2):
+        parts.extend([args[index], _quote(args[index + 1])])
+    bootstrap = "$s=[Console]::In.ReadToEnd(); . ([scriptblock]::Create($s)) " + ' '.join(parts) + ' -SourceBoundScriptBlock'
+    encoded = base64.b64encode(bootstrap.encode('utf-16le')).decode('ascii')
+    process = subprocess.Popen([str(SHELL), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_environment())
+    process.stdin.write(host.read_bytes())
+    process.stdin.close()
+    incoming, thread = _lines(process)
+    states = []
+    while 'READY' not in states:
+        raw = incoming.get(timeout=15)
+        assert raw is not None
+        states.append(json.loads(raw)['state'])
+    assert control['kernel'].SetEvent(control['handle'])
+    assert process.wait(timeout=15) == 0
+    thread.join(2)
+    assert marker.exists()
+    assert process.stderr.read() == b''

@@ -2869,6 +2869,7 @@ def _emit_preanchor_diagnostic(out):
 
 def _guarded_local_entry(entry, **kwargs):
     """Guard both fixed local CLI routes, not arbitrary Python callers or old bundles."""
+    proof = kwargs.pop('_include_preowner_proof', False)
     if entry is _local_query_entry:
         return 2  # The closed route must not reserve or change the owner marker.
     try:
@@ -2879,6 +2880,19 @@ def _guarded_local_entry(entry, **kwargs):
         v1 = kwargs.get('include_start_diagnostics') is True
         v2 = kwargs.get('include_worker_stage_diagnostics') is True
         manifest = kwargs.get('expected_manifest_sha256')
+        if (proof is True and entry is _local_candidate_owner_entry
+                and type(manifest) is str and _HEX.fullmatch(manifest)):
+            try:
+                raw = json.dumps({'schema':'wd.mind-local-owner-admission.v1',
+                    'state':'PRE_OWNER_REFUSED', 'manifest_sha256':manifest,
+                    'authority':'none'}, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+                out = kwargs['output_stream']
+                if out.write(raw) != len(raw):
+                    raise ValueError('proof_write')
+                out.flush()
+            except BaseException:
+                pass  # Partial/missing proof is never evidence of safe cleanup.
+            return 2
         if (entry is _local_candidate_owner_entry and (v1 or v2)
                 and type(manifest) is str and _HEX.fullmatch(manifest)):
             try:
@@ -2994,9 +3008,10 @@ def _fixed_child_main(argv):
     """Route fixed parent and owner flags; other inputs refuse."""
     if argv and argv[0] == '--mind-local-query':
         return 2  # Before manifest loading, admission, or other side effects.
-    diagnostic_flag = argv[-1] if argv and argv[-1] in ('--start-diagnostics', '--start-diagnostics-v2') else None
+    diagnostic_flag = argv[-1] if argv and argv[-1] in ('--start-diagnostics', '--start-diagnostics-v2', '--preowner-proof-v1') else None
     diagnostic_optin = diagnostic_flag == '--start-diagnostics'
     worker_diagnostic_optin = diagnostic_flag == '--start-diagnostics-v2'
+    preowner_proof_optin = diagnostic_flag == '--preowner-proof-v1'
     if diagnostic_flag:
         if not argv or argv[0] != '--mind-local-candidate-owner': return 2
         argv = argv[:-1]
@@ -3035,12 +3050,12 @@ def _fixed_child_main(argv):
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],
                 policy_sha256=argv[4], approval_reference_sha256=argv[6], include_start_diagnostics=diagnostic_optin,
-                include_worker_stage_diagnostics=worker_diagnostic_optin)
+                include_worker_stage_diagnostics=worker_diagnostic_optin, _include_preowner_proof=preowner_proof_optin)
         if local_owner:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_sha256=argv[2],
                 approval_reference_sha256=argv[4], include_start_diagnostics=diagnostic_optin,
-                include_worker_stage_diagnostics=worker_diagnostic_optin)
+                include_worker_stage_diagnostics=worker_diagnostic_optin, _include_preowner_proof=preowner_proof_optin)
         if argv == ['--parent-control']:
             return _parent_control_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                                          bundle_root=bundle, expected_manifest_sha256=expected)

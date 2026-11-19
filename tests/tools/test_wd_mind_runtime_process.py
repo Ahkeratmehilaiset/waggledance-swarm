@@ -1043,3 +1043,71 @@ def test_deferred_guardian_and_named_pipe_endpoints_never_start(monkeypatch, ent
     assert not hasattr(preflight, '_CandidatePipe')
     assert not hasattr(preflight, '_CandidateService')
     assert not hasattr(preflight, '_ManifestGuardian')
+
+
+def test_synthetic_idle_clean_close_allows_next_request():
+    request = {'schema': 'wd.mind-pipe-request.v1', 'query_id': 'startup_work_overview',
+               'nonce': 'd' * 64, 'lane': 'codex-lead-1', 'scope': 'own'}
+    expected_reply = {
+        'schema': 'wd.mind-pipe-candidates.v1', 'nonce': request['nonce'],
+        'lane': request['lane'], 'scope': request['scope'], 'status': 'CANDIDATES',
+        'candidates': [{'ref_sha256': 'a' * 64, 'doc_id_sha256': 'b' * 64,
+                        'source_event_sha256': 'c' * 64}],
+    }
+
+    class Owner:
+        def __init__(self):
+            self.requests = []
+        def candidates(self, received):
+            self.requests.append(received)
+            return expected_reply
+
+    owner = Owner()
+    service = preflight._LocalCandidateService(owner, 'synthetic')
+    calls = []
+    replies = []
+
+    class Idle:
+        def poll(self, timeout):
+            calls.append(('idle_poll', timeout))
+            return False
+        def close(self):
+            calls.append(('idle_close',))
+
+    class Request:
+        def poll(self, timeout):
+            calls.append(('request_poll', timeout))
+            return True
+        def recv_bytes(self, max_bytes):
+            calls.append(('request_recv', max_bytes))
+            return json.dumps(request).encode('utf-8')
+        def send_bytes(self, payload):
+            replies.append(json.loads(payload))
+            service._stop.set()
+        def close(self):
+            calls.append(('request_close',))
+
+    class Listener:
+        def __init__(self):
+            self.connections = iter((Idle(), Request()))
+            self.accepts = 0
+            self.closed = False
+        def accept(self):
+            self.accepts += 1
+            return next(self.connections)
+        def close(self):
+            self.closed = True
+
+    listener = Listener()
+    service._listener = listener
+    service._serve()
+    assert listener.accepts == 2
+    assert listener.closed
+    assert calls[0] == ('idle_poll', 1)
+    assert calls[1] == ('idle_close',)
+    assert calls[2] == ('request_poll', 1)
+    assert calls[-1] == ('request_close',)
+    assert owner.requests == [request]
+    assert replies == [expected_reply]
+    assert service._uncertain_connection is None
+    assert service.status()['state'] == 'STOPPED'

@@ -44,7 +44,11 @@ class _FakeOwnedProcess:
 def _fake_owned_child(monkeypatch, responses, returncode=0):
     process, launches = _FakeOwnedProcess(responses, returncode), []
     def launch(argv, **kwargs):
-        launches.append((argv, kwargs))
+        # Keep only the fields asserted below: pytest may repr the captured
+        # value on failure, and the original env includes inherited secrets.
+        observed = {key: kwargs.get(key) for key in ('cwd', 'text', 'stdin', 'stdout', 'stderr')}
+        observed['no_bytecode'] = kwargs.get('env', {}).get('PYTHONDONTWRITEBYTECODE') == '1'
+        launches.append((argv, observed))
         return process
     monkeypatch.setattr(owned.subprocess, 'Popen', launch)
     monkeypatch.setattr(owned.time, 'sleep', lambda _: None)
@@ -56,7 +60,7 @@ def test_owned_wrapper_preserves_arguments_and_decodes_json(monkeypatch):
     assert _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code') == {'ok': True}
     argv, kwargs = launches[0]
     assert argv == ['synthetic'] and kwargs['cwd'] == 'synthetic-cwd' and kwargs['text'] is True
-    assert kwargs['env']['PYTHONDONTWRITEBYTECODE'] == '1'
+    assert kwargs['no_bytecode'] is True
     assert kwargs['stdin'] == subprocess.PIPE and kwargs['stdout'] == subprocess.PIPE
     assert kwargs['stderr'] == subprocess.PIPE
     assert process.calls[0]['input'] == 'synthetic-code' and 0 < process.calls[0]['timeout'] <= 30

@@ -1015,7 +1015,8 @@ def test_bulk_worker_only_launch_is_pinned_and_preserves_owner(staged_graceful, 
             super().__init__()
         def attach(self, value): assert value is process
     def popen(argv, **kwargs):
-        calls['argv'], calls['env'] = argv, kwargs['env']
+        calls['argv'] = argv
+        calls['bulk_env_keys_present'] = any('BULK' in key for key in kwargs['env'])
         return process
     monkeypatch.setattr(child, '_Job', Job)
     monkeypatch.setattr(subprocess, 'Popen', popen)
@@ -1030,7 +1031,7 @@ def test_bulk_worker_only_launch_is_pinned_and_preserves_owner(staged_graceful, 
         assert result['client']._bulk_contract_sha256 == owner._bulk_contract_sha256 == child.BULK_CONTRACT_SHA256
         assert '--worker-only' in calls['argv'] and '--bulk-contract-sha256' in calls['argv']
         assert all('--'+key not in calls['argv'] for key in ('memory','descriptor','descriptor-sha256'))
-        assert not any('BULK' in key for key in calls['env'])
+        assert not calls['bulk_env_keys_present']
         assert result['client'].close(timeout=0.02)['state'] == 'HOLD'
     finally:
         finish(owner, process)
@@ -1131,9 +1132,10 @@ def test_graceful_launch_retains_owner_on_post_spawn_failure(staged_graceful, mo
 
     def popen(args, **kwargs):
         calls.append("spawn")
-        assert kwargs["stderr"] == subprocess.PIPE
-        assert kwargs["env"]["HF_HUB_OFFLINE"] == "1"
-        assert args[1:4] == ["-I", "-S", "-B"]
+        # No assertions here: a traceback can render kwargs, including the env.
+        calls.append(("spawn_options", kwargs.get("stderr") == subprocess.PIPE,
+                      kwargs.get("env", {}).get("HF_HUB_OFFLINE") == "1",
+                      args[1:4] == ["-I", "-S", "-B"]))
         if fault == "late_spawn":
             clock[0] += 2
         return process
@@ -1145,6 +1147,7 @@ def test_graceful_launch_retains_owner_on_post_spawn_failure(staged_graceful, mo
     owner = result["owner"]
     try:
         assert calls[:2] == ["job", "spawn"]
+        assert ("spawn_options", True, True, True) in calls
         assert owner._process is process and result["authority"] == "none"
         if fault is None:
             assert result["status"] == "READY" and process.written == b"\0"
@@ -2136,7 +2139,14 @@ def test_child_popen_receives_verified_runtime_cache_and_isolated_environment(
         def attach(self, value):
             assert value is process
     def popen(argv, **kwargs):
-        calls["env"] = kwargs["env"]
+        env = kwargs["env"]
+        cache_keys = ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE",
+                      "HF_ASSETS_CACHE", "SENTENCE_TRANSFORMERS_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "CUDA_CACHE_PATH")
+        # Retain only booleans so assertion introspection cannot expose env values.
+        calls["runtime_cache_matches"] = env.get("TORCHINDUCTOR_CACHE_DIR") == calls.get("verified_root")
+        calls["temp_isolated"] = all(env.get(name) == os.devnull for name in ("TEMP", "TMP"))
+        calls["offline_enabled"] = all(env.get(name) == "1" for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"))
+        calls["caches_isolated"] = all(env.get(name) == os.devnull for name in cache_keys)
         return process
     original_verify = anchor.verify_runtime_process_preflight
     def recording_verify(*args, **kwargs):
@@ -2151,14 +2161,11 @@ def test_child_popen_receives_verified_runtime_cache_and_isolated_environment(
     owner = result["owner"]
     try:
         assert result["status"] == "READY"
-        env = calls["env"]
         assert calls["verified_root"] == staged_graceful["tuple_args"]["runtime-root"]
-        assert env["TORCHINDUCTOR_CACHE_DIR"] == calls["verified_root"]
+        assert calls["runtime_cache_matches"]
         assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "caller-controlled-synthetic"
-        assert env["TEMP"] == env["TMP"] == os.devnull
-        assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
-        for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE",
-                     "HF_ASSETS_CACHE", "SENTENCE_TRANSFORMERS_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "CUDA_CACHE_PATH"):
-            assert env[name] == os.devnull
+        assert calls["temp_isolated"]
+        assert calls["offline_enabled"]
+        assert calls["caches_isolated"]
     finally:
         finish(owner, process)

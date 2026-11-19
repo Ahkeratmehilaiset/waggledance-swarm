@@ -594,8 +594,9 @@ class _PrivateBinding:
                     prefix._read_pinned(self.__bundle / 'deployment-manifest.json', self.__manifest,
                                         prefix.MAX_CONTROL_BYTES)
                     prefix._read_pinned(path, digest, 8 * 1024 * 1024)
-                    # Set the attestation before publication so an ordinary
-                    # concurrent import can only see completed verified code.
+                    # Attest our verified module before publishing it. An
+                    # independent competing import may run separately; refuse
+                    # rather than adopt its module if it wins publication.
                     _SNAPSHOT_MODULE_ATTESTATION = (module, str(path), self.__manifest, digest)
                     if sys.modules.setdefault(name, module) is not module:
                         raise ValueError('watcher_module_conflict')

@@ -474,7 +474,9 @@ def test_retained_snapshot_module_refuses_unverified_import(monkeypatch, tmp_pat
     relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
     path = bundle.joinpath(*relative.split('/'))
     path.parent.mkdir(parents=True)
-    safe = b'from tools import wd_mind_content_query_readonly as reader\n'
+    safe = (b'from tools import wd_mind_content_query_readonly as reader\n'
+            b'def create_consumer_flat_source_owner(**kwargs):\n'
+            b'    raise RuntimeError("verified_factory_reached")\n')
     forged = b'import builtins\nbuiltins._retained_unverified_executed=True\n'
     width = max(len(safe), len(forged))
     safe, forged = safe.ljust(width, b' '), forged.ljust(width, b' ')
@@ -537,11 +539,17 @@ def test_retained_snapshot_module_refuses_unverified_import(monkeypatch, tmp_pat
     if '_package' in runtime._RetainedFlatQueryState.__slots__:
         state._package = trusted
     try:
-        with pytest.raises((ValueError, AttributeError)) as refused:
-            if entry == 'init':
+        if tamper == 'missing_pyc' and entry == 'init':
+            # Valid source is allowed to load even when stale bytecode exists;
+            # this sentinel proves that its verified factory was reached.
+            with pytest.raises(RuntimeError, match='^verified_factory_reached$'):
                 runtime._RetainedFlatQueryState(owner)
-            else:
-                state._controls()
+        else:
+            with pytest.raises(ValueError) as refused:
+                if entry == 'init':
+                    runtime._RetainedFlatQueryState(owner)
+                else:
+                    state._controls()
         assert load_calls == [binding]
         if tamper == 'replaced':
             assert str(refused.value) == 'watcher_unverified_preload'

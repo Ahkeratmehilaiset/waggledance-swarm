@@ -2699,6 +2699,19 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             return (service_done.is_set() and service_thread is not None
                     and not service_thread.is_alive())
 
+    def cancelled_unstarted_is_unowned(status):
+        if (type(adapter) is not _LocalManifestQuery or type(status) is not dict
+                or status.get('state') != 'NEW' or status.get('owned') is not False):
+            return False
+        # Read the two sides of the STOP/start fence together. Never wait on
+        # an uncertain gate or hold it while asking the owner for status.
+        if not adapter._owner_start_gate.acquire(blocking=False):
+            return False
+        try:
+            return adapter._cancel.is_set() and adapter._owner_start_committed is False
+        finally:
+            adapter._owner_start_gate.release()
+
     def capture_worker_exit_after_incomplete_close():
         nonlocal worker_exit_snapshot
         if include_worker_stage_diagnostics is not True or not ready_publication_started.is_set():
@@ -2939,6 +2952,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                         (final_status.get('state') not in ('STARTING', 'READY', 'BUSY') and
                          not (type(adapter) is _LocalManifestQuery and adapter._cancel.is_set()
                               and final_status.get('state') == 'HOLD') and
+                          not cancelled_unstarted_is_unowned(final_status) and
                          not (adapter_close_done.is_set() and final_status.get('state') == 'STOPPED'
                               and final_status.get('owned') is False))):
                     failed = True

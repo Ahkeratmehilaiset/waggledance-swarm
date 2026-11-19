@@ -1081,10 +1081,16 @@ def test_owner_start_commit_and_cancellation_share_one_gate(monkeypatch, stop_at
     assert adapter.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
 
 
-def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(monkeypatch):
+@pytest.mark.parametrize('unstarted_owned,force_committed,gate_busy,expected', [
+    (False, False, False, 0), (None, False, False, 2), (False, True, False, 2),
+    (True, False, False, 2), ('missing', False, False, 2), (False, False, True, 2),
+])
+def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(
+        monkeypatch, unstarted_owned, force_committed, gate_busy, expected):
     from tools import wd_mind_full_runtime as runtime
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     before_commit, release_prepare, close_blocked, release_close = (threading.Event() for _ in range(4))
+    new_observed, gate_probe_seen, status_timeouts = threading.Event(), threading.Event(), []
     policy = b'synthetic-policy'
     source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
     class Admission:
@@ -1099,7 +1105,13 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(monkeypatch):
         def write(self, data): return len(data)
         def flush(self): pass
     class Owner:
-        def status(self): return {'state': 'READY' if getattr(self, 'starts', 1) else 'NEW'}
+        def status(self):
+            value = {'state': 'READY' if self.starts else 'NEW'}
+            if self.starts:
+                value['owned'] = True
+            elif unstarted_owned != 'missing':
+                value['owned'] = unstarted_owned
+            return value
         starts = 0
         def start(self):
             self.starts += 1
@@ -1110,6 +1122,34 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(monkeypatch):
     owner, admission = Owner(), Admission()
     adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a'*64, policy,
         hashlib.sha256(policy).hexdigest(), 'c'*64, 1, 1, 1, admission=admission)
+
+    class GateProbe:
+        """Expose one busy nonblocking probe, then release for cleanup."""
+        def __init__(self):
+            self.lock, self.armed, self.was_armed = threading.Lock(), False, False
+        def acquire(self, blocking=True):
+            acquired = self.lock.acquire(blocking=blocking)
+            if not blocking and not acquired and self.armed:
+                self.armed = False
+                self.lock.release()
+                gate_probe_seen.set()
+            return acquired
+        def release(self): self.lock.release()
+        def __enter__(self):
+            self.acquire()
+            return self
+        def __exit__(self, *args): self.release()
+        def arm_busy(self):
+            self.lock.acquire()
+            self.armed = self.was_armed = True
+        def cleanup(self):
+            if self.armed:
+                self.armed = False
+                self.lock.release()
+
+    gate_probe = GateProbe()
+    if gate_busy:
+        adapter._owner_start_gate = gate_probe
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
     monkeypatch.setattr(child._LocalManifestQuery, '_check_policy', lambda self: object())
     calls = []
@@ -1123,11 +1163,33 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(monkeypatch):
     monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: object())
     monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: owner)
     actual_close = child._LocalManifestQuery.close
+    actual_status = child._LocalManifestQuery.status
     def delayed_close(self, **kwargs):
         close_blocked.set()
         assert release_close.wait(5)
         return actual_close(self, **kwargs)
+
+    def status_after_cancelled_prepare(self):
+        # Force the final post-STOP status to observe the owner after the
+        # prepare thread exits, instead of racing the STARTING observation.
+        if self._cancel.is_set():
+            release_prepare.set()
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                status_timeouts.append('prepare_join')
+            if force_committed:
+                # Fault injection: even a NEW owner is not clean evidence if
+                # its launch was marked committed. No real worker is started.
+                self._owner_start_committed = True
+            if gate_busy and not gate_probe.was_armed:
+                gate_probe.arm_busy()
+        value = actual_status(self)
+        if self._cancel.is_set() and value.get('state') == 'NEW':
+            new_observed.set()
+        return value
+
     monkeypatch.setattr(child._LocalManifestQuery, 'close', delayed_close)
+    monkeypatch.setattr(child._LocalManifestQuery, 'status', status_after_cancelled_prepare)
     result = []
     thread = threading.Thread(target=lambda: result.append(child._local_candidate_owner_entry(
         control_stream=Input(), output_stream=Output(), bundle_root='synthetic',
@@ -1137,16 +1199,31 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(monkeypatch):
     try:
         assert close_blocked.wait(5)
         assert adapter._cancel.is_set()
-        release_prepare.set()
+        assert new_observed.wait(5)
+        if gate_busy:
+            assert gate_probe_seen.wait(5)
         adapter._thread.join(5)
         assert not adapter._thread.is_alive()
-        assert owner.starts == 0
+        assert owner.starts == 0 and adapter._owner_start_committed is force_committed
     finally:
+        gate_probe.cleanup()
         release_prepare.set()
         release_close.set()
         thread.join(5)
-    assert not thread.is_alive()
-    assert result == [0]
+    assert not thread.is_alive() and not status_timeouts
+    assert gate_probe_seen.is_set() is gate_busy
+    assert result == [expected]
+
+
+@pytest.mark.parametrize('committed,expected', [(False, False), (True, None)])
+def test_preclose_new_without_owner_start_commit_is_the_only_clean_case(committed, expected):
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a'*64,
+        b'synthetic-policy', 'b'*64, 'c'*64, 1, 1, 1)
+    adapter._owner = object()
+    adapter._preclose_runtime_state = 'NEW'
+    adapter._owner_start_committed = committed
+    # An unknown result after a committed start cannot establish clean exit.
+    assert adapter.close_failure_observed() is expected
 
 
 def test_inflight_query_that_fails_during_close_keeps_runtime_evidence_unknown(monkeypatch):

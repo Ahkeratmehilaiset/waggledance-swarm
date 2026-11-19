@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import random
 import threading
 
 import pytest
@@ -37,9 +38,10 @@ def _refused(reason: str):
 
 class _Counting:
     def __init__(self):
-        self.sizes, self.total = [], 0
+        self.sizes, self.total, self.limit = [], 0, None
 
     def __call__(self, stream, size):
+        assert self.limit is None or self.total + size <= self.limit, "read past the limit set by the test"
         block = stream.read(size)
         self.sizes.append(size)
         self.total += len(block)
@@ -600,9 +602,11 @@ def test_refresh_reads_nothing_when_fresh_and_only_the_stale_segments_otherwise(
         assert generation.refresh(stream, 0, 500.0, read=counting) == 0.0       # 1 and 5 are 10 s old
         assert counting.total == 6 * SEG
         clock.value = 139.0                                                     # a clock behind the recorded reads
+        counting.limit = 12 * SEG                                               # a second re-read fails at once
         with _refused("not_fresh"):                                             # one re-read, then it gives up
             generation.refresh(stream, 30.0, 500.0, read=counting)
         assert counting.total == 12 * SEG and generation.oldest_age() is None and generation.bad is False
+        counting.limit = None
         clock.value = 141.0                                                     # the clock has caught up
         assert generation.refresh(stream, 30.0, 500.0, read=counting) == 1.0 and counting.total == 12 * SEG
         raw = generation.dump()
@@ -776,3 +780,29 @@ def test_a_waiting_caller_gives_up_at_its_own_deadline_without_harming_the_fligh
         # its first pass was stamped 500, which is 20 s old at 520, so it read once more and ended fresh
         assert outcomes == [0.0] and count[0] == 2 * len(data)
         assert generation.refresh(stream, 10.0, 900.0, read=counting) == 0.0 and counting.total == 0
+
+
+def test_max_check_bytes_bounds_every_row_check_and_is_reached(tmp_path):
+    data, rng = _data(40 * SEG), random.Random(5)
+    with _source(tmp_path, data).open("rb") as stream:
+        generation = _generation(stream, len(data))
+        for _ in range(300):
+            rows, longest = rng.randrange(0, 4), rng.randrange(1, 5 * SEG)
+            spans = [(rng.randrange(0, len(data) - longest), rng.randrange(1, longest + 1)) for _ in range(rows)]
+            assert generation.check_rows(stream, spans) <= segments.max_check_bytes(SEG, rows, longest)
+        # reached: three rows of four segments, each starting one byte into a segment, plus the newest segment
+        spans = [(1, 4 * SEG), (6 * SEG + 1, 4 * SEG), (12 * SEG + 1, 4 * SEG)]
+        assert generation.check_rows(stream, spans) == segments.max_check_bytes(SEG, 3, 4 * SEG) == 16 * SEG
+        assert generation.check_rows(stream, [(SEG - 1, 2)]) == segments.max_check_bytes(SEG, 1, 2) == 3 * SEG
+        assert generation.check_rows(stream, [(7, 1)]) == segments.max_check_bytes(SEG, 1, 1) == 2 * SEG
+        assert generation.check_rows(stream, []) == segments.max_check_bytes(SEG, 0, 1) == SEG
+    mib = 1024 * 1024
+    assert segments.max_check_bytes(mib, 3, 4 * mib) == 16 * mib        # the session case: 3 rows of 4 MiB
+    assert segments.max_check_bytes(4 * mib, 3, 4 * mib) == 28 * mib
+    for call in (lambda: segments.max_check_bytes(SEG - 1, 1, 1), lambda: segments.max_check_bytes(SEG + 1, 1, 1),
+                 lambda: segments.max_check_bytes(2 * segments.MAX_SEGMENT_BYTES, 1, 1),
+                 lambda: segments.max_check_bytes(float(SEG), 1, 1), lambda: segments.max_check_bytes(SEG, -1, 1),
+                 lambda: segments.max_check_bytes(SEG, True, 1), lambda: segments.max_check_bytes(SEG, 1, 0),
+                 lambda: segments.max_check_bytes(SEG, 1, 1.0)):
+        with _refused("input"):
+            call()

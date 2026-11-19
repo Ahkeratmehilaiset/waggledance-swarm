@@ -179,6 +179,19 @@ def indexes_for(ledger, offset, length):
     return range(offset // ledger.segment_bytes, (offset + length - 1) // ledger.segment_bytes + 1)
 
 
+def max_check_bytes(segment_bytes, rows, max_row_bytes):
+    """Upper bound of the bytes hashed for ``rows`` row spans of at most ``max_row_bytes`` plus the newest segment.
+
+    A caller with a read allowance can test it before any read; the real figure is never higher.
+    """
+    if (type(segment_bytes) is not int or not MIN_SEGMENT_BYTES <= segment_bytes <= MAX_SEGMENT_BYTES
+            or segment_bytes & (segment_bytes - 1) or type(rows) is not int or rows < 0
+            or type(max_row_bytes) is not int or max_row_bytes <= 0):
+        _refuse('input')
+    # a span of L bytes that starts anywhere touches at most (L + segment - 2) // segment + 1 segments
+    return (rows * ((max_row_bytes + segment_bytes - 2) // segment_bytes + 1) + 1) * segment_bytes
+
+
 def verify(stream, ledger, indexes, *, read=None):
     """Re-hash the chosen segments against the ledger; return the number of bytes hashed."""
     if type(ledger) is not SegmentLedger:

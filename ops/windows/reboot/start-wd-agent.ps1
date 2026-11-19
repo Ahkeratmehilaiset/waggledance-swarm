@@ -2748,6 +2748,213 @@ function Test-WdMindCommandLineFits {
     $length = $CliPath.Length + 2 + 1 + (($quoted -join ' ').Length) + 1
     return $length -le 32767
 }
+function Start-WdMindAsyncStartupController {
+    <# In-process runspace owns the whole pinned preflight, process start and
+       pipe drain. Its parent retains the owner even after delivery closes. #>
+    param([bool]$Enabled,[bool]$Native,[string]$BundleRoot,[string]$ExpectedManifestHash,
+          [string]$ExpectedFleetSha256,[string]$Lane,[int]$DeadlineMilliseconds=15000)
+    if (-not $Enabled -or -not $Native) {return $null}
+    if ($DeadlineMilliseconds -lt 1 -or $DeadlineMilliseconds -gt 60000 -or
+        $ExpectedManifestHash -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
+        $ExpectedFleetSha256 -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
+        @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5') -cnotcontains $Lane) {return $null}
+    $state=[hashtable]::Synchronized(@{completed=$false;ready=$false;closed=$false;reason='not_ready';
+        read=$null;process=$null;outRead=$null;errRead=$null;worker='PREFLIGHT'})
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    $closeSignal=New-Object Threading.ManualResetEvent($false)
+    $owner=[pscustomobject]@{state=$state;clock=$clock;deadline=$DeadlineMilliseconds;closeSignal=$closeSignal;pipeline=$null;async=$null}
+    if (-not (Test-Path variable:script:WdMindAsyncOwners)) {$script:WdMindAsyncOwners=New-Object System.Collections.ArrayList}
+    [void]$script:WdMindAsyncOwners.Add($owner)
+    $worker={
+        param($state,$clock,$limit,$root,$manifestHash,$fleetHash,$lane,$closeSignal)
+        $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
+        function Read-Pinned([string]$path,[string]$pin,[int]$limitBytes) {
+            if($pin -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or $path -cnotmatch '\A[Cc]:[\\/]' -or
+               $path.Substring(3) -match '[:*?"<>|]' -or @($path.Substring(3).Split([char[]]'\/') |
+                 Where-Object {$_ -in @('.','..') -or $_ -match '[. ]$'}).Count){throw 'path'}
+            $full=[IO.Path]::GetFullPath($path);$current=$full
+            while($current){if(([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'path'}
+                $parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -ceq $current){break};$current=$parent}
+            $f=[IO.File]::Open($full,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+            try{if($f.Length -lt 1 -or $f.Length -gt $limitBytes){throw 'size'}
+                $data=New-Object byte[] ([int]$f.Length);$pos=0
+                while($pos -lt $data.Length){$n=$f.Read($data,$pos,$data.Length-$pos);if($n -le 0){throw 'read'};$pos+=$n}
+                if($f.ReadByte() -ne -1){throw 'changed'}}finally{$f.Dispose()}
+            $hash=[Security.Cryptography.SHA256]::Create()
+            try{$actual=[BitConverter]::ToString($hash.ComputeHash($data)).Replace('-','').ToLowerInvariant()}finally{$hash.Dispose()}
+            if($actual -cne $pin.ToLowerInvariant()){throw 'pin'};return ,$data
+        }
+        $proc=$null;$outRead=$null;$errRead=$null;$outDone=$false;$errDone=$false;$unknown=$false;$inputDone=$false
+        $buffer=$null;$write=$null;$spawnEntered=$false;$finished=$false
+        try {
+            if($root -cnotmatch '\A[Cc]:[\\/]' -or $root -match '(^|[\\/])\.\.([\\/]|$)'){throw 'root'}
+            $root=[IO.Path]::GetFullPath($root).TrimEnd('\');$utf8=New-Object Text.UTF8Encoding($false,$true)
+            $manifestPath=Join-Path $root 'deployment-manifest.json'
+            $manifestBytes=Read-Pinned $manifestPath $manifestHash 4194304
+            $manifest=$utf8.GetString($manifestBytes).TrimStart([char]0xFEFF)|ConvertFrom-Json -ErrorAction Stop
+            $controllerPin=$manifest.files.PSObject.Properties['Start-WdMindContentController.ps1']
+            $fleetPin=$manifest.files.PSObject.Properties['wd-fleet.json']
+            $configPin=$manifest.files.PSObject.Properties['wd-mind-startup-config.json']
+            if($manifest.schema_version -ne 1 -or $null -eq $controllerPin -or $null -eq $fleetPin -or
+               $null -eq $configPin -or [string]$fleetPin.Value -ine $fleetHash){throw 'manifest'}
+            $configText=$utf8.GetString((Read-Pinned (Join-Path $root 'wd-mind-startup-config.json') $configPin.Value 16384))
+            $config=ConvertFrom-Json -InputObject $configText -ErrorAction Stop
+            $configNames=@($config.PSObject.Properties.Name)
+            $configExpected=@('schema','enabled','authority','identifier_policy_path','identifier_policy_sha256','approval_reference_sha256')
+            if($configNames.Count -ne $configExpected.Count -or @($configNames | Where-Object {$configExpected -cnotcontains $_}).Count -ne 0 -or
+               $config.schema -cne 'wd.mind-startup-config.v1' -or $config.enabled -isnot [bool] -or -not $config.enabled -or
+               $config.authority -cne 'none' -or $config.identifier_policy_path -isnot [string] -or
+               $config.identifier_policy_path -cnotmatch '\A[Cc]:[\\/]' -or
+               $config.identifier_policy_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+               $config.approval_reference_sha256 -cnotmatch '\A[0-9a-f]{64}\z'){throw 'config'}
+            $canonicalConfig=[ordered]@{schema='wd.mind-startup-config.v1';enabled=$true;authority='none';
+                identifier_policy_path=[string]$config.identifier_policy_path;identifier_policy_sha256=[string]$config.identifier_policy_sha256;
+                approval_reference_sha256=[string]$config.approval_reference_sha256}
+            if((ConvertTo-Json -InputObject $canonicalConfig -Compress) -cne $configText){throw 'config'}
+            $source=Read-Pinned (Join-Path $root 'Start-WdMindContentController.ps1') $controllerPin.Value 1048576
+            [void](Read-Pinned $manifestPath $manifestHash 4194304)
+            [Threading.Monitor]::Enter($state.SyncRoot)
+            try {$closed=[bool]$state.closed} finally {[Threading.Monitor]::Exit($state.SyncRoot)}
+            if($closed -or $closeSignal.WaitOne(0) -or $clock.ElapsedMilliseconds -ge $limit){throw 'cancelled'}
+            $me=[Diagnostics.Process]::GetCurrentProcess();try{$parentStart=$me.StartTime.ToUniversalTime().ToString('o')}finally{$me.Dispose()}
+            $payload=[ordered]@{source=[Convert]::ToBase64String($source);root=$root;manifest=$manifestHash;lane=$lane;
+                parent=$PID;started=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($parentStart));deadline=$limit}
+            $wire=$utf8.GetBytes((ConvertTo-Json -InputObject $payload -Compress))
+            if($wire.Length -gt 1500000){throw 'size'}
+            $trampoline='$ProgressPreference="SilentlyContinue";$ErrorActionPreference="Stop";$x=ConvertFrom-Json ([Console]::In.ReadToEnd());$s=(New-Object Text.UTF8Encoding($false,$true)).GetString([Convert]::FromBase64String($x.source)).TrimStart([char]0xFEFF);$started=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($x.started));. ([scriptblock]::Create($s)) -Enabled -BundleRoot $x.root -ExpectedManifestHash $x.manifest -Lane $x.lane -ControllerPid $x.parent -ControllerStartUtc $started -DeadlineMilliseconds $x.deadline'
+            $info=New-Object Diagnostics.ProcessStartInfo
+            $info.FileName=Join-Path $PSHOME $(if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'})
+            $info.Arguments='-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($trampoline))
+            $info.WorkingDirectory=$root;$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+            $info.RedirectStandardInput=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+            $allowed=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA')
+            foreach($key in @($info.EnvironmentVariables.Keys)){if($allowed -cnotcontains ([string]$key).ToUpperInvariant()){$info.EnvironmentVariables.Remove([string]$key)}}
+            if(-not [IO.File]::Exists($info.FileName)){throw 'executable'}
+            $proc=New-Object Diagnostics.Process;$proc.StartInfo=$info
+            [Threading.Monitor]::Enter($state.SyncRoot)
+            try {$state.process=$proc;$state.worker='STARTING';$closed=[bool]$state.closed} finally {[Threading.Monitor]::Exit($state.SyncRoot)}
+            if($closed -or $closeSignal.WaitOne(0) -or $clock.ElapsedMilliseconds -ge $limit){throw 'cancelled'}
+            $spawnEntered=$true;if(-not $proc.Start()){throw 'start'}
+            $write=$proc.StandardInput.BaseStream.WriteAsync($wire,0,$wire.Length)
+            $outBuf=New-Object byte[] 4096;$errBuf=New-Object byte[] 4096
+            $outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)
+            $errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)
+            $buffer=New-Object IO.MemoryStream;$invalid=$false;$discarded=$false
+            while($true){
+                [Threading.Monitor]::Enter($state.SyncRoot)
+                try {$closed=[bool]$state.closed -or $closeSignal.WaitOne(0);$state.outRead=$outRead;$state.errRead=$errRead;
+                    if($closed -or $clock.ElapsedMilliseconds -ge $limit){$state.worker='HOLD'}} finally {[Threading.Monitor]::Exit($state.SyncRoot)}
+                if(-not $discarded -and ($closed -or $clock.ElapsedMilliseconds -ge $limit)) {
+                    [Array]::Clear($buffer.GetBuffer(),0,[int]$buffer.Capacity);$buffer.SetLength(0);$discarded=$true
+                }
+                if(-not $inputDone -and $write.IsCompleted){try{[void]$write.GetAwaiter().GetResult();$proc.StandardInput.Close()}catch{$invalid=$true};$inputDone=$true;[Array]::Clear($wire,0,$wire.Length)}
+                foreach($which in @('out','err')){
+                    $task=if($which -ceq 'out'){$outRead}else{$errRead};$done=if($which -ceq 'out'){$outDone}else{$errDone}
+                    if($done -or $null -eq $task -or -not $task.IsCompleted){continue}
+                    try{$n=$task.GetAwaiter().GetResult()}catch{$unknown=$true;$invalid=$true;$n=0}
+                    if($n -eq 0){if($which -ceq 'out'){$outDone=$true}else{$errDone=$true}}
+                    elseif($which -ceq 'err'){$invalid=$true;$errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)}
+                    else{if($buffer.Length+$n -gt 65536){$invalid=$true}
+                        elseif(-not $invalid -and -not $closed -and $clock.ElapsedMilliseconds -lt $limit){$buffer.Write($outBuf,0,$n)}
+                        $outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)}
+                }
+                if($proc.HasExited -and $outDone -and $errDone -and -not $unknown){$finished=$true;break}
+                [Threading.Thread]::Sleep(10)
+            }
+            [Threading.Monitor]::Enter($state.SyncRoot)
+            try {$closed=[bool]$state.closed -or $closeSignal.WaitOne(0)} finally {[Threading.Monitor]::Exit($state.SyncRoot)}
+            if($closed -or $invalid -or $proc.ExitCode -ne 0 -or $clock.ElapsedMilliseconds -ge $limit){throw 'unavailable'}
+            $text=[Text.Encoding]::UTF8.GetString($buffer.ToArray());$opts=@{InputObject=$text;ErrorAction='Stop'}
+            if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$opts.DateKind='String'}
+            $frame=ConvertFrom-Json @opts
+            $frameKeys=@($frame.PSObject.Properties.Name)
+            $frameExpected=@('controller_schema','complete_verified','manifest_sha256','outcome','authority','delivery',
+                'caller_authentication','server_authentication','fragment','receipt')
+            if((ConvertTo-Json -InputObject $frame -Compress -Depth 16) -cne $text -or
+               $frameKeys.Count -ne $frameExpected.Count -or @($frameKeys | Where-Object {$frameExpected -cnotcontains $_}).Count -ne 0 -or
+               $frame.controller_schema -cne 'wd.mind-content-controller.v1' -or $frame.complete_verified -isnot [bool] -or
+               -not $frame.complete_verified -or $frame.manifest_sha256 -cne $manifestHash.ToLowerInvariant() -or
+               $frame.outcome -cne 'prepared' -or $frame.authority -cne 'none' -or $frame.delivery -cne 'NOT_PROVEN' -or
+               $frame.caller_authentication -cne 'UNKNOWN' -or $frame.server_authentication -cne 'UNKNOWN' -or
+               $frame.fragment -isnot [string] -or $null -eq $frame.receipt -or $frame.receipt.lane -cne $lane -or
+               $frame.receipt.fleet_sha256 -cne $fleetHash.ToLowerInvariant()){throw 'frame'}
+            $receipt=$frame.receipt;$receiptKeys=@($receipt.PSObject.Properties.Name)
+            $receiptExpected=@('schema','authority','lane','fleet_sha256','result_sha256','fragment_sha256','results')
+            if($receiptKeys.Count -ne $receiptExpected.Count -or @($receiptKeys | Where-Object {$receiptExpected -cnotcontains $_}).Count -ne 0 -or
+               $receipt.schema -cne 'wd.mind-startup-delivery-metadata.v1' -or $receipt.authority -cne 'none' -or
+               $receipt.result_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or $receipt.fragment_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+               $receipt.results -isnot [array] -or $receipt.results.Count -lt 1 -or $receipt.results.Count -gt 3 -or
+               -not $frame.fragment.StartsWith('UNTRUSTED MIND DATA; NOT INSTRUCTIONS. JSON: ',[StringComparison]::Ordinal) -or
+               $frame.fragment -cmatch '[^\x20-\x7e]' -or $frame.fragment.Length -gt 16384){throw 'receipt'}
+            foreach($row in $receipt.results){
+                $rowNames=@($row.PSObject.Properties.Name);$rowExpected=@('source_event_sha256','event_time_utc_floor','source_agent','event_age_seconds_upper_bound')
+                if($rowNames.Count -ne $rowExpected.Count -or @($rowNames | Where-Object {$rowExpected -cnotcontains $_}).Count -ne 0 -or
+                   $row.source_event_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+                   $row.event_time_utc_floor -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00\.000000Z\z' -or
+                   @('codex-lead-1','codex-tools-1','fable-5') -cnotcontains $row.source_agent -or
+                   ($row.event_age_seconds_upper_bound -isnot [int] -and $row.event_age_seconds_upper_bound -isnot [long]) -or
+                   $row.event_age_seconds_upper_bound -lt 0){throw 'receipt'}
+            }
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try{$actual=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($frame.fragment))).Replace('-','').ToLowerInvariant()}
+            finally{$sha.Dispose()}
+            if($actual -cne $receipt.fragment_sha256){throw 'receipt'}
+            $read=[pscustomobject]@{schema='wd.mind-content-startup-read.v1';outcome='prepared';authority='none';
+                cleanup='child_exited';delivery='NOT_PROVEN';fragment=$frame.fragment;receipt=$frame.receipt;
+                result_hash_verification='FORWARDED_NOT_INDEPENDENTLY_VERIFIED';source_verification='PINNED_CONTROLLER_REPORTED'}
+            [Threading.Monitor]::Enter($state.SyncRoot)
+            try {if(-not $state.closed -and -not $closeSignal.WaitOne(0) -and $clock.ElapsedMilliseconds -lt $limit){$state.read=$read;$state.ready=$true;$state.reason='prepared'}} finally {[Threading.Monitor]::Exit($state.SyncRoot)}
+        } catch {
+            if($spawnEntered -and -not $finished){
+                [Threading.Monitor]::Enter($state.SyncRoot);try{$state.worker='HOLD'}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+                if($null -eq $outBuf){$outBuf=New-Object byte[] 4096};if($null -eq $errBuf){$errBuf=New-Object byte[] 4096}
+                while($true){
+                    if(-not $inputDone -and ($null -eq $write -or $write.IsCompleted)){try{$proc.StandardInput.Close()}catch{};$inputDone=$true}
+                    foreach($which in @('out','err')){try{
+                        if($which -ceq 'out'){if($null -eq $outRead -and -not $outDone){$outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)}
+                            if($null -ne $outRead -and $outRead.IsCompleted){$n=$outRead.GetAwaiter().GetResult();$outRead=$null;if($n -eq 0){$outDone=$true}}}
+                        else{if($null -eq $errRead -and -not $errDone){$errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)}
+                            if($null -ne $errRead -and $errRead.IsCompleted){$n=$errRead.GetAwaiter().GetResult();$errRead=$null;if($n -eq 0){$errDone=$true}}}
+                    }catch{$unknown=$true}}
+                    try{if($proc.HasExited -and $outDone -and $errDone -and -not $unknown){$finished=$true;break}}catch{}
+                    [Threading.Thread]::Sleep(100)
+                }
+            }
+        } finally {
+            if($null -ne $buffer){[Array]::Clear($buffer.GetBuffer(),0,[int]$buffer.Capacity);$buffer.Dispose()}
+            if(($finished -or -not $spawnEntered) -and $null -ne $proc){$proc.Dispose()}
+            [Threading.Monitor]::Enter($state.SyncRoot)
+            try {if($closeSignal.WaitOne(0)){$state.read=$null;$state.ready=$false};if(-not $spawnEntered -or $finished){$state.completed=$true;$state.worker='DONE';$state.process=$null;$state.outRead=$null;$state.errRead=$null}}
+            finally {[Threading.Monitor]::Exit($state.SyncRoot)}
+        }
+    }
+    try {
+        $pipeline=[Management.Automation.PowerShell]::Create();$owner.pipeline=$pipeline
+        [void]$pipeline.AddScript($worker.ToString()).AddArgument($state).AddArgument($clock).AddArgument($DeadlineMilliseconds).
+            AddArgument($BundleRoot).AddArgument($ExpectedManifestHash).AddArgument($ExpectedFleetSha256).AddArgument($Lane).AddArgument($closeSignal)
+        $owner.async=$pipeline.BeginInvoke()
+    } catch {$state.worker='HOLD';$state.reason='start_unknown'}
+    return $owner
+}
+
+function Get-WdMindAsyncStartupResult {
+    param($Owner)
+    $result=[ordered]@{complete_verified=$false;read=$null;reason='not_ready';state='not_started'}
+    if($null -eq $Owner){return [pscustomobject]$result}
+    if (-not [Threading.Monitor]::TryEnter($Owner.state.SyncRoot)) {
+        [void]$Owner.closeSignal.Set();$result.reason='busy';$result.state='HOLD';return [pscustomobject]$result
+    }
+    try {
+        if($Owner.state.ready -and -not $Owner.state.closed -and $Owner.clock.ElapsedMilliseconds -lt $Owner.deadline){
+            $result.complete_verified=$true;$result.read=$Owner.state.read;$result.reason='prepared'
+        }
+        $Owner.state.closed=$true
+        if(-not $result.complete_verified){$Owner.state.read=$null;$Owner.state.ready=$false}
+        $result.state=[string]$Owner.state.worker
+    } finally {[Threading.Monitor]::Exit($Owner.state.SyncRoot);[void]$Owner.closeSignal.Set()}
+    return [pscustomobject]$result
+}
+
 function Select-WdMindContentNativeArguments {
     <# Composition seam only. CompleteVerified must come from a controller that
        has verified the pinned bootstrap and observed its complete output and
@@ -2816,7 +3023,24 @@ function Invoke-WdMindNativeInteractiveCli {
 Remove-Item Env:WD_MIND_STARTUP_VIEW, Env:WD_MIND_STARTUP_VIEW_SHA256 -ErrorAction SilentlyContinue
 # Optional direct status projection, after DryRun and identity/bootstrap completion.
 $mindStartupRead = [pscustomobject]@{outcome='refused';reason='startup_helper_refused';record_written=$false}
-try {
+$mindContentOwner=$null;$mindContentRequested=$false;$mindExpectedFleet=''
+if ($launchTurnMode -ceq 'interactive' -and -not $RecoverInteractive -and $null -ne $deploymentAnchor) {
+  $mindContentConfig=$deploymentAnchor.files.PSObject.Properties['wd-mind-startup-config.json']
+  $mindFleetPin=$deploymentAnchor.files.PSObject.Properties['wd-fleet.json']
+  if ($null -ne $mindContentConfig) {
+    $mindContentRequested=$true
+    if ($null -ne $mindFleetPin -and [string]$mindFleetPin.Value -cmatch '\A[0-9A-Fa-f]{64}\z') {
+      $mindExpectedFleet=([string]$mindFleetPin.Value).ToLowerInvariant()
+      try {$mindContentOwner=Start-WdMindAsyncStartupController -Enabled $true -Native $true `
+        -BundleRoot $PSScriptRoot -ExpectedManifestHash $script:LaneManifestAnchor `
+        -ExpectedFleetSha256 $mindExpectedFleet -Lane $Agent} catch { }
+    }
+  }
+}
+if ($mindContentRequested) {
+  # The optional content path never waits for the older synchronous Mind read.
+  $mindStartupRead=[pscustomobject]@{outcome='unknown';reason='deferred_for_content';record_written=$false}
+} else { try {
   $mindHelper = Join-Path $PSScriptRoot 'Invoke-WdMindStartupRead.ps1'
   [void](Assert-LanePathWithoutReparse -Path $mindHelper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
   $mindManifest = Read-Utf8LaneSnapshot -Path $fixedDeploymentManifest
@@ -2828,7 +3052,7 @@ try {
       $mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant()) { throw 'pin' }
   . ([scriptblock]::Create([string]$mindHelperSnapshot.Text))
   $mindStartupRead = Invoke-WdMindStartupRead -BundleRoot $PSScriptRoot -ExpectedManifestHash $script:LaneManifestAnchor -Lane $Agent -Worktree $worktree
-} catch { }
+} catch { } }
 $mindOriginalStartupPrompt = $startupPrompt
 $mindOriginalContinuationPrompt = $continuationPrompt
 $mindStartupGuidance = ' Mind startup status read: ' + [string]$mindStartupRead.outcome +
@@ -3224,6 +3448,15 @@ try {
       Write-Warning 'Mind status projection omitted: command_line_too_long; using baseline prompt'
       if (-not (Test-WdMindCommandLineFits -CliPath $cliPath -Arguments $launchArguments)) { throw 'Baseline lane command line exceeds the Windows limit' }
     }
+  }
+  if ($mindContentRequested) {
+    try {
+      $mindPoll=Get-WdMindAsyncStartupResult -Owner $mindContentOwner
+      $mindSelected=Select-WdMindContentNativeArguments -CliPath $cliPath -Arguments $launchArguments `
+        -Native $true -CompleteVerified ([bool]$mindPoll.complete_verified) -Read $mindPoll.read `
+        -Lane $Agent -FleetSha256 $mindExpectedFleet
+      $launchArguments=[string[]]$mindSelected.arguments
+    } catch { }
   }
   if ($nativeLead) {
     Invoke-WdNativeLeadTerminal -CliPath $cliPath -Arguments $launchArguments -ThreadId $nativeResume.thread_id `

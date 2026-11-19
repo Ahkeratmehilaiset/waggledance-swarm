@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import threading
 
 import pytest
 
@@ -236,12 +237,12 @@ def test_load_accepts_only_the_exact_canonical_bytes(tmp_path):
     assert segments.dump(segments.load(encoded(prefix_sha256=None))) == encoded(prefix_sha256=None)
 
 
-def test_rotation_reaches_every_segment_and_reports_the_oldest_check(tmp_path):
+def test_rotation_starts_unknown_and_reaches_every_segment_in_turn(tmp_path):
     data = _data(7 * SEG + 5)
     with _source(tmp_path, data).open("rb") as stream:
         ledger = segments.build(stream, len(data), segment_bytes=SEG)
-        rotation = segments.Rotation(ledger, 100.0)
-        assert rotation.oldest_age(130.0) == 30.0
+        rotation = segments.Rotation(ledger)
+        assert rotation.oldest_age(130.0) is None
         seen, now = [], 130.0
         for _ in range(4):
             plan = rotation.plan(ledger, 2 * SEG)
@@ -249,25 +250,32 @@ def test_rotation_reaches_every_segment_and_reports_the_oldest_check(tmp_path):
             segments.verify(stream, ledger, plan)
             rotation.mark(plan, now)
             seen += plan
+            assert (rotation.oldest_age(now) is None) == (len(seen) < 8)
             now += 1.0
     assert seen == [0, 1, 2, 3, 4, 5, 6, 7] and rotation.oldest_age(now) == now - 130.0
-    assert rotation.plan(ledger, 0) == [0] and rotation.plan(ledger, 10 ** 9) == list(range(8))
+    assert rotation.plan(ledger, SEG) == [0] and rotation.plan(ledger, 10 ** 9) == list(range(8))
+    assert rotation.plan(ledger, 2 * SEG - 1) == [0]
     rotation.mark([5], now)
     assert rotation.plan(ledger, SEG) == [0]
-    for call in (lambda: rotation.mark([8], now), lambda: rotation.mark([0], now - 50.0),
-                 lambda: rotation.mark([0], float("nan")), lambda: rotation.mark(3, now),
-                 lambda: rotation.oldest_age(0.0), lambda: rotation.plan(ledger, -1),
-                 lambda: rotation.plan(ledger, 1.5), lambda: segments.Rotation(object(), now)):
+    rotation.mark([0], now - 50.0)                       # an out-of-order finish never moves a time back
+    assert rotation.oldest_age(now) == now - 130.0
+    assert rotation.oldest_age(129.0) is None            # a clock value older than a recorded read is unknown
+    for call in (lambda: rotation.mark([8], now), lambda: rotation.mark([0], float("nan")),
+                 lambda: rotation.mark(3, now), lambda: rotation.mark([True], now),
+                 lambda: rotation.oldest_age(float("inf")), lambda: rotation.oldest_age(None),
+                 lambda: rotation.plan(ledger, -1), lambda: rotation.plan(ledger, 0),
+                 lambda: rotation.plan(ledger, SEG - 1), lambda: rotation.plan(ledger, 1.5),
+                 lambda: segments.Rotation(object())):
         with _refused("input"):
             call()
 
 
-def test_rotation_keeps_the_times_of_untouched_complete_segments_after_growth(tmp_path):
+def test_rotation_after_growth_keeps_old_times_and_marks_only_what_was_re_read(tmp_path):
     data = _data(5 * SEG)
     with _source(tmp_path, data).open("rb") as stream:
         old = segments.build(stream, 2 * SEG + 9, segment_bytes=SEG)
-        rotation = segments.Rotation(old, 10.0)
-        rotation.mark([0], 20.0)
+        rotation = segments.Rotation(old)
+        rotation.mark([0, 2], 20.0)
         new = segments.extend(stream, old, len(data))
         grown = rotation.resized(old, new, 50.0)
         same = rotation.resized(old, old, 50.0)
@@ -275,10 +283,13 @@ def test_rotation_keeps_the_times_of_untouched_complete_segments_after_growth(tm
             rotation.resized(new, new, 50.0)
         with _refused("input"):
             grown.resized(new, old, 60.0)
-    assert grown.oldest_age(50.0) == 40.0 and same.oldest_age(50.0) == 40.0
+    assert grown.oldest_age(50.0) is None and same.oldest_age(50.0) is None      # segment 1 was never read
     assert grown.plan(new, 10 ** 9) == [1, 2, 3, 4, 0]
     grown.mark([1], 50.0)
-    assert grown.oldest_age(50.0) == 30.0
+    same.mark([1], 50.0)
+    assert grown.oldest_age(50.0) == 30.0 and same.oldest_age(50.0) == 30.0      # segment 0 keeps its time
+    grown.mark([0], 50.0)
+    assert grown.oldest_age(50.0) == 0.0                                         # 2, 3 and 4 were re-read at growth
 
 
 def test_a_ledger_cannot_be_created_with_inconsistent_parts():
@@ -295,3 +306,278 @@ def test_a_ledger_cannot_be_created_with_inconsistent_parts():
             ledger.digest(index)
         with _refused("input"):
             ledger.span(index)
+
+
+class _Clock:
+    def __init__(self, value=100.0):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+
+def _generation(stream, size, clock=None, **changes):
+    args = dict(segment_bytes=SEG, file_identity="volume-1:file-9", generation=None, clock=clock or _Clock())
+    args.update(changes)
+    return segments.open_generation(stream, size, **args)
+
+
+def test_generation_checks_every_segment_a_row_touches_plus_the_newest(tmp_path):
+    data, counting, clock = _data(9 * SEG + 3), _Counting(), _Clock()
+    with _source(tmp_path, data).open("rb") as stream:
+        generation = _generation(stream, len(data), clock,
+                                 expected_prefix_sha256=hashlib.sha256(data).hexdigest())
+        assert generation.oldest_age() == 0.0 and generation.bad is False
+        clock.value = 105.0
+        # row one touches segments 0 and 1, row two touches 4, 5, 6 and 7, and the newest segment is 9
+        hashed = generation.check_rows(stream, [(SEG - 1, 2), (4 * SEG + 1, 3 * SEG)], read=counting)
+    assert hashed == counting.total == 6 * SEG + 3
+    assert generation.oldest_age() == 5.0
+    assert (generation.file_identity, generation.generation) == ("volume-1:file-9", None)
+    assert generation.ledger.end == len(data)
+
+
+def test_any_mismatch_marks_the_generation_bad_for_every_later_call(tmp_path):
+    data, clock = _data(4 * SEG + 3), _Clock()
+    path = _source(tmp_path, data)
+    with path.open("rb") as stream:
+        generation = _generation(stream, len(data), clock)
+    changed = bytearray(data)
+    changed[2 * SEG] ^= 1
+    path.write_bytes(bytes(changed))
+    with path.open("rb") as stream:
+        assert generation.check_rows(stream, [(0, 10)]) == SEG + 3      # the changed segment was not read
+        with _refused("segment_mismatch"):
+            generation.scrub(stream, 3 * SEG)
+    assert generation.bad is True
+    path.write_bytes(data)                                              # a file put back stays refused
+    with path.open("rb") as stream:
+        for call in (lambda: generation.check_rows(stream, [(0, 10)]), lambda: generation.scrub(stream, SEG),
+                     lambda: generation.oldest_age(), lambda: generation.extended(stream, len(data)),
+                     lambda: generation.dump()):
+            with _refused("generation_bad"):
+                call()
+        counting = _Counting()
+        with _refused("generation_bad"):
+            generation.check_rows(stream, [(0, 10)], read=counting)
+        with _refused("generation_bad"):
+            generation.scrub(stream, SEG, read=counting)
+        with _refused("generation_bad"):
+            generation.extended(stream, len(data) + 1, read=counting)
+        assert counting.total == 0                                      # a bad generation reads nothing more
+
+
+def test_truncation_and_a_changed_tail_mark_the_generation_bad(tmp_path):
+    data = _data(3 * SEG + 100)
+    path = _source(tmp_path, data)
+    with path.open("rb") as stream:
+        first, second = _generation(stream, len(data)), _generation(stream, 2 * SEG + 50)
+    path.write_bytes(data[:3 * SEG + 99])
+    with path.open("rb") as stream, _refused("short_read"):
+        first.check_rows(stream, [])
+    assert first.bad is True
+    changed = bytearray(data)
+    changed[2 * SEG + 10] ^= 1
+    path.write_bytes(bytes(changed))
+    with path.open("rb") as stream, _refused("segment_mismatch"):
+        second.extended(stream, len(data))
+    assert second.bad is True
+
+
+def test_an_error_raised_by_the_read_hook_marks_nothing_bad_and_nothing_fresh(tmp_path):
+    data, clock = _data(3 * SEG), _Clock()
+
+    class Limit(Exception):
+        pass
+
+    def refusing(stream, size):
+        raise Limit()
+
+    with _source(tmp_path, data).open("rb") as stream:
+        generation = _generation(stream, len(data), clock)
+        clock.value = 200.0
+        with pytest.raises(Limit):
+            generation.scrub(stream, SEG, read=refusing)
+        with pytest.raises(Limit):
+            generation.check_rows(stream, [(0, 1)], read=refusing)
+        assert generation.bad is False and generation.oldest_age() == 100.0
+        with _refused("read_type"):
+            generation.scrub(stream, SEG, read=lambda stream, size: None)
+    assert generation.bad is True
+
+
+def test_an_extended_generation_keeps_binding_times_and_whole_prefix_hash(tmp_path):
+    data, clock = _data(4 * SEG + 2), _Clock()
+    with _source(tmp_path, data).open("rb") as stream:
+        old = _generation(stream, SEG + 5, clock, generation="gen-1")
+        clock.value = 160.0
+        new = old.extended(stream, len(data))
+        assert new.ledger.prefix_sha256 == hashlib.sha256(data).hexdigest()
+        assert (new.file_identity, new.generation) == ("volume-1:file-9", "gen-1")
+        assert (old.file_identity, old.generation) == ("volume-1:file-9", "gen-1")
+        assert new.oldest_age() == 60.0 and old.oldest_age() == 60.0 and old.ledger.end == SEG + 5
+        clock.value = 170.0
+        assert new.check_rows(stream, [(0, SEG)]) == SEG + 2
+        assert new.oldest_age() == 10.0 and old.bad is False
+
+
+def test_a_file_seen_shorter_than_the_pinned_prefix_marks_the_generation_bad(tmp_path):
+    data = _data(2 * SEG + 9)
+    with _source(tmp_path, data).open("rb") as stream:
+        generation = _generation(stream, len(data))
+        assert generation.extended(stream, len(data)).ledger is generation.ledger
+        with _refused("not_extension"):
+            generation.extended(stream, len(data) + 0.5)
+        assert generation.bad is False
+        with _refused("not_extension"):
+            generation.extended(stream, len(data) - 1)
+        assert generation.bad is True
+        with _refused("generation_bad"):
+            generation.check_rows(stream, [])
+
+
+def test_bad_row_spans_and_bad_creation_input_are_refused(tmp_path):
+    data = _data(2 * SEG)
+    with _source(tmp_path, data).open("rb") as stream:
+        generation = _generation(stream, len(data))
+        for spans in ([(0, len(data) + 1)], [(-1, 1)], [(0, 0)], [(1,)], [None], 7, [(0, 1.0)]):
+            with _refused("input"):
+                generation.check_rows(stream, spans)
+        assert generation.bad is False and generation.check_rows(stream, [(0, 1), (SEG, 1)]) == 2 * SEG
+        for changes in (dict(file_identity=""), dict(file_identity=7), dict(file_identity="a\nb"),
+                        dict(file_identity="x" * 513), dict(file_identity="\u00e4"), dict(generation=""),
+                        dict(generation=3), dict(clock=7), dict(clock=lambda: float("nan")),
+                        dict(clock=lambda: "1")):
+            with _refused("input"):
+                _generation(stream, len(data), **changes)
+        counting = _Counting()
+        with _refused("input"):
+            _generation(stream, len(data), clock=lambda: float("nan"), read=counting)
+        assert counting.total == 0                                      # refused before the full pass
+        with _refused("prefix_mismatch"):
+            _generation(stream, len(data), expected_prefix_sha256="0" * 64)
+        late = _Clock()
+        generation = _generation(stream, len(data), late)
+        late.value = float("inf")
+        for call in (lambda: generation.oldest_age(), lambda: generation.scrub(stream, SEG),
+                     lambda: generation.check_rows(stream, []), lambda: generation.extended(stream, len(data))):
+            with _refused("input"):
+                call()
+        assert generation.bad is False
+        with _refused("input"):
+            generation.scrub(stream, SEG - 1)
+
+
+def test_a_restored_generation_is_bound_and_not_fresh_until_every_segment_is_re_read(tmp_path):
+    data, clock = _data(3 * SEG + 7), _Clock()
+    digest = hashlib.sha256(data).hexdigest()
+    binding = dict(file_identity="volume-1:file-9", generation="gen-1", expected_prefix_sha256=digest)
+    with _source(tmp_path, data).open("rb") as stream:
+        raw = _generation(stream, len(data), clock, generation="gen-1").dump()
+        restored = segments.restore_generation(raw, clock=clock, expected_sha256=hashlib.sha256(raw).hexdigest(),
+                                               **binding)
+        assert restored.dump() == raw and restored.bad is False and restored.ledger.prefix_sha256 == digest
+        assert restored.oldest_age() is None
+        clock.value = 300.0
+        assert restored.check_rows(stream, [(0, 1)]) == SEG + 7
+        assert restored.oldest_age() is None                       # segments 1 and 2 are still unread
+        assert restored.scrub(stream, 2 * SEG) == 2 * SEG
+        assert restored.oldest_age() == 0.0
+        grown_source = _source(tmp_path, data + b"more")
+        with grown_source.open("rb") as grown_stream:
+            grown = restored.extended(grown_stream, len(data) + 4)
+        assert grown.ledger.prefix_sha256 is None                   # no whole-prefix claim after a restore
+        with _refused("binding_mismatch"):
+            segments.restore_generation(grown.dump(), **dict(binding, expected_prefix_sha256=digest))
+    for change in (dict(file_identity="volume-1:file-8"), dict(generation=None), dict(generation="gen-2"),
+                   dict(expected_prefix_sha256="0" * 64)):
+        with _refused("binding_mismatch"):
+            segments.restore_generation(raw, **dict(binding, **change))
+    for change in (dict(file_identity=""), dict(generation=5), dict(expected_prefix_sha256="zz"),
+                   dict(expected_prefix_sha256=None), dict(clock=5)):
+        with _refused("input"):
+            segments.restore_generation(raw, **dict(binding, **change))
+    value = json.loads(raw)
+    variants = [raw + b" ", raw[:-1], b"", "text", json.dumps(value).encode("ascii"),
+                json.dumps(dict(value, extra=1), sort_keys=True, separators=(",", ":")).encode("ascii"),
+                json.dumps(dict(value, schema="other"), sort_keys=True, separators=(",", ":")).encode("ascii"),
+                json.dumps(dict(value, authority="some"), sort_keys=True, separators=(",", ":")).encode("ascii"),
+                json.dumps(dict(value, ledger=[]), sort_keys=True, separators=(",", ":")).encode("ascii"),
+                json.dumps(dict(value, file_identity=""), sort_keys=True, separators=(",", ":")).encode("ascii"),
+                raw.replace(b'"generation":"gen-1"', b'"generation":"gen-1","generation":"gen-1"')]
+    for bad in variants:
+        with _refused("ledger_format"):
+            segments.restore_generation(bad, **binding)
+    with _refused("ledger_format"):
+        segments.restore_generation(raw, expected_sha256="0" * 64, **binding)
+    with _refused("ledger_format"):
+        segments.restore_generation(raw, expected_sha256=7, **binding)
+
+
+def test_parallel_readers_share_one_generation_and_one_bad_mark(tmp_path):
+    data, clock = _data(16 * SEG + 1), _Clock()
+    path = _source(tmp_path, data)
+    with path.open("rb") as stream:
+        generation = _generation(stream, len(data), clock)
+    clock.value = 400.0
+
+    def run(turns):
+        outcomes, gate = [], threading.Barrier(5)
+
+        def reader(number):
+            try:
+                with path.open("rb") as stream:
+                    gate.wait(timeout=30)
+                    for turn in range(turns):
+                        generation.check_rows(stream, [((number * 3 + turn) % 16 * SEG, SEG)])
+                        generation.scrub(stream, 2 * SEG)
+                outcomes.append("clean")
+            except segments.SourceSegmentsRefused as error:
+                outcomes.append(error.reason)
+            except BaseException as error:                      # reported below, never swallowed
+                outcomes.append(repr(error))
+
+        threads = [threading.Thread(target=reader, args=(number,), daemon=True) for number in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=120)
+        assert not any(thread.is_alive() for thread in threads)
+        return outcomes
+
+    assert run(40) == ["clean"] * 5
+    assert generation.bad is False and generation.oldest_age() == 0.0
+    changed = bytearray(data)
+    changed[7 * SEG + 3] ^= 1
+    path.write_bytes(bytes(changed))
+    outcomes = run(40)
+    assert len(outcomes) == 5 and set(outcomes) <= {"segment_mismatch", "generation_bad"}
+    assert "segment_mismatch" in outcomes and generation.bad is True
+
+
+def test_times_are_taken_before_reading_and_a_bad_mark_set_during_a_read_refuses_that_read(tmp_path):
+    data, clock = _data(3 * SEG), _Clock()
+    path = _source(tmp_path, data)
+
+    def slow(stream, size):
+        clock.value += 10.0
+        return stream.read(size)
+
+    with path.open("rb") as stream, path.open("rb") as other:
+        generation = _generation(stream, len(data), clock, read=slow)
+        assert clock.value == 130.0 and generation.oldest_age() == 30.0     # counted from before the full pass
+        assert generation.scrub(stream, 3 * SEG, read=slow) == 3 * SEG
+        assert clock.value == 160.0 and generation.oldest_age() == 30.0     # and from before each re-read
+        seen = []
+
+        def interrupted(stream, size):
+            if not seen:
+                seen.append(size)
+                with _refused("not_extension"):
+                    generation.extended(other, len(data) - 1)                # another reader sees a shorter file
+            return stream.read(size)
+
+        clock.value = 500.0
+        with _refused("generation_bad"):
+            generation.check_rows(stream, [(0, 1)], read=interrupted)
+        assert generation.bad is True and seen == [SEG]

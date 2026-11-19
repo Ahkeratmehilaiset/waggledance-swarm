@@ -1090,7 +1090,8 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(
     from tools import wd_mind_full_runtime as runtime
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     before_commit, release_prepare, close_blocked, release_close = (threading.Event() for _ in range(4))
-    new_observed, gate_probe_seen, status_timeouts = threading.Event(), threading.Event(), []
+    new_observed, gate_probe_seen, refused_status = (threading.Event() for _ in range(3))
+    status_timeouts, gate_results = [], []
     policy = b'synthetic-policy'
     source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
     class Admission:
@@ -1102,7 +1103,10 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(
             assert before_commit.wait(5)
             return b'S'
     class Output:
-        def write(self, data): return len(data)
+        def write(self, data):
+            if b'"state":"HOLD"' in bytes(data):
+                refused_status.set()
+            return len(data)
         def flush(self): pass
     class Owner:
         def status(self):
@@ -1132,6 +1136,8 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(
             if not blocking and not acquired and self.armed:
                 self.armed = False
                 self.lock.release()
+            if not blocking:
+                gate_results.append(acquired)
                 gate_probe_seen.set()
             return acquired
         def release(self): self.lock.release()
@@ -1148,8 +1154,7 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(
                 self.lock.release()
 
     gate_probe = GateProbe()
-    if gate_busy:
-        adapter._owner_start_gate = gate_probe
+    adapter._owner_start_gate = gate_probe
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
     monkeypatch.setattr(child._LocalManifestQuery, '_check_policy', lambda self: object())
     calls = []
@@ -1200,8 +1205,14 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(
         assert close_blocked.wait(5)
         assert adapter._cancel.is_set()
         assert new_observed.wait(5)
-        if gate_busy:
+        if unstarted_owned is False:
+            # A successful probe still owns the real lock here; the close
+            # worker cannot change the fence before the source checks it.
             assert gate_probe_seen.wait(5)
+        else:
+            # These statuses are rejected before attempting the gate. HOLD
+            # proves the final status decision happened before close resumes.
+            assert refused_status.wait(5)
         adapter._thread.join(5)
         assert not adapter._thread.is_alive()
         assert owner.starts == 0 and adapter._owner_start_committed is force_committed
@@ -1211,7 +1222,10 @@ def test_stop_blocks_owner_start_even_if_close_worker_is_delayed(
         release_close.set()
         thread.join(5)
     assert not thread.is_alive() and not status_timeouts
-    assert gate_probe_seen.is_set() is gate_busy
+    if unstarted_owned is False:
+        assert gate_results == [not gate_busy]
+    else:
+        assert not gate_probe_seen.is_set()
     assert result == [expected]
 
 

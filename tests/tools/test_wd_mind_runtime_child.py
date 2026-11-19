@@ -353,6 +353,8 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
             starts.append('owner')
             return {'state':'STARTING'}
         def status(self): return {'state':'READY', 'owned':True}
+        def start_diagnostic(self):
+            return {'reason':'NONE', 'exception_type':'NONE', 'authority':'none'}
         def located_candidates(self, request):
             requests.append(request)
             return {'schema':'wd.mind-pipe-candidates.v2', 'lane':request['lane'],
@@ -372,11 +374,23 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
         def close(self, *, timeout):
             self.closes += 1
             return {'state':'HOLD'} if self.closes == 1 else {'state':'STOPPED'}
+    adapter_ref = []
+    def make_adapter(**kwargs):
+        adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a'*64, policy,
+            hashlib.sha256(policy).hexdigest(), 'c'*64, 1, 1, 1, admission=kwargs['_admission'])
+        adapter._owner, adapter._state = owner, 'READY'
+        if kwargs['_admission'] is not None:
+            kwargs['_admission'].bind_owner(adapter)
+        adapter_ref.append(adapter)
+        return adapter
     def service_factory(**kwargs):
-        assert kwargs['owner'] is owner
+        assert kwargs['owner'] is adapter_ref[0]
         assert kwargs['pipe_name'] == process.local_candidate_pipe_name(manifest_sha256='a'*64)
         return Service(kwargs['owner'])
-    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: owner)
+    monkeypatch.setattr(child, 'create_local_manifest_query', make_adapter)
+    monkeypatch.setattr(child._LocalManifestQuery, 'start', lambda self: owner.start())
+    monkeypatch.setattr(child._LocalManifestQuery, 'status', lambda self: owner.status())
+    monkeypatch.setattr(child._LocalManifestQuery, 'located_candidates', lambda self, request: owner.located_candidates(request))
     monkeypatch.setattr(process, 'create_local_candidate_service', service_factory)
     entry = child._guarded_local_entry if os.name == 'nt' else lambda fn, **kwargs: fn(**kwargs)
     result = entry(child._local_candidate_owner_entry, control_stream=Input(), output_stream=Output(),
@@ -1251,6 +1265,7 @@ def test_control_reader_exception_remains_failure_and_holds_uncertain_owner(monk
         thread.join(5)
     assert not thread.is_alive()
     assert result == [2]
+    assert evidence['clean'] is False
 
 
 @pytest.mark.parametrize(('runtime_state', 'expected'), [('READY', 0), ('HOLD', 2), ('BUSY', 2)])
@@ -1287,6 +1302,108 @@ def test_stop_does_not_hide_preexisting_runtime_hold_or_unknown(monkeypatch, run
         bundle_root='synthetic', expected_manifest_sha256='a'*64,
         policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64)
     assert result == expected
+
+
+def test_starting_output_failure_fences_owner_start_before_delayed_close(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    before_commit, release_prepare, close_blocked, release_close, release_control, owner_started = (
+        threading.Event() for _ in range(6))
+    policy = b'synthetic-policy'
+    source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
+    class Admission:
+        def assert_owner(self, owner): pass
+    class Input:
+        def read(self, size):
+            value = source.read(size)
+            if value: return value
+            assert release_control.wait(5)
+            return b'S'
+    class Output:
+        def write(self, data):
+            if json.loads(bytes(data)).get('state') == 'STARTING':
+                assert before_commit.wait(5)
+                raise OSError('synthetic-starting-output-failure')
+            return len(data)
+        def flush(self): pass
+    class Owner:
+        def start(self):
+            owner_started.set()
+            return {'state': 'READY', 'owned': True}
+        def status(self): return {'state': 'READY', 'owned': True, 'authority': 'none'}
+        def close(self): return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+        def start_diagnostic(self):
+            return {'reason': 'NONE', 'exception_type': 'NONE', 'authority': 'none'}
+    admission = Admission()
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a'*64, policy,
+        hashlib.sha256(policy).hexdigest(), 'c'*64, 1, 1, 1, admission=admission)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    monkeypatch.setattr(child._LocalManifestQuery, '_check_policy', lambda self: object())
+    calls = []
+    def check_external(self):
+        calls.append(True)
+        if len(calls) == 2:
+            before_commit.set()
+            assert release_prepare.wait(5)
+    monkeypatch.setattr(child._LocalManifestQuery, '_check_external_policy', check_external)
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: Owner())
+    actual_close = child._LocalManifestQuery.close
+    def delayed_close(self, **kwargs):
+        close_blocked.set()
+        assert release_close.wait(5)
+        return actual_close(self, **kwargs)
+    monkeypatch.setattr(child._LocalManifestQuery, 'close', delayed_close)
+    evidence, result = {'clean': False}, []
+    thread = threading.Thread(target=lambda: result.append(child._local_candidate_owner_entry(
+        control_stream=Input(), output_stream=Output(), bundle_root='synthetic',
+        expected_manifest_sha256='a'*64, policy_sha256=hashlib.sha256(policy).hexdigest(),
+        approval_reference_sha256='c'*64, _cleanup_evidence=evidence)))
+    thread.start()
+    try:
+        assert close_blocked.wait(5)
+        release_prepare.set()
+        assert not owner_started.wait(0.5)
+        assert evidence['clean'] is False
+    finally:
+        release_prepare.set()
+        release_close.set()
+        release_control.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert result == [2]
+
+
+def test_missing_adapter_before_threads_has_no_ambiguous_owner(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    def refuse(**kwargs): raise ValueError('synthetic-pre-adapter-refusal')
+    monkeypatch.setattr(child, 'create_local_manifest_query', refuse)
+    evidence = {'clean': False}
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(), output_stream=io.BytesIO(),
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, _cleanup_evidence=evidence)
+    assert code == 2
+    assert evidence['clean'] is True
+
+
+def test_unknown_adapter_with_admission_never_proves_clean_stop(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    class UnknownAdapter:
+        def start(self): return {'state': 'STARTING'}
+        def status(self): return {'state': 'STARTING', 'owned': None}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: UnknownAdapter())
+    evidence = {'clean': False}
+    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(), output_stream=io.BytesIO(),
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, _admission=object(), _cleanup_evidence=evidence)
+    assert code == 2
+    assert evidence['clean'] is False
 
 
 def test_candidate_owner_monitor_keeps_service_alive_during_locked_query(monkeypatch):

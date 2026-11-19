@@ -2556,6 +2556,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     service_gate, adapter_close_gate = threading.Lock(), threading.Lock()
     output_gate = threading.Lock()
     service_start_committed = False
+    stop_fence_uncertain = threading.Event()
     adapter_close_done = threading.Event()
     adapter_close_started, cleanup_complete = threading.Event(), threading.Event()
     close_diagnostic_done = threading.Event()
@@ -2734,6 +2735,26 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         finally:
             close_diagnostic_done.set()
 
+    def accept_stop():
+        """Fence both entry shutdown paths against a later owner commitment."""
+        with service_gate:
+            if type(adapter) is _LocalManifestQuery:
+                try:
+                    with adapter._owner_start_gate:
+                        adapter._cancel.set()
+                        stop.set()
+                except BaseException:
+                    # Wake cleanup, but never turn an uncertain stop fence
+                    # into clean reservation-release evidence.
+                    stop_fence_uncertain.set()
+                    stop.set()
+            else:
+                if ((adapter is None and (close_worker_thread is not None or control_thread is not None))
+                        or (adapter is not None and _admission is not None)):
+                    stop_fence_uncertain.set()
+                stop.set()
+            return _local_service_close_clock()
+
     def read_stop():
         nonlocal close_diagnostic_thread
         try:
@@ -2742,16 +2763,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         except BaseException:
             control_error.append(True)
         finally:
-            with service_gate:
-                # STOP acceptance and the owner's start commitment must use
-                # the same short gate, independently of close-worker timing.
-                if type(adapter) is _LocalManifestQuery:
-                    with adapter._owner_start_gate:
-                        adapter._cancel.set()
-                        stop.set()
-                else:
-                    stop.set()
-                stop_time = _local_service_close_clock()
+            # STOP acceptance and the owner's start commitment use the same
+            # short gate, independently of close-worker timing.
+            stop_time = accept_stop()
             # The independently owned close worker performs cancellation and
             # retries, even when output or diagnostic-thread start blocks.
             # A diagnostic may never precede a verified close entry.
@@ -2790,13 +2804,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             # Request cooperative cleanup, while preserving the failure.
             control_error.append(True)
             try:
-                with service_gate:
-                    if type(adapter) is _LocalManifestQuery:
-                        with adapter._owner_start_gate:
-                            adapter._cancel.set()
-                            stop.set()
-                    else:
-                        stop.set()
+                accept_stop()
             except BaseException:
                 pass  # The monitor and ownership evidence remain fail-closed.
         finally:
@@ -2910,8 +2918,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         failed = True
     finally:
         policy = None
-        with service_gate:
-            stop.set()
+        accept_stop()
         if failed:
             try: emit('HOLD')
             except BaseException: pass
@@ -3033,7 +3040,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             while diagnostic_thread.is_alive():
                 try: diagnostic_thread.join(timeout=0.25)
                 except BaseException: pass  # Retain the writer and remain HOLD until it exits.
-        if _cleanup_evidence is not None:
+        if stop_fence_uncertain.is_set():
+            failed = True
+        if _cleanup_evidence is not None and not stop_fence_uncertain.is_set():
             _cleanup_evidence['clean'] = True
         try: emit('STOPPED')
         except BaseException: failed = True

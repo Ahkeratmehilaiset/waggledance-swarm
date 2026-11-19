@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
+
+import pytest
+import wd_mind_owned_compat as owned
 
 from test_wd_mind_full_runtime import synthetic_bundle, canonical, _SYNTHETIC_ADMISSION_SCRIPT
 
@@ -14,23 +16,96 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_owned(argv, *, cwd, code):
-    process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
-    try:
-        output, error = process.communicate(input=code, timeout=30)
-    except BaseException:
-        # Timeout/cancellation means HOLD: keep ownership until exit and EOF.
-        while True:
-            try:
-                process.communicate(timeout=10)
-                break
-            except BaseException:
-                print('HOLD: synthetic retained-query process remains owned', flush=True)
-                try: time.sleep(1)
-                except BaseException: pass
-        raise AssertionError('synthetic child deadline or drain failed; late output discarded') from None
-    assert process.returncode == 0, error
-    return json.loads(output)
+    result = owned.run_owned(argv, cwd=cwd, input=code, timeout=30, text=True,
+                             env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+class _FakeOwnedProcess:
+    """Bounded in-memory child double; no OS process is started or killed."""
+    def __init__(self, responses, returncode=0):
+        self.responses, self.calls, self.returncode = iter(responses), [], returncode
+
+    def communicate(self, **kwargs):
+        self.calls.append(kwargs)
+        response = next(self.responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    def kill(self):
+        raise AssertionError('kill forbidden')
+
+    def terminate(self):
+        raise AssertionError('terminate forbidden')
+
+
+def _fake_owned_child(monkeypatch, responses, returncode=0):
+    process, launches = _FakeOwnedProcess(responses, returncode), []
+    def launch(argv, **kwargs):
+        launches.append((argv, kwargs))
+        return process
+    monkeypatch.setattr(owned.subprocess, 'Popen', launch)
+    monkeypatch.setattr(owned.time, 'sleep', lambda _: None)
+    return process, launches
+
+
+def test_owned_wrapper_preserves_arguments_and_decodes_json(monkeypatch):
+    process, launches = _fake_owned_child(monkeypatch, [('{"ok":true}', '')])
+    assert _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code') == {'ok': True}
+    argv, kwargs = launches[0]
+    assert argv == ['synthetic'] and kwargs['cwd'] == 'synthetic-cwd' and kwargs['text'] is True
+    assert kwargs['env']['PYTHONDONTWRITEBYTECODE'] == '1'
+    assert kwargs['stdin'] == subprocess.PIPE and kwargs['stdout'] == subprocess.PIPE
+    assert kwargs['stderr'] == subprocess.PIPE
+    assert process.calls[0]['input'] == 'synthetic-code' and 0 < process.calls[0]['timeout'] <= 30
+
+
+@pytest.mark.parametrize('fault', [KeyboardInterrupt('synthetic'), SystemExit(0)], ids=['interrupt', 'exit_zero'])
+def test_owned_wrapper_preserves_initial_cancellation_after_eof(monkeypatch, fault):
+    process, _ = _fake_owned_child(monkeypatch, [fault, ('late output', '')])
+    with pytest.raises(type(fault)) as captured:
+        _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code')
+    assert captured.value is fault and len(process.calls) == 2
+
+
+def test_owned_wrapper_preserves_cancellation_while_draining_timeout(monkeypatch):
+    fault = KeyboardInterrupt('synthetic drain cancellation')
+    process, _ = _fake_owned_child(monkeypatch,
+        [subprocess.TimeoutExpired('synthetic', 30), fault, ('late output', '')])
+    with pytest.raises(KeyboardInterrupt) as captured:
+        _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code')
+    assert captured.value is fault and len(process.calls) == 3
+
+
+def test_owned_wrapper_preserves_cancellation_during_hold_notification(monkeypatch):
+    fault = KeyboardInterrupt('synthetic notification cancellation')
+    process, _ = _fake_owned_child(monkeypatch,
+        [subprocess.TimeoutExpired('synthetic', 30), OSError('synthetic drain uncertainty'), ('late output', '')])
+    def interrupted_print(*_args, **_kwargs):
+        raise fault
+    monkeypatch.setattr(owned, 'print', interrupted_print, raising=False)
+    with pytest.raises(KeyboardInterrupt) as captured:
+        _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code')
+    assert captured.value is fault and len(process.calls) == 3
+
+
+def test_owned_wrapper_rejects_late_output_after_timeout(monkeypatch):
+    process, _ = _fake_owned_child(monkeypatch,
+        [subprocess.TimeoutExpired('synthetic', 30), ('{"ok":true}', '')])
+    with pytest.raises(AssertionError, match='late output discarded'):
+        _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code')
+    assert len(process.calls) == 2
+
+
+def test_owned_wrapper_rejects_nonzero_exit_and_invalid_json(monkeypatch):
+    _fake_owned_child(monkeypatch, [('{}', 'synthetic error')], returncode=2)
+    with pytest.raises(AssertionError, match='synthetic error'):
+        _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code')
+    _fake_owned_child(monkeypatch, [('invalid json', '')])
+    with pytest.raises(json.JSONDecodeError):
+        _run_owned(['synthetic'], cwd='synthetic-cwd', code='synthetic-code')
 
 
 def _extract_invoke_code(source):

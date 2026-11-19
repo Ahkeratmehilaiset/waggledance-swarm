@@ -56,9 +56,12 @@ def _bundle(tmp_path, control):
     return root, marker, hashlib.sha256(raw).hexdigest()
 
 
-def _start(root, pin, event):
-    return subprocess.Popen([str(SHELL), '-NoProfile', '-NonInteractive', '-File', str(SUPERVISOR),
-        '-Enabled', '-BundleRoot', str(root), '-ExpectedManifestHash', pin, '-StopEventName', event],
+def _start(root, pin, event, controller_pid=None, controller_start=None, script=SUPERVISOR):
+    if controller_pid is None: controller_pid = os.getpid()
+    if controller_start is None: controller_start = host_test._process_start(controller_pid)
+    return subprocess.Popen([str(SHELL), '-NoProfile', '-NonInteractive', '-File', str(script),
+        '-Enabled', '-BundleRoot', str(root), '-ExpectedManifestHash', pin, '-StopEventName', event,
+        '-ControllerPid', str(controller_pid), '-ControllerStartUtc', controller_start],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=host_test._environment())
 
 
@@ -141,6 +144,69 @@ def test_supervisor_rejects_tampered_inputs_before_spawning(tmp_path, control, s
     assert not marker.exists()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows supervisor spawn preflight')
+def test_supervisor_refuses_missing_executable_before_process_is_created(tmp_path, control, stop_event):
+    root, marker, pin = _bundle(tmp_path, control)
+    source = SUPERVISOR.read_text(encoding='utf-8')
+    original = "$info.FileName=Join-Path $PSHOME $(if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'})"
+    assert source.count(original) == 1
+    unavailable = root / 'synthetic-missing-executable.exe'
+    assert not unavailable.exists()
+    source = source.replace(original, '$info.FileName=' + host_test._quote(unavailable))
+    script = tmp_path / 'synthetic-supervisor-missing-executable.ps1'
+    script.write_text(source, encoding='utf-8')
+    name, _, _ = stop_event
+    process = _start(root, pin, name, script=script)
+    stdout, stderr = process.communicate(timeout=15)
+    assert process.returncode == 2 and stderr == b''
+    assert json.loads(stdout.splitlines()[-1])['state'] == 'REFUSED'
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows supervisor spawn uncertainty')
+def test_supervisor_keeps_ambiguous_spawn_failure_in_hold(tmp_path, control, stop_event):
+    root, marker, pin = _bundle(tmp_path, control)
+    source = SUPERVISOR.read_text(encoding='utf-8')
+    spawn = "if (-not $child.Start()) {throw 'spawn'}"
+    hold_tick = 'Flush-WdSupervisorState; [Threading.Thread]::Sleep(100)'
+    assert source.count(spawn) == 1 and source.count(hold_tick) == 1
+    # Inject failure at the call site and stop the synthetic test after its
+    # first HOLD. No host process is launched by this instrumented copy.
+    source = source.replace(spawn, "throw 'synthetic_uncertain_spawn'")
+    source = source.replace(hold_tick, 'Flush-WdSupervisorState; Finish-WdSupervisorOutput; exit 0')
+    script = tmp_path / 'synthetic-supervisor-uncertain-spawn.ps1'
+    script.write_text(source, encoding='utf-8')
+    name, _, _ = stop_event
+    process = _start(root, pin, name, script=script)
+    stdout, stderr = process.communicate(timeout=15)
+    assert process.returncode == 0 and stderr == b''
+    assert json.loads(stdout.splitlines()[-1])['state'] == 'HOLD'
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows supervisor parent identity')
+@pytest.mark.parametrize('fault', ['wrong_start', 'wrong_live_parent', 'parent_query_error'])
+def test_supervisor_refuses_unverified_actual_controller_before_spawn(tmp_path, control, stop_event, fault):
+    root, marker, pin = _bundle(tmp_path, control)
+    name, _, _ = stop_event
+    controller_pid = os.getppid() if fault == 'wrong_live_parent' else os.getpid()
+    controller_start = ('2000-01-01T00:00:00.0000000Z' if fault == 'wrong_start'
+                        else host_test._process_start(controller_pid))
+    script = SUPERVISOR
+    if fault == 'parent_query_error':
+        source = SUPERVISOR.read_text(encoding='utf-8')
+        begin = source.index('function Get-WdSupervisorParentPid {')
+        end = source.index('\n}', begin) + 2
+        source = source[:begin] + "function Get-WdSupervisorParentPid { throw 'synthetic_query_error' }" + source[end:]
+        script = tmp_path / 'synthetic-supervisor-query-error.ps1'
+        script.write_text(source, encoding='utf-8')
+    process = _start(root, pin, name, controller_pid, controller_start, script)
+    stdout, stderr = process.communicate(timeout=15)
+    assert process.returncode == 2 and stderr == b''
+    assert json.loads(stdout.splitlines()[-1])['state'] == 'REFUSED'
+    assert not marker.exists()
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows supervisor lifecycle')
 def test_supervisor_reports_start_without_waiting_for_slow_child(tmp_path, control, stop_event):
     root, _, _ = _bundle(tmp_path, control)
@@ -212,6 +278,87 @@ Emit 'HOLD';if(-not $event.WaitOne(20000)){exit 7};Emit 'STOPPED';$event.Dispose
     assert process.wait(timeout=15) == 0
     thread.join(timeout=3)
     assert marker.read_bytes() == b'1' and process.stderr.read() == b''
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows supervisor parent lifetime')
+@pytest.mark.parametrize('during_hold', [False, True], ids=['ready', 'hold'])
+def test_controller_exit_cooperatively_stops_the_supervisor_child(tmp_path, control, stop_event, during_hold):
+    root, marker, _ = _bundle(tmp_path, control)
+    host = root / 'Start-WdMindOwnerHost.ps1'
+    release = tmp_path / 'synthetic-hold-release'
+    fake = """param([switch]$Enabled,[switch]$SourceBoundScriptBlock,[string]$BundleRoot,
+ [string]$ExpectedManifestHash,[string]$OperatorPolicyPath,[string]$OperatorPolicySha256,
+ [string]$OperatorApprovalReferenceSha256,[string]$BridgePythonPath,[string]$BridgePythonSha256,
+ [string]$StopEventName,[int]$ControllerPid,[string]$ControllerStartUtc)
+$out=[Console]::OpenStandardOutput()
+function Emit([string]$state) {
+ $line='{"schema":"wd.mind-owner-host-status.v1","state":"'+$state+'","authority":"none","caller_authentication":"UNKNOWN","index_refresh":"NOT_SCHEDULED"}' + "`n"
+ $data=[Text.Encoding]::ASCII.GetBytes($line);$out.Write($data,0,$data.Length);$out.Flush()
+}
+[IO.File]::WriteAllText(MARKER,'STARTED');$event=[Threading.EventWaitHandle]::OpenExisting($StopEventName)
+Emit 'INITIAL_STATE';if(-not $event.WaitOne(25000)){exit 7}
+[IO.File]::AppendAllText(MARKER,'_STOP_REQUESTED')
+if (DELAYED) { $until=[DateTime]::UtcNow.AddSeconds(20); while (-not (Test-Path -LiteralPath RELEASE) -and [DateTime]::UtcNow -lt $until) {Start-Sleep -Milliseconds 25}; if (-not (Test-Path -LiteralPath RELEASE)) {exit 8} }
+[IO.File]::AppendAllText(MARKER,'_STOPPED');Emit 'STOPPED';$event.Dispose();exit 0
+""".replace('MARKER', host_test._quote(marker)).replace('INITIAL_STATE', 'HOLD' if during_hold else 'READY')
+    fake = fake.replace('DELAYED', '$true' if during_hold else '$false').replace('RELEASE', host_test._quote(release))
+    host.write_text(fake, encoding='utf-8')
+    manifest_path = root / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'][host.name] = hashlib.sha256(host.read_bytes()).hexdigest().upper()
+    raw = json.dumps(manifest, separators=(',', ':')).encode('ascii')
+    manifest_path.write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+    name, _, _ = stop_event
+    controller_code = '''import json,os,subprocess,sys\n'''
+    controller_code += '''names=('SYSTEMROOT','WINDIR','SYSTEMDRIVE','PATH','PATHEXT','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA')\n'''
+    controller_code += '''env={k:os.environ[k] for k in names if k in os.environ}\n'''
+    controller_code += '''shell={shell!r}\n'''.format(shell=str(SHELL))
+    controller_code += '''q='(Get-Process -Id '+str(os.getpid())+\").StartTime.ToUniversalTime().ToString('o')\"\n'''
+    controller_code += '''start=subprocess.check_output([shell,'-NoProfile','-NonInteractive','-Command',q],env=env).decode('ascii').strip()\n'''
+    controller_code += '''args=[shell,'-NoProfile','-NonInteractive','-File',{supervisor!r},'-Enabled','-BundleRoot',{root!r},'-ExpectedManifestHash',{pin!r},'-StopEventName',{event!r},'-ControllerPid',str(os.getpid()),'-ControllerStartUtc',start]\n'''.format(supervisor=str(SUPERVISOR),root=str(root),pin=pin,event=name)
+    controller_code += '''child=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=env)\n'''
+    target = 'HOLD' if during_hold else 'READY'
+    controller_code += '''for raw in child.stdout:\n state=json.loads(raw)['state']\n if state=={target!r}: print(json.dumps({{'supervisor_pid':child.pid}}),flush=True);break\n if state=='REFUSED' or (state=='HOLD' and {target!r}!='HOLD'): sys.exit(8)\nelse: sys.exit(9)\n'''.format(target=target)
+    controller_code += '''sys.stdin.buffer.read(1)\n'''
+    controller_script = tmp_path / 'synthetic-controller.py'
+    controller_script.write_text(controller_code, encoding='utf-8')
+    controller = subprocess.Popen([str(host_test.PYTHON), '-I', '-S', '-B', str(controller_script)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=host_test._environment())
+    incoming, thread = host_test._lines(controller)
+    handle = None
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    kernel.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    try:
+        ready = incoming.get(timeout=20)
+        assert ready is not None
+        supervisor_pid = json.loads(ready)['supervisor_pid']
+        handle = kernel.OpenProcess(0x00100000, False, supervisor_pid)
+        assert handle
+        assert marker.read_text() == 'STARTED'
+    finally:
+        try: controller.stdin.write(b'x'); controller.stdin.flush()
+        except (BrokenPipeError, OSError): pass
+        controller.stdin.close()
+    assert controller.wait(timeout=15) == 0
+    thread.join(timeout=3)
+    try:
+        if during_hold:
+            deadline = time.monotonic() + 15
+            while '_STOP_REQUESTED' not in marker.read_text() and time.monotonic() < deadline:
+                time.sleep(0.025)
+            assert marker.read_text() == 'STARTED_STOP_REQUESTED'
+            assert kernel.WaitForSingleObject(handle, 0) == 258  # HOLD remains alive.
+            release.write_bytes(b'go')
+        assert kernel.WaitForSingleObject(handle, 20000) == 0
+        assert marker.read_text() == 'STARTED_STOP_REQUESTED_STOPPED'
+    finally:
+        release.write_bytes(b'go')
+        kernel.CloseHandle(handle)
+    assert controller.stderr.read() == b''
 
 
 def _reservation_bundle(tmp_path, control, initial=b'C'):

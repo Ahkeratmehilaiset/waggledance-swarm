@@ -3,7 +3,7 @@
    and the bundle manifest.  It never repairs a reservation or kills a process. #>
 [CmdletBinding()]
 param([switch] $Enabled, [string] $BundleRoot='', [string] $ExpectedManifestHash='',
-      [string] $StopEventName='')
+      [string] $StopEventName='', [int] $ControllerPid=0, [string] $ControllerStartUtc='')
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 
@@ -30,6 +30,13 @@ function Read-WdSupervisorPinnedBytes([string] $Path, [string] $Pin, [int] $Maxi
     finally {$hash.Dispose()}
     if ($actual -cne $Pin.ToLowerInvariant()) {throw 'pin'}
     return ,$bytes
+}
+function Get-WdSupervisorParentPid {
+    $rows=@(CimCmdlets\Get-CimInstance -ClassName Win32_Process `
+        -Filter ('ProcessId = ' + [string]$PID) -Property ProcessId,ParentProcessId -ErrorAction Stop)
+    if ($rows.Count -ne 1 -or $null -eq $rows[0] -or [long]$rows[0].ProcessId -ne [long]$PID -or
+        [long]$rows[0].ParentProcessId -le 0 -or [long]$rows[0].ParentProcessId -gt [int]::MaxValue) {throw 'parent_query'}
+    return [int]$rows[0].ParentProcessId
 }
 
 # Reporting is bounded and best effort. A detached caller may close stdout;
@@ -77,10 +84,19 @@ function Get-WdSupervisorHostFrame([string] $Line, [string] $Previous, [bool] $E
 }
 if (-not $Enabled) { Set-WdSupervisorState 'DISABLED'; Flush-WdSupervisorState; Finish-WdSupervisorOutput; exit 0 }
 
-$child=$null; $internalStop=$null; $externalStop=$null; $hostDone=$false; $stop=$false
+$child=$null; $controller=$null; $internalStop=$null; $externalStop=$null; $hostDone=$false; $stop=$false
 try {
     if ($StopEventName -cnotmatch '\ALocal\\wd-mind-supervisor-stop-[0-9a-f]{32}\z' -or
-        $BundleRoot -cnotmatch '\A[Cc]:[\\/]' -or $BundleRoot -match '(^|[\\/])\.\.([\\/]|$)') {throw 'input'}
+        $BundleRoot -cnotmatch '\A[Cc]:[\\/]' -or $BundleRoot -match '(^|[\\/])\.\.([\\/]|$)' -or
+        $ControllerPid -le 0 -or [string]::IsNullOrWhiteSpace($ControllerStartUtc)) {throw 'input'}
+    if ((Get-WdSupervisorParentPid) -ne $ControllerPid) {throw 'controller_parent'}
+    $supervisorProcess=[Diagnostics.Process]::GetCurrentProcess()
+    try {$supervisorStarted=$supervisorProcess.StartTime.ToUniversalTime()} finally {$supervisorProcess.Dispose()}
+    $controller=[Diagnostics.Process]::GetProcessById($ControllerPid)
+    [void]$controller.Handle # Keep the exact OS process handle across the full lifetime.
+    $controllerStarted=$controller.StartTime.ToUniversalTime()
+    if ($controllerStarted.ToString('o') -cne $ControllerStartUtc -or
+        $controllerStarted -gt $supervisorStarted -or $controller.HasExited) {throw 'controller'}
     $externalStop=[Threading.EventWaitHandle]::OpenExisting($StopEventName)
     $root=[IO.Path]::GetFullPath($BundleRoot).TrimEnd('\')
     $manifestPath=Join-Path $root 'deployment-manifest.json'
@@ -103,7 +119,8 @@ try {
         $config.approval_reference_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
         $manifest.bridge_code_package.python_executable_sha256 -cnotmatch '\A[0-9A-Fa-f]{64}\z') {throw 'config'}
     [void](Read-WdSupervisorPinnedBytes $manifestPath $ExpectedManifestHash 4194304)
-    if ($externalStop.WaitOne(0)) {throw 'cancelled'}
+    if ((Get-WdSupervisorParentPid) -ne $ControllerPid -or $controller.HasExited -or
+        $externalStop.WaitOne(0)) {throw 'cancelled'}
     $name='Local\wd-mind-owner-stop-'+[guid]::NewGuid().ToString('N')
     $created=$false
     $internalStop=New-Object Threading.EventWaitHandle($false,[Threading.EventResetMode]::ManualReset,$name,[ref]$created)
@@ -125,6 +142,10 @@ try {
     $info.RedirectStandardInput=$true; $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
     $allow=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA')
     foreach($key in @($info.EnvironmentVariables.Keys)) {if($allow -cnotcontains ([string]$key).ToUpperInvariant()) {$info.EnvironmentVariables.Remove([string]$key)}}
+    # This refusal occurs before a Process exists or Start is called, so it
+    # cannot orphan a child. A later failure while starting remains HOLD:
+    # executable existence here does not eliminate replacement/removal races.
+    if (-not [IO.File]::Exists($info.FileName)) {throw 'spawn_executable_unavailable'}
     $child=New-Object Diagnostics.Process; $child.StartInfo=$info
     if (-not $child.Start()) {throw 'spawn'}
     $write=$child.StandardInput.BaseStream.WriteAsync($wire,0,$wire.Length)
@@ -167,7 +188,7 @@ try {
                 try {$outRead=$child.StandardOutput.BaseStream.ReadAsync($outbuf,0,$outbuf.Length)} catch {$outRead=$null}
             }
         }
-        if ($externalStop.WaitOne(0) -or $bad) {$stop=$true; [void]$internalStop.Set()}
+        if ($controller.HasExited -or $externalStop.WaitOne(0) -or $bad) {$stop=$true; [void]$internalStop.Set()}
         if ($child.HasExited) {
             if ($outDone -and $errDone -and $line.Length -eq 0 -and -not $bad) {
                 if ($child.ExitCode -eq 0 -and $hostState -ceq 'STOPPED') {Set-WdSupervisorState 'STOPPED';$hostDone=$true;break}
@@ -217,5 +238,6 @@ try {
         if ($null -ne $child) {$child.Dispose()}
         if ($null -ne $internalStop) {$internalStop.Dispose()}
         if ($null -ne $externalStop) {$externalStop.Dispose()}
+        if ($null -ne $controller) {$controller.Dispose()}
     }
 }

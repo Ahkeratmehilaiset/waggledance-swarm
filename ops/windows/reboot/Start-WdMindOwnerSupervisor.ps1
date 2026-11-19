@@ -106,7 +106,24 @@ try {
     if ($manifest.schema_version -ne 1 -or $null -eq $manifest.files) {throw 'manifest'}
     $hostPin=$manifest.files.PSObject.Properties['Start-WdMindOwnerHost.ps1']
     $configPin=$manifest.files.PSObject.Properties['wd-mind-startup-config.json']
-    if ($null -eq $hostPin -or $null -eq $configPin) {throw 'manifest'}
+    $automationPin=$manifest.files.PSObject.Properties['wd-mind-owner-automation.json']
+    if ($null -eq $hostPin -or $null -eq $configPin -or $null -eq $automationPin -or
+        $manifest.source_commit -isnot [string] -or $manifest.source_commit -cnotmatch '\A[0-9a-f]{40}\z') {throw 'manifest'}
+    $automationBytes=Read-WdSupervisorPinnedBytes (Join-Path $root 'wd-mind-owner-automation.json') $automationPin.Value 16384
+    $automationText=$utf8.GetString($automationBytes)
+    $automation=ConvertFrom-Json -InputObject $automationText -ErrorAction Stop
+    $automationKeys=@($automation.PSObject.Properties.Name)
+    $expectedKeys=@('schema','enabled','agent','source_commit','startup_config_sha256')
+    if ($automationKeys.Count -ne $expectedKeys.Count -or @($automationKeys | Where-Object {$expectedKeys -cnotcontains $_}).Count -ne 0 -or
+        $automation.schema -isnot [string] -or $automation.agent -isnot [string] -or $automation.source_commit -isnot [string] -or
+               $automation.startup_config_sha256 -isnot [string] -or $automation.schema -cne 'wd.mind-owner-automation.v1' -or
+               $automation.enabled -isnot [bool] -or -not $automation.enabled -or
+        $automation.agent -cne 'codex-lead-1' -or $automation.source_commit -cne $manifest.source_commit -or
+        $automation.startup_config_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+        $configPin.Value -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or $automation.startup_config_sha256 -cne $configPin.Value.ToLowerInvariant()) {throw 'automation'}
+    $canonical=[ordered]@{schema='wd.mind-owner-automation.v1';enabled=$true;agent='codex-lead-1';
+        source_commit=[string]$automation.source_commit;startup_config_sha256=[string]$automation.startup_config_sha256}
+    if ((ConvertTo-Json -InputObject $canonical -Compress) -cne $automationText) {throw 'automation'}
     $hostBytes=Read-WdSupervisorPinnedBytes (Join-Path $root 'Start-WdMindOwnerHost.ps1') $hostPin.Value 1048576
     $configBytes=Read-WdSupervisorPinnedBytes (Join-Path $root 'wd-mind-startup-config.json') $configPin.Value 16384
     $config=$utf8.GetString($configBytes) | ConvertFrom-Json -ErrorAction Stop

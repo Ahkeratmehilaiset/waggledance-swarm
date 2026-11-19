@@ -360,8 +360,7 @@ function Get-WdNativeLeadResumeState {
 function Invoke-WdNativeLeadTerminal {
   param([string] $CliPath, [string[]] $Arguments, [string] $ThreadId,
     [string] $Worktree, [string] $RuntimeRoot, [string] $Generation,
-    [string] $ExpectedCliHash, [string] $SessionId, [hashtable] $VerifiedCode,
-    [switch] $EnableMindOwnerStartup, [string] $MindBundleRoot='', [string] $MindManifestHash='')
+    [string] $ExpectedCliHash, [string] $SessionId, [hashtable] $VerifiedCode)
   if ([Console]::IsInputRedirected) { throw 'Native Lead requires an interactive terminal' }
   if ($ThreadId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
     throw 'Automatic Lead delivery requires the exact recorded conversation; never guess a recent thread'
@@ -394,16 +393,11 @@ function Invoke-WdNativeLeadTerminal {
     native_process_start_utc='';relay_process_start_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
     bridge_wake_transport='withheld';bridge_wake_producer_status='unchecked';
     bridge_wake_producer_observed_at_utc='';worktree=$Worktree;task_completion_verified=$false;error=''}
-  $native=$null; $mindOwner=$null
+  $native=$null
   try {
     Write-WdTurnJson $readyPath $record
     $line=@($Arguments | ForEach-Object { ConvertTo-WdToolsNativeArgument $_ }) -join ' '
     $native=Start-WdToolsNativeProcess -CliPath $CliPath -ArgumentLine $line -Worktree $Worktree
-    # Start owner preparation only after the interactive CLI process exists.
-    if ($EnableMindOwnerStartup) {
-      try { $mindOwner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot $MindBundleRoot -ExpectedManifestHash $MindManifestHash }
-      catch { Write-Warning 'Mind owner start unavailable; lane continues' -WarningAction Continue }
-    }
     $record.native_pid=$native.Id
     $record.native_process_start_utc=$native.StartTime.ToUniversalTime().ToString('o')
     $record.status='native_process_started'
@@ -475,9 +469,6 @@ function Invoke-WdNativeLeadTerminal {
       if (-not $native.HasExited) { $native.WaitForExit() }
       $native.Dispose()
     }
-    # Signal cooperative stop and retain the supervisor's process/pipes until it
-    # exits and both pipes close. An unresolved owner remains HOLD; never kill.
-    if ($null -ne $mindOwner) { Stop-WdMindOwnerAsync -Owner $mindOwner }
     # Keep delivery refusal distinct from clean UI exit; error evidence remains.
     if ($record.status -cne 'bridge_wake_blocked') { $record.status='stopped' }
     Write-WdTurnJson $readyPath $record
@@ -2663,6 +2654,7 @@ if ($DryRun) {
   }
 }
 
+$mindOwner=$null
 try {
 if ($turnMode -ceq 'managed') {
   Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
@@ -2762,10 +2754,10 @@ function Test-WdMindCommandLineFits {
 }
 function Start-WdMindOwnerAsync {
     # This is a separate operator opt-in, never inferred from a reader descriptor.
-    # All bundle reads and child startup occur on the retained worker, after CLI spawn.
+    # Bundle reads and child startup run on the retained worker before content polling.
     param([bool]$Enabled,[string]$BundleRoot,[string]$ExpectedManifestHash)
     if(-not $Enabled -or $ExpectedManifestHash -cnotmatch '\A[0-9A-Fa-f]{64}\z'){return $null}
-    $state=[hashtable]::Synchronized(@{worker='PREFLIGHT';process=$null;outRead=$null;errRead=$null;stopEvent=$null;completed=$false})
+    $state=[hashtable]::Synchronized(@{worker='PREFLIGHT';supervisor_reported='UNKNOWN';process=$null;outRead=$null;errRead=$null;stopEvent=$null;completed=$false})
     $signal=New-Object Threading.ManualResetEvent($false)
     $owner=[pscustomobject]@{state=$state;signal=$signal;pipeline=$null;async=$null}
     if(-not (Test-Path variable:script:WdMindOwnerAsyncOwners)){$script:WdMindOwnerAsyncOwners=New-Object Collections.ArrayList}
@@ -2790,7 +2782,7 @@ function Start-WdMindOwnerAsync {
             if($actual -cne $pin.ToLowerInvariant()){throw 'pin'};return ,$b
         }
         $proc=$null;$stopEvent=$null;$outRead=$null;$errRead=$null;$outDone=$false;$errDone=$false
-        $spawnEntered=$false;$finished=$false;$unknown=$false;$inputDone=$false;$write=$null
+        $spawnEntered=$false;$finished=$false;$unknown=$false;$inputDone=$false;$write=$null;$line=$null
         try {
             if($signal.WaitOne(0)){throw 'cancelled'}
             $root=[IO.Path]::GetFullPath($root).TrimEnd('\');$utf8=New-Object Text.UTF8Encoding($false,$true)
@@ -2799,7 +2791,24 @@ function Start-WdMindOwnerAsync {
             $manifest=$utf8.GetString($bytes).TrimStart([char]0xFEFF)|ConvertFrom-Json -ErrorAction Stop
             $supervisorPin=$manifest.files.PSObject.Properties['Start-WdMindOwnerSupervisor.ps1']
             $configPin=$manifest.files.PSObject.Properties['wd-mind-startup-config.json']
-            if($manifest.schema_version -ne 1 -or $null -eq $supervisorPin -or $null -eq $configPin){throw 'manifest'}
+            $automationPin=$manifest.files.PSObject.Properties['wd-mind-owner-automation.json']
+            if($manifest.schema_version -ne 1 -or $null -eq $supervisorPin -or $null -eq $configPin -or
+               $null -eq $automationPin -or $manifest.source_commit -isnot [string] -or
+               $manifest.source_commit -cnotmatch '\A[0-9a-f]{40}\z'){throw 'manifest'}
+            $automationText=$utf8.GetString((Read-OwnerPinned (Join-Path $root 'wd-mind-owner-automation.json') $automationPin.Value 16384))
+            $automation=ConvertFrom-Json -InputObject $automationText -ErrorAction Stop
+            $names=@($automation.PSObject.Properties.Name);$expected=@('schema','enabled','agent','source_commit','startup_config_sha256')
+            if($names.Count -ne $expected.Count -or @($names | Where-Object {$expected -cnotcontains $_}).Count -ne 0 -or
+               $automation.schema -isnot [string] -or $automation.agent -isnot [string] -or $automation.source_commit -isnot [string] -or
+               $automation.startup_config_sha256 -isnot [string] -or $automation.schema -cne 'wd.mind-owner-automation.v1' -or
+               $automation.enabled -isnot [bool] -or -not $automation.enabled -or
+               $automation.agent -cne 'codex-lead-1' -or $automation.source_commit -cne $manifest.source_commit -or
+               $automation.startup_config_sha256 -isnot [string] -or $automation.startup_config_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+               $configPin.Value -isnot [string] -or $configPin.Value -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
+               $automation.startup_config_sha256 -cne $configPin.Value.ToLowerInvariant()){throw 'automation'}
+            $canonical=[ordered]@{schema='wd.mind-owner-automation.v1';enabled=$true;agent='codex-lead-1';
+                source_commit=[string]$automation.source_commit;startup_config_sha256=[string]$automation.startup_config_sha256}
+            if((ConvertTo-Json -InputObject $canonical -Compress) -cne $automationText){throw 'automation'}
             $source=Read-OwnerPinned (Join-Path $root 'Start-WdMindOwnerSupervisor.ps1') $supervisorPin.Value 1048576
             [void](Read-OwnerPinned (Join-Path $root 'wd-mind-startup-config.json') $configPin.Value 16384)
             [void](Read-OwnerPinned $manifestPath $manifestHash 4194304)
@@ -2828,7 +2837,7 @@ function Start-WdMindOwnerAsync {
             $outBuf=New-Object byte[] 4096;$errBuf=New-Object byte[] 4096
             $outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)
             $errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)
-            $outTotal=0;$bad=$false
+            $outTotal=0;$bad=$false;$line=New-Object IO.MemoryStream;$lastFrame='';$terminalFrame=''
             while($true){
                 if($signal.WaitOne(0) -or $bad){[void]$stopEvent.Set();[Threading.Monitor]::Enter($state.SyncRoot);try{$state.worker='HOLD'}finally{[Threading.Monitor]::Exit($state.SyncRoot)}}
                 if(-not $inputDone -and $write.IsCompleted){try{[void]$write.GetAwaiter().GetResult();$proc.StandardInput.Close()}catch{$bad=$true};$inputDone=$true;[Array]::Clear($wire,0,$wire.Length)}
@@ -2836,12 +2845,38 @@ function Start-WdMindOwnerAsync {
                     $task=if($which -ceq 'out'){$outRead}else{$errRead};$done=if($which -ceq 'out'){$outDone}else{$errDone}
                     if($done -or $null -eq $task -or -not $task.IsCompleted){continue}
                     try{$n=$task.GetAwaiter().GetResult()}catch{$unknown=$true;$bad=$true;$n=0}
-                    if($n -eq 0){if($which -ceq 'out'){$outDone=$true}else{$errDone=$true}}
-                    elseif($which -ceq 'out'){$outTotal+=$n;if($outTotal -gt 8192){$bad=$true};$outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)}
-                    else{$bad=$true;$errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)}
+                    if($n -eq 0){
+                        if($which -ceq 'out'){$outDone=$true;if($line.Length -ne 0){$bad=$true}}else{$errDone=$true}
+                    } elseif($which -ceq 'out'){
+                        $outTotal+=$n;if($outTotal -gt 8192){$bad=$true}
+                        for($i=0;$i -lt $n -and -not $bad;$i++){
+                            if($outBuf[$i] -eq 10){
+                                $text=[Text.Encoding]::ASCII.GetString($line.ToArray());$line.SetLength(0);$frame=''
+                                foreach($name in @('STARTING','READY','HOLD','STOPPED','REFUSED','PRE_OWNER_REFUSED')){
+                                    $expected='{"schema":"wd.mind-owner-supervisor-status.v1","state":"'+$name+'","authority":"none","owner_authentication":"UNKNOWN"}'
+                                    if($text -ceq $expected){$frame=$name;break}
+                                }
+                                if(-not $frame -or $terminalFrame -or $frame -ceq $lastFrame -or
+                                   ($lastFrame -ceq 'READY' -and $frame -ceq 'STARTING') -or
+                                   ($lastFrame -ceq 'HOLD' -and $frame -cin @('STARTING','READY'))){$bad=$true;break}
+                                $lastFrame=$frame
+                                if($frame -cin @('STOPPED','REFUSED','PRE_OWNER_REFUSED')){$terminalFrame=$frame}
+                                [Threading.Monitor]::Enter($state.SyncRoot)
+                                try{$state.supervisor_reported='SUPERVISOR_REPORTED_'+$frame}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+                            }elseif($outBuf[$i] -gt 127 -or $line.Length -ge 1024){$bad=$true;break}
+                            else{$line.WriteByte($outBuf[$i])}
+                        }
+                        $outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)
+                    } else{$bad=$true;$errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)}
                 }
-                [Threading.Monitor]::Enter($state.SyncRoot);try{$state.outRead=$outRead;$state.errRead=$errRead}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
-                if($proc.HasExited -and $outDone -and $errDone -and -not $unknown){$finished=$true;break}
+                [Threading.Monitor]::Enter($state.SyncRoot);try{$state.outRead=$outRead;$state.errRead=$errRead;if($bad){$state.supervisor_reported='UNKNOWN'}}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+                if($proc.HasExited -and $outDone -and $errDone -and -not $unknown){
+                    if(-not $bad -and $line.Length -eq 0 -and (($terminalFrame -ceq 'STOPPED' -and $proc.ExitCode -eq 0) -or
+                       ($terminalFrame -cin @('REFUSED','PRE_OWNER_REFUSED') -and $proc.ExitCode -eq 2))){
+                        [Threading.Monitor]::Enter($state.SyncRoot);try{$state.supervisor_reported='SUPERVISOR_EXITED_'+$terminalFrame}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+                    }else{[Threading.Monitor]::Enter($state.SyncRoot);try{$state.supervisor_reported='UNKNOWN'}finally{[Threading.Monitor]::Exit($state.SyncRoot)}}
+                    $finished=$true;break
+                }
                 [Threading.Thread]::Sleep(25)
             }
         } catch {
@@ -2862,6 +2897,7 @@ function Start-WdMindOwnerAsync {
                 }
             }
         } finally {
+            if($null -ne $line){$line.Dispose()}
             if(($finished -or -not $spawnEntered) -and $null -ne $proc){$proc.Dispose()}
             if(($finished -or -not $spawnEntered) -and $null -ne $stopEvent){$stopEvent.Dispose()}
             [Threading.Monitor]::Enter($state.SyncRoot)
@@ -2890,7 +2926,7 @@ function Start-WdMindAsyncStartupController {
        pipe drain. Its parent retains the owner even after delivery closes. #>
     param([bool]$Enabled,[bool]$Native,[string]$BundleRoot,[string]$ExpectedManifestHash,
           [string]$ExpectedFleetSha256,[string]$Lane,[int]$DeadlineMilliseconds=15000,
-          [ValidateSet('content','status')][string]$ReadKind='content')
+          [ValidateSet('content','status')][string]$ReadKind='content', $AwaitOwner=$null)
     if (-not $Enabled -or -not $Native) {return $null}
     if ($DeadlineMilliseconds -lt 1 -or $DeadlineMilliseconds -gt 60000 -or
         $ExpectedManifestHash -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
@@ -2904,7 +2940,7 @@ function Start-WdMindAsyncStartupController {
     if (-not (Test-Path variable:script:WdMindAsyncOwners)) {$script:WdMindAsyncOwners=New-Object System.Collections.ArrayList}
     [void]$script:WdMindAsyncOwners.Add($owner)
     $worker={
-        param($state,$clock,$limit,$root,$manifestHash,$fleetHash,$lane,$closeSignal,$kind)
+        param($state,$clock,$limit,$root,$manifestHash,$fleetHash,$lane,$closeSignal,$kind,$ownerGate)
         $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
         function Read-Pinned([string]$path,[string]$pin,[int]$limitBytes) {
             if($pin -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or $path -cnotmatch '\A[Cc]:[\\/]' -or
@@ -2952,6 +2988,21 @@ function Start-WdMindAsyncStartupController {
             if((ConvertTo-Json -InputObject $canonicalConfig -Compress) -cne $configText){throw 'config'}
             $source=Read-Pinned (Join-Path $root $controllerName) $controllerPin.Value 1048576
             [void](Read-Pinned $manifestPath $manifestHash 4194304)
+            # Never wait in the launcher. A duplicate/refused owner is not proof
+            # of another healthy owner and must not start a speculative reader.
+            if($kind -ceq 'content' -and $null -ne $ownerGate){
+                while($true){
+                    if($closeSignal.WaitOne(0) -or $clock.ElapsedMilliseconds -ge $limit){throw 'cancelled'}
+                    if(-not [Threading.Monitor]::TryEnter($ownerGate.state.SyncRoot)){[Threading.Thread]::Sleep(10);continue}
+                    try{$reported=[string]$ownerGate.state.supervisor_reported;$completed=[bool]$ownerGate.state.completed;$ownerState=[string]$ownerGate.state.worker}
+                    finally{[Threading.Monitor]::Exit($ownerGate.state.SyncRoot)}
+                    if($completed -or $ownerState -ceq 'HOLD' -or $ownerGate.signal.WaitOne(0) -or
+                       $reported -ceq 'SUPERVISOR_REPORTED_HOLD' -or $reported -ceq 'SUPERVISOR_REPORTED_PRE_OWNER_REFUSED' -or
+                       $reported -ceq 'SUPERVISOR_REPORTED_REFUSED'){throw 'owner_unavailable'}
+                    if($reported -ceq 'SUPERVISOR_REPORTED_READY'){break}
+                    [Threading.Thread]::Sleep(10)
+                }
+            }
             [Threading.Monitor]::Enter($state.SyncRoot)
             try {$closed=[bool]$state.closed} finally {[Threading.Monitor]::Exit($state.SyncRoot)}
             if($closed -or $closeSignal.WaitOne(0) -or $clock.ElapsedMilliseconds -ge $limit){throw 'cancelled'}
@@ -3092,7 +3143,7 @@ function Start-WdMindAsyncStartupController {
     try {
         $pipeline=[Management.Automation.PowerShell]::Create();$owner.pipeline=$pipeline
         [void]$pipeline.AddScript($worker.ToString()).AddArgument($state).AddArgument($clock).AddArgument($DeadlineMilliseconds).
-            AddArgument($BundleRoot).AddArgument($ExpectedManifestHash).AddArgument($ExpectedFleetSha256).AddArgument($Lane).AddArgument($closeSignal).AddArgument($ReadKind)
+            AddArgument($BundleRoot).AddArgument($ExpectedManifestHash).AddArgument($ExpectedFleetSha256).AddArgument($Lane).AddArgument($closeSignal).AddArgument($ReadKind).AddArgument($AwaitOwner)
         $owner.async=$pipeline.BeginInvoke()
     } catch {$state.worker='HOLD';$state.reason='start_unknown'}
     return $owner
@@ -3258,6 +3309,14 @@ function Invoke-WdMindNativeInteractiveCli {
 Remove-Item Env:WD_MIND_STARTUP_VIEW, Env:WD_MIND_STARTUP_VIEW_SHA256 -ErrorAction SilentlyContinue
 # Optional direct status projection, after DryRun and identity/bootstrap completion.
 $mindStartupRead = [pscustomobject]@{outcome='refused';reason='startup_helper_refused';record_written=$false}
+# Owner preflight begins independently before any content reader. The process
+# remains launcher-owned through normal and exceptional shutdown.
+$mindOwnerRequested = $nativeLead -and -not $RecoverInteractive -and ($EnableMindOwnerStartup -or
+    ($null -ne $deploymentAnchor -and $null -ne $deploymentAnchor.files.PSObject.Properties['wd-mind-owner-automation.json']))
+if ($mindOwnerRequested) {
+  try { $mindOwner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot $PSScriptRoot -ExpectedManifestHash $script:LaneManifestAnchor }
+  catch { Write-Warning 'Mind owner start unavailable; lane continues' -WarningAction Continue }
+}
 $mindContentOwner=$null;$mindStatusOwner=$null;$mindContentRequested=$false;$mindExpectedFleet=''
 if ($launchTurnMode -ceq 'interactive' -and -not $RecoverInteractive -and $null -ne $deploymentAnchor) {
   $mindContentConfig=$deploymentAnchor.files.PSObject.Properties['wd-mind-startup-config.json']
@@ -3266,9 +3325,13 @@ if ($launchTurnMode -ceq 'interactive' -and -not $RecoverInteractive -and $null 
     $mindContentRequested=$true
     if ($null -ne $mindFleetPin -and [string]$mindFleetPin.Value -cmatch '\A[0-9A-Fa-f]{64}\z') {
       $mindExpectedFleet=([string]$mindFleetPin.Value).ToLowerInvariant()
-      try {$mindContentOwner=Start-WdMindAsyncStartupController -Enabled $true -Native $true `
-        -BundleRoot $PSScriptRoot -ExpectedManifestHash $script:LaneManifestAnchor `
-        -ExpectedFleetSha256 $mindExpectedFleet -Lane $Agent} catch { }
+      # A requested owner that did not produce an owned object is UNKNOWN,
+      # not evidence of a healthy pre-existing owner. Keep status independent.
+      if (-not $mindOwnerRequested -or $null -ne $mindOwner) {
+        try {$mindContentOwner=Start-WdMindAsyncStartupController -Enabled $true -Native $true `
+          -BundleRoot $PSScriptRoot -ExpectedManifestHash $script:LaneManifestAnchor `
+          -ExpectedFleetSha256 $mindExpectedFleet -Lane $Agent -AwaitOwner $mindOwner} catch { }
+      }
       try {$mindStatusOwner=Start-WdMindAsyncStartupController -Enabled $true -Native $true `
         -BundleRoot $PSScriptRoot -ExpectedManifestHash $script:LaneManifestAnchor `
         -ExpectedFleetSha256 $mindExpectedFleet -Lane $Agent -ReadKind status} catch { }
@@ -3706,8 +3769,7 @@ try {
   if ($nativeLead) {
     Invoke-WdNativeLeadTerminal -CliPath $cliPath -Arguments $launchArguments -ThreadId $nativeResume.thread_id `
       -Worktree $worktree -RuntimeRoot $runtimeRoot -Generation $bundleGeneration -ExpectedCliHash $cliExecutableHash `
-      -SessionId $RunId -VerifiedCode $verifiedConversationCode `
-      -EnableMindOwnerStartup:$EnableMindOwnerStartup -MindBundleRoot $PSScriptRoot -MindManifestHash $script:LaneManifestAnchor
+      -SessionId $RunId -VerifiedCode $verifiedConversationCode
     $cliExitCode = 0
   } else {
     $ErrorActionPreference = 'Continue'
@@ -3725,6 +3787,9 @@ if ($null -ne $cliExitCode -and $cliExitCode -ne 0) {
   throw "lane '$Agent' CLI exited with code $cliExitCode"
 }
 } finally {
+  # Shutdown retains the supervisor and its pipes until cooperative completion;
+  # an uncertain child stays in HOLD and is never killed or retried.
+  if ($null -ne $mindOwner) { Stop-WdMindOwnerAsync -Owner $mindOwner }
   if ($null -ne $nativeLeadLease) { $nativeLeadLease.Dispose(); $nativeLeadLease = $null }
   if ($null -ne $manualAttemptLease) {
     $manualAttemptLease.Dispose()

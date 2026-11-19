@@ -49,6 +49,12 @@ def _bundle(tmp_path, control):
     data = json.dumps(config, separators=(',', ':')).encode('ascii')
     (root / 'wd-mind-startup-config.json').write_bytes(data)
     manifest['files']['wd-mind-startup-config.json'] = hashlib.sha256(data).hexdigest().upper()
+    manifest['source_commit'] = 'a' * 40
+    automation = dict(schema='wd.mind-owner-automation.v1', enabled=True, agent='codex-lead-1',
+                      source_commit=manifest['source_commit'], startup_config_sha256=hashlib.sha256(data).hexdigest())
+    automation_bytes = json.dumps(automation, separators=(',', ':')).encode('ascii')
+    (root / 'wd-mind-owner-automation.json').write_bytes(automation_bytes)
+    manifest['files']['wd-mind-owner-automation.json'] = hashlib.sha256(automation_bytes).hexdigest().upper()
     manifest['bridge_code_package'] = {'python_executable':options['-BridgePythonPath'],
         'python_executable_sha256':options['-BridgePythonSha256']}
     raw = json.dumps(manifest, separators=(',', ':')).encode('ascii')
@@ -440,3 +446,34 @@ def test_reserved_marker_refuses_without_cleanup_or_retry(tmp_path, control, sto
     assert states[-1] == 'PRE_OWNER_REFUSED'
     assert reservation.read_bytes() == b'WD_MIND_OWNER_V1\nR'
     assert not marker.exists()
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pinned owner automation')
+@pytest.mark.parametrize('fault', ['missing', 'tampered', 'disabled', 'wrong_agent', 'wrong_commit',
+                                   'wrong_config', 'noncanonical', 'config_tampered'])
+def test_supervisor_refuses_invalid_or_absent_automation_before_host(tmp_path, control, stop_event, fault):
+    root, marker, _ = _bundle(tmp_path, control)
+    path = root / 'wd-mind-owner-automation.json'
+    manifest_path = root / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    value = json.loads(path.read_bytes())
+    if fault == 'missing':
+        del manifest['files'][path.name]
+    elif fault == 'tampered':
+        path.write_bytes(b'{}')
+    elif fault == 'config_tampered':
+        (root / 'wd-mind-startup-config.json').write_bytes(b'{}')
+    else:
+        if fault == 'disabled': value['enabled'] = False
+        if fault == 'wrong_agent': value['agent'] = 'fable-5'
+        if fault == 'wrong_commit': value['source_commit'] = 'b'*40
+        if fault == 'wrong_config': value['startup_config_sha256'] = '0'*64
+        raw = json.dumps(value, separators=(', ', ': ') if fault == 'noncanonical' else (',', ':')).encode()
+        path.write_bytes(raw)
+        manifest['files'][path.name] = hashlib.sha256(raw).hexdigest().upper()
+    raw_manifest = json.dumps(manifest, separators=(',', ':')).encode()
+    manifest_path.write_bytes(raw_manifest)
+    pin = hashlib.sha256(raw_manifest).hexdigest()
+    process = _start(root, pin, stop_event[0])
+    stdout, stderr = process.communicate(timeout=15)
+    assert process.returncode == 2 and not marker.exists() and not stderr
+    assert json.loads(stdout.decode().strip())['state'] == 'REFUSED'

@@ -436,7 +436,7 @@ $files=[ordered]@{{'wd-fleet.json'='{fleet}'}}
 if (${str(config).lower()}) {{$files['wd-mind-startup-config.json']='synthetic'}}
 $deployment=[pscustomobject]@{{files=[pscustomobject]$files}}
 $snapshotText='{{"files":{{"Invoke-WdMindStartupRead.ps1":"' + ('B'*64) + '"}}}}'
-function Start-WdMindAsyncStartupController {{param([bool]$Enabled,[bool]$Native,[string]$BundleRoot,[string]$ExpectedManifestHash,[string]$ExpectedFleetSha256,[string]$Lane,[string]$ReadKind) $script:startCalls++; return 'synthetic-owner'}}
+function Start-WdMindAsyncStartupController {{param([bool]$Enabled,[bool]$Native,[string]$BundleRoot,[string]$ExpectedManifestHash,[string]$ExpectedFleetSha256,[string]$Lane,[string]$ReadKind,$AwaitOwner) $script:startCalls++; return 'synthetic-owner'}}
 function Assert-LanePathWithoutReparse {{param($Path,$TrustedRoot,$ExpectedType)}}
 function Assert-FilePathWithoutReparse {{param($Candidate,$Root)}}
 function Read-Utf8LaneSnapshot {{param($Path) if($Path -like '*Invoke-WdMindStartupRead.ps1'){{[pscustomobject]@{{Hash=('B'*64);Text=$script:helperText}}}}else{{[pscustomobject]@{{Hash=('A'*64);Text=$snapshotText}}}}}}
@@ -444,7 +444,7 @@ function Read-Utf8FileSnapshot {{param($Path) if($Path -like '*Invoke-WdMindStar
 $PSScriptRoot='C:\\synthetic';$worktree='C:\\synthetic';$Agent='codex-lead-1';$agent='codex-tools-1'
 $laneTrustedDrive='C:\\';$toolsTrustedDrive='C:\\';$fixedDeploymentManifest='C:\\synthetic\\deployment-manifest.json'
 $toolsDeploymentManifestPath=$fixedDeploymentManifest;$script:LaneManifestAnchor=('A'*64);$toolsExpectedManifestHash=('A'*64)
-$deploymentAnchor=$deployment;$toolsDeployment=$deployment;$RecoverInteractive=$false
+$deploymentAnchor=$deployment;$toolsDeployment=$deployment;$RecoverInteractive=$false;$mindOwner=$null;$mindOwnerRequested=$false
 $launchTurnMode={turn_mode}
 $conversationSurface={surface}
 $mindStartupRead=[pscustomobject]@{{outcome='refused';reason='startup_helper_refused';record_written=$false}}
@@ -1392,7 +1392,7 @@ $mindStartupGuidance=' prior unknown status ';$cliPath='C:\\fake.exe';$codexComm
     assert 'END STATUS DATA.' in text and read['fragment'] in text
 
 
-def _synthetic_owner_launcher_bundle(tmp_path, *, hold=False, tamper=False):
+def _synthetic_owner_launcher_bundle(tmp_path, *, hold=False, tamper=False, automation_fault=''):
     # This fake supervisor only writes synthetic markers and honors a private stop event.
     root = tmp_path / 'owner-launcher-bundle'
     root.mkdir()
@@ -1406,21 +1406,34 @@ $p=[Diagnostics.Process]::GetProcessById($ControllerPid)
 if($p.StartTime.ToUniversalTime().ToString('o') -cne $ControllerStartUtc){exit 3}
 $evt=[Threading.EventWaitHandle]::OpenExisting($StopEventName)
 [IO.File]::WriteAllText(READY,'ready')
-[Console]::Out.WriteLine('{"state":"READY"}')
+[Console]::Out.Write('{"schema":"wd.mind-owner-supervisor-status.v1","state":"READY","authority":"none","owner_authentication":"UNKNOWN"}'+"`n");[Console]::Out.Flush()
 while(-not $evt.WaitOne(25)){}
 [IO.File]::WriteAllText(STOPPED,'stopped')
+[Console]::Out.Write('{"schema":"wd.mind-owner-supervisor-status.v1","state":"STOPPED","authority":"none","owner_authentication":"UNKNOWN"}'+"`n");[Console]::Out.Flush()
 $evt.Dispose();$p.Dispose();exit 0
 '''.replace('READY', _literal(ready), 1).replace('STOPPED', _literal(stopped), 1)
     supervisor = root / 'Start-WdMindOwnerSupervisor.ps1'
     supervisor.write_bytes(source.encode())
     config = b'{"synthetic":true}'
     (root / 'wd-mind-startup-config.json').write_bytes(config)
-    manifest = {'schema_version': 1, 'files': {
+    automation = dict(schema='wd.mind-owner-automation.v1', enabled=True, agent='codex-lead-1',
+                      source_commit='a'*40, startup_config_sha256=hashlib.sha256(config).hexdigest())
+    if automation_fault == 'disabled': automation['enabled'] = False
+    if automation_fault == 'wrong_agent': automation['agent'] = 'fable-5'
+    if automation_fault == 'wrong_commit': automation['source_commit'] = 'b'*40
+    if automation_fault == 'wrong_config': automation['startup_config_sha256'] = '0'*64
+    automation_bytes = json.dumps(automation, separators=(',', ':')).encode()
+    (root / 'wd-mind-owner-automation.json').write_bytes(automation_bytes)
+    manifest = {'schema_version': 1, 'source_commit':'a'*40, 'files': {
         supervisor.name: hashlib.sha256(supervisor.read_bytes()).hexdigest(),
-        'wd-mind-startup-config.json': hashlib.sha256(config).hexdigest()}}
+        'wd-mind-startup-config.json': hashlib.sha256(config).hexdigest(),
+        'wd-mind-owner-automation.json': hashlib.sha256(automation_bytes).hexdigest()}}
+    if automation_fault == 'missing': del manifest['files']['wd-mind-owner-automation.json']
     raw = json.dumps(manifest, separators=(',', ':')).encode()
     (root / 'deployment-manifest.json').write_bytes(raw)
     if tamper: supervisor.write_text('exit 0', encoding='ascii')
+    if automation_fault == 'tampered': (root / 'wd-mind-owner-automation.json').write_bytes(b'{}')
+    if automation_fault == 'config_tampered': (root / 'wd-mind-startup-config.json').write_bytes(b'{}')
     return root, hashlib.sha256(raw).hexdigest(), ready, stopped
 
 
@@ -1444,21 +1457,28 @@ $owner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -Expec
 $elapsed=$clock.ElapsedMilliseconds;$until=[DateTime]::UtcNow.AddSeconds(10)
 while(-not $owner.state.completed -and -not (Test-Path -LiteralPath {_literal(ready)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
 $wasReady=Test-Path -LiteralPath {_literal(ready)}
+while($wasReady -and $owner.state.supervisor_reported -cne 'SUPERVISOR_REPORTED_READY' -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+$reportedBefore=$owner.state.supervisor_reported
 Stop-WdMindOwnerAsync -Owner $owner
 @{{elapsed=$elapsed;ready=$wasReady;stopped=(Test-Path -LiteralPath {_literal(stopped)});
- completed=$owner.state.completed;state=$owner.state.worker}} | ConvertTo-Json -Compress
+ completed=$owner.state.completed;state=$owner.state.worker;reportedBefore=$reportedBefore;reportedAfter=$owner.state.supervisor_reported}} | ConvertTo-Json -Compress
 '''
     value = _run_startup_script(script, timeout=30)
     assert value['elapsed'] < 1000 and value['completed'] is True
     assert value['ready'] is (not tamper) and value['stopped'] is (not tamper)
     assert value['state'] == 'EXITED_UNVERIFIED'
+    assert value['reportedBefore'] == ('UNKNOWN' if tamper else 'SUPERVISOR_REPORTED_READY')
+    assert value['reportedAfter'] == ('UNKNOWN' if tamper else 'SUPERVISOR_EXITED_STOPPED')
 
 
-def test_owner_start_is_after_native_spawn_and_explicit_opt_in():
+def test_owner_starts_before_reader_and_native_prompt_poll_with_shutdown_retention():
     source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8-sig')
-    body = source[source.index('function Invoke-WdNativeLeadTerminal {'):source.index('function Get-WdClaudeResumeState {')]
-    assert body.index('$native=Start-WdToolsNativeProcess') < body.index('if ($EnableMindOwnerStartup)')
-    assert 'Stop-WdMindOwnerAsync -Owner $mindOwner' in body
+    start = source.index('try { $mindOwner=Start-WdMindOwnerAsync')
+    reader = source.index('try {$mindContentOwner=Start-WdMindAsyncStartupController', start)
+    poll = source.index('$mindPoll=Get-WdMindAsyncStartupResult -Owner $mindContentOwner', reader)
+    assert start < reader < poll
+    assert '-AwaitOwner $mindOwner' in source[reader:poll]
+    assert 'Stop-WdMindOwnerAsync -Owner $mindOwner' in source[poll:]
     assert '[switch] $EnableMindOwnerStartup' in source
     assert 'Mind owner opt-in is available only for native Lead' in source
 
@@ -1511,14 +1531,197 @@ $elapsed=$watch.ElapsedMilliseconds;$until=[DateTime]::UtcNow.AddSeconds(10)
 try {{
  while(-not (Test-Path -LiteralPath {_literal(entered)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
  $blocked=(Test-Path -LiteralPath {_literal(entered)}) -and -not (Test-Path -LiteralPath {_literal(ready)})
+ $reportedBefore=$owner.state.supervisor_reported
 }} finally {{[IO.File]::WriteAllText({_literal(release)},'release')}}
 $until=[DateTime]::UtcNow.AddSeconds(10)
 while(-not $owner.state.completed -and -not (Test-Path -LiteralPath {_literal(ready)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
 $started=Test-Path -LiteralPath {_literal(ready)}
 Stop-WdMindOwnerAsync -Owner $owner
 @{{elapsed=$elapsed;blocked=$blocked;started=$started;stopped=(Test-Path -LiteralPath {_literal(stopped)});
- state=$owner.state.worker}} | ConvertTo-Json -Compress
+ state=$owner.state.worker;reportedBefore=$reportedBefore}} | ConvertTo-Json -Compress
 '''
     value = _run_startup_script(script, timeout=30)
     assert value['elapsed'] < 1000 and value['blocked'] and value['started'] and value['stopped']
     assert value['state'] == 'EXITED_UNVERIFIED'
+
+@WINDOWS
+@pytest.mark.parametrize('fault', ['missing', 'tampered', 'disabled', 'wrong_agent', 'wrong_commit', 'wrong_config', 'config_tampered'])
+def test_owner_launcher_refuses_bad_automation_before_supervisor(tmp_path, fault):
+    root, pin, ready, stopped = _synthetic_owner_launcher_bundle(tmp_path, automation_fault=fault)
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', [
+        'Start-WdMindOwnerAsync', 'Stop-WdMindOwnerAsync']) + f'''
+$owner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -ExpectedManifestHash '{pin}'
+$until=[DateTime]::UtcNow.AddSeconds(10)
+while(-not $owner.state.completed -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+Stop-WdMindOwnerAsync -Owner $owner
+@{{completed=$owner.state.completed;ready=(Test-Path -LiteralPath {_literal(ready)});
+ stopped=(Test-Path -LiteralPath {_literal(stopped)});reported=$owner.state.supervisor_reported}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script, timeout=20)
+    assert value == {'completed': True, 'ready': False, 'stopped': False, 'reported': 'UNKNOWN'}
+
+
+def test_owner_automatic_gate_requires_native_lead_manifest_pin():
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8-sig')
+    assert "$mindOwnerRequested = $nativeLead -and -not $RecoverInteractive -and ($EnableMindOwnerStartup -or" in source
+    assert "$deploymentAnchor.files.PSObject.Properties['wd-mind-owner-automation.json']" in source
+    assert 'if ($nativeLead) {' in source
+
+@WINDOWS
+@pytest.mark.parametrize('fault', ['forged', 'duplicate', 'partial', 'crlf', 'ready_after_hold', 'no_terminal'])
+def test_owner_launcher_does_not_accept_invalid_supervisor_frames(tmp_path, fault):
+    root, _, ready, stopped = _synthetic_owner_launcher_bundle(tmp_path)
+    path = root / 'Start-WdMindOwnerSupervisor.ps1'
+    text = path.read_text(encoding='utf-8')
+    frame = '[Console]::Out.Write(\'{"schema":"wd.mind-owner-supervisor-status.v1","state":"READY","authority":"none","owner_authentication":"UNKNOWN"}\'+"`n");[Console]::Out.Flush()'
+    assert text.count(frame) == 1
+    if fault == 'forged': replacement = frame.replace('"owner_authentication":"UNKNOWN"', '"owner_authentication":"PROVEN"')
+    elif fault == 'duplicate': replacement = frame + ';' + frame
+    elif fault == 'crlf': replacement = frame.replace('`n', '`r`n')
+    elif fault == 'ready_after_hold': replacement = frame.replace('"state":"READY"', '"state":"HOLD"') + ';' + frame
+    elif fault == 'no_terminal': replacement = frame
+    else: replacement = "[Console]::Out.Write('partial')"
+    text = text.replace(frame, replacement)
+    if fault == 'no_terminal':
+        stopped_frame = frame.replace('"state":"READY"', '"state":"STOPPED"')
+        assert text.count(stopped_frame) == 1
+        text = text.replace(stopped_frame, '')
+    path.write_text(text, encoding='utf-8')
+    manifest_path = root / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'][path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    manifest_path.write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', [
+        'Start-WdMindOwnerAsync', 'Stop-WdMindOwnerAsync']) + f'''
+$owner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -ExpectedManifestHash '{pin}'
+$until=[DateTime]::UtcNow.AddSeconds(10)
+while(-not $owner.state.completed -and -not (Test-Path -LiteralPath {_literal(ready)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+Stop-WdMindOwnerAsync -Owner $owner
+@{{completed=$owner.state.completed;reported=$owner.state.supervisor_reported;
+ stopped=(Test-Path -LiteralPath {_literal(stopped)})}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script, timeout=30)
+    assert value == {'completed': True, 'reported': 'UNKNOWN', 'stopped': True}
+
+@WINDOWS
+@pytest.mark.parametrize('owner_state', ['warming', 'duplicate_refused'])
+def test_content_worker_does_not_wait_in_launcher_while_owner_warms(tmp_path, owner_state):
+    case = _async_controller_bundle(tmp_path, held=True)
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', [
+        'Start-WdMindAsyncStartupController', 'Get-WdMindAsyncStartupResult']) + f'''
+$gate=[pscustomobject]@{{state=[hashtable]::Synchronized(@{{worker='{('STARTING' if owner_state == 'warming' else 'EXITED_UNVERIFIED')}';supervisor_reported='{('UNKNOWN' if owner_state == 'warming' else 'SUPERVISOR_EXITED_PRE_OWNER_REFUSED')}';completed=${str(owner_state == 'duplicate_refused').lower()}}});
+ signal=(New-Object Threading.ManualResetEvent($false))}}
+$owner=Start-WdMindAsyncStartupController -Enabled $true -Native $true -BundleRoot {_literal(case['root'])} `
+ -ExpectedManifestHash '{case['manifest']}' -ExpectedFleetSha256 '{case['fleet']}' -Lane codex-lead-1 -AwaitOwner $gate -DeadlineMilliseconds 10000
+Start-Sleep -Milliseconds 350
+$watch=[Diagnostics.Stopwatch]::StartNew();$r=Get-WdMindAsyncStartupResult -Owner $owner;$elapsed=$watch.ElapsedMilliseconds
+[void]$gate.signal.Set();[IO.File]::WriteAllText({_literal(case['release'])},'release')
+$until=[DateTime]::UtcNow.AddSeconds(10)
+while(-not $owner.state.completed -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+@{{elapsed=$elapsed;complete=$r.complete_verified;started=(Test-Path -LiteralPath {_literal(case['started'])});finished=$owner.state.completed}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script, timeout=20)
+    assert value['elapsed'] < 500 and value['complete'] is False
+    assert value['started'] is False and value['finished'] is True
+
+
+@WINDOWS
+def test_real_supervisor_precedes_real_reader_controller_with_synthetic_candidate(tmp_path):
+    import test_wd_mind_owner_supervisor as supervisor_tests
+    root, owner_marker, _, reservation = supervisor_tests._reservation_bundle(
+        tmp_path, {'name': 'Local\\wd-mind-owner-stop-' + '0'*32, 'start': 'synthetic'})
+    # A delayed READY makes this test fail if the content reader is started early.
+    ready_marker = tmp_path / 'synthetic-owner-ready'
+    child = root / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    child_text = child.read_text(encoding='utf-8')
+    old = "emit('STARTING');emit('READY');sys.stdin.buffer.read();emit('STOPPED')"
+    new = ("emit('STARTING');__import__('time').sleep(1);open(" + repr(str(ready_marker)) +
+           ",'w').write('ready');emit('READY');sys.stdin.buffer.read();emit('STOPPED')")
+    assert child_text.count(old) == 1
+    child.write_text(child_text.replace(old, new), encoding='utf-8')
+    for name in ('Start-WdMindOwnerSupervisor.ps1', 'Start-WdMindContentController.ps1', 'Invoke-WdMindContentStartupRead.ps1', 'BridgeCodeContext.ps1'):
+        (root / name).write_bytes((REBOOT / name).read_bytes())
+    initial_manifest = json.loads((root / 'deployment-manifest.json').read_bytes())
+    fleet_bytes = json.dumps({'synthetic_fleet': True, 'bridge_python': {
+        'executable': initial_manifest['bridge_code_package']['python_executable']}}, separators=(',', ':')).encode()
+    (root / 'wd-fleet.json').write_bytes(fleet_bytes)
+    fleet = hashlib.sha256(fleet_bytes).hexdigest()
+    read, _, old_fleet, refs = _prepared_content_fixture('codex-lead-1')
+    read['fragment'] = read['fragment'].replace(old_fleet, fleet)
+    read['receipt']['fleet_sha256'] = fleet
+    read['receipt']['fragment_sha256'] = hashlib.sha256(read['fragment'].encode('ascii')).hexdigest()
+    envelope = dict(schema='wd.mind-startup-delivery.v1', status='PREPARED', authority='none',
+                    fragment=read['fragment'], receipt=read['receipt'])
+    payload = base64.b64encode(json.dumps(envelope, sort_keys=True, separators=(',', ':')).encode()).decode()
+    wrapper = root / 'Invoke-WdBridgePython.ps1'
+    original = wrapper.read_text(encoding='utf-8')
+    anchor = "if ($env:SYNTHETIC_ENV_CANARY) { exit 9 }"
+    assert original.count(anchor) == 1
+    branch = ("if ($Tool -ceq 'tools/wd_bridge_mind_session.py') { "
+              "if (-not (Test-Path -LiteralPath " + _literal(ready_marker) + ")) { exit 13 }; "
+              "$b=[Convert]::FromBase64String('" + payload + "');"
+              "[Console]::OpenStandardOutput().Write($b,0,$b.Length); exit 0 };\n")
+    wrapper.write_text(original.replace(anchor, branch + anchor), encoding='utf-8')
+    for name in ('wd_bridge_mind_session.py', 'wd_mind_startup_delivery.py'):
+        (root / 'tools-bootstrap/tools' / name).write_text('# synthetic inert pin target\n', encoding='utf-8')
+    manifest_path = root / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    for path in (child, wrapper, root/'wd-fleet.json', root/'Start-WdMindOwnerSupervisor.ps1',
+                 root/'Start-WdMindContentController.ps1', root/'Invoke-WdMindContentStartupRead.ps1', root/'BridgeCodeContext.ps1',
+                 root/'tools-bootstrap/tools/wd_bridge_mind_session.py', root/'tools-bootstrap/tools/wd_mind_startup_delivery.py'):
+        manifest['files'][str(path.relative_to(root)).replace('\\', '/')] = hashlib.sha256(path.read_bytes()).hexdigest().upper()
+    raw = json.dumps(manifest, separators=(',', ':')).encode(); manifest_path.write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', [
+        'Start-WdMindOwnerAsync', 'Stop-WdMindOwnerAsync', 'Start-WdMindAsyncStartupController',
+        'Get-WdMindAsyncStartupResult']) + f'''
+$o=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -ExpectedManifestHash '{pin}'
+$r=Start-WdMindAsyncStartupController -Enabled $true -Native $true -BundleRoot {_literal(root)} `
+ -ExpectedManifestHash '{pin}' -ExpectedFleetSha256 '{fleet}' -Lane codex-lead-1 -AwaitOwner $o -DeadlineMilliseconds 30000
+$until=[DateTime]::UtcNow.AddSeconds(28)
+try {{
+ while(-not $r.state.completed -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+ $result=Get-WdMindAsyncStartupResult -Owner $r
+ $sawReady=Test-Path -LiteralPath {_literal(ready_marker)}
+}} finally {{Stop-WdMindOwnerAsync -Owner $o}}
+@{{complete=$result.complete_verified;read=$result.read;sawReady=$sawReady;ownerCompleted=$o.state.completed}} | ConvertTo-Json -Depth 20 -Compress
+'''
+    value = _run_startup_script(script, timeout=50)
+    assert value['sawReady'] and value['ownerCompleted'] and value['complete']
+    assert value['read']['delivery'] == 'NOT_PROVEN'
+    assert value['read']['receipt']['results'][0]['source_event_sha256'] == refs[0]
+    assert owner_marker.read_bytes() == b'1' and reservation.read_bytes() == b'WD_MIND_OWNER_V1\nC'
+
+@WINDOWS
+@pytest.mark.parametrize('owner_behavior', ['null', 'throw', 'not_requested'])
+def test_requested_owner_start_failure_never_starts_content_reader(owner_behavior):
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8-sig')
+    start = source.index('$mindOwnerRequested = $nativeLead')
+    end = source.index('$mindOriginalStartupPrompt = $startupPrompt', start)
+    block = source[start:end]
+    script = f'''
+Set-StrictMode -Version Latest
+$script:contentStarts=0;$script:statusStarts=0;$script:ownerStarts=0
+function Write-Warning {{param($Message,$WarningAction)}}
+function Start-WdMindOwnerAsync {{param($Enabled,$BundleRoot,$ExpectedManifestHash)
+ $script:ownerStarts++;if('{owner_behavior}' -ceq 'throw'){{throw 'synthetic'}};return $null}}
+function Start-WdMindAsyncStartupController {{param($Enabled,$Native,$BundleRoot,$ExpectedManifestHash,$ExpectedFleetSha256,$Lane,$AwaitOwner,$ReadKind)
+ if($ReadKind -ceq 'status'){{$script:statusStarts++}}else{{$script:contentStarts++}};return 'synthetic-owner'}}
+$files=[ordered]@{{'wd-fleet.json'=('a'*64);'wd-mind-startup-config.json'=('b'*64);'wd-mind-owner-automation.json'=('c'*64)}}
+$deploymentAnchor=[pscustomobject]@{{files=[pscustomobject]$files}}
+$nativeLead=${str(owner_behavior != 'not_requested').lower()};$RecoverInteractive=$false;$EnableMindOwnerStartup=$false
+$launchTurnMode='interactive';$Agent=if($nativeLead){{'codex-lead-1'}}else{{'fable-5'}}
+$PSScriptRoot='C:\\synthetic';$script:LaneManifestAnchor=('d'*64);$mindOwner=$null
+{block}
+@{{requested=$mindOwnerRequested;ownerStarts=$script:ownerStarts;contentStarts=$script:contentStarts;
+ statusStarts=$script:statusStarts;contentOwner=$mindContentOwner}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script)
+    requested = owner_behavior != 'not_requested'
+    assert value['requested'] is requested
+    assert value['ownerStarts'] == int(requested)
+    assert value['contentStarts'] == int(not requested)
+    assert value['statusStarts'] == 1
+    assert value['contentOwner'] == (None if requested else 'synthetic-owner')

@@ -1887,21 +1887,48 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
 _STARTUP_OWNER_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
 _STARTUP_PREWARM_SOURCE_READ_LIMIT = 2 * 1024 * 1024 * 1024
 _STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
+# The owner re-checks its frozen prefix by fixed-size segments. The first check
+# after the retained state is built makes the one whole pass, and that pass also
+# builds a table of segment digests bound to the pinned whole-prefix digest.
+# Every later check re-hashes only the segments that hold a row of the current
+# answer plus the newest segment, and once per query the next segments in turn,
+# so every segment is read again over time. Bytes outside those segments are not
+# re-hashed at every check. None instead of a size keeps a whole-prefix re-hash
+# at every check (the strict control mode).
+_OWNER_SOURCE_SEGMENT_BYTES = 1024 * 1024
+_OWNER_SOURCE_SCRUB_BYTES = 64 * 1024 * 1024
+_OWNER_MAX_SELECTED_ROWS = 3
+_OWNER_MAX_ROW_BYTES = 4 * 1024 * 1024
 
 
 class _StartupSourceBudgetRefused(ValueError):
     pass
 
 
-def _startup_owner_source_budget(snapshot):
+def _owner_prefix_check_bytes(offset, segments_ready):
+    """Most source bytes the three prefix checks of one request can read."""
+    size = _OWNER_SOURCE_SEGMENT_BYTES
+    if size is None:
+        # Strict control mode: three whole-prefix hashes.
+        return 3 * offset
+    from tools import wd_mind_source_segments as segments
+    # One whole pass only while the segment table does not exist yet. The three
+    # segment checks and the one scrub turn do not grow with the source.
+    return ((0 if segments_ready else offset)
+            + 3 * segments.max_check_bytes(size, _OWNER_MAX_SELECTED_ROWS, _OWNER_MAX_ROW_BYTES)
+            + _OWNER_SOURCE_SCRUB_BYTES)
+
+
+def _startup_owner_source_budget(snapshot, *, segments_ready=False):
     """Preflight known worst-case reads without touching the shared owner."""
     cursor = snapshot['messages']['end_cursor']
     offset = cursor.offset
-    # Three prefix hashes, three maximum-sized selected rows with their
+    # The prefix checks, three maximum-sized selected rows with their
     # boundary bytes, and three rotation source-check bytes.
-    if type(offset) is not int or offset <= 0:
+    if type(offset) is not int or offset <= 0 or type(segments_ready) is not bool:
         raise ValueError('source_budget')
-    if 3 * offset + 3 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
+    if (_owner_prefix_check_bytes(offset, segments_ready) + 3 * (_OWNER_MAX_ROW_BYTES + 1) + 3
+            > _STARTUP_OWNER_SOURCE_READ_LIMIT):
         raise _StartupSourceBudgetRefused('source_budget')
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
 
@@ -1922,12 +1949,13 @@ def _prewarm_source_budget(snapshot, *, extra_prefix_passes=0):
     return prefix._SourceReadBudget(_STARTUP_PREWARM_SOURCE_READ_LIMIT)
 
 
-def _local_query_source_budget(snapshot):
+def _local_query_source_budget(snapshot, *, segments_ready=False):
     """Preflight two selected-row resolutions plus query and rotation reads."""
     offset = snapshot['messages']['end_cursor'].offset
-    if type(offset) is not int or offset <= 0:
+    if type(offset) is not int or offset <= 0 or type(segments_ready) is not bool:
         raise ValueError('source_budget')
-    if 3 * offset + 6 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
+    if (_owner_prefix_check_bytes(offset, segments_ready) + 6 * (_OWNER_MAX_ROW_BYTES + 1) + 3
+            > _STARTUP_OWNER_SOURCE_READ_LIMIT):
         raise _StartupSourceBudgetRefused('source_budget')
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
 
@@ -1935,7 +1963,8 @@ def _local_query_source_budget(snapshot):
 class _RetainedFlatQueryState:
     """One owner's verified flat rows and selected-row gate, retained in memory."""
     __slots__ = ('_owner', '_generation', '_handler', '_memory', '_flat', '_snapshot',
-                 '_source_owner', '_records', '_policy_pin', '_binding_pin', '_pid', '_package')
+                 '_source_owner', '_records', '_policy_pin', '_binding_pin', '_pid', '_package',
+                 '_segments', '_spans', '_scrub_due')
 
     def __init__(self, owner, *, source_budget=None):
         generation = owner._generation
@@ -1969,6 +1998,9 @@ class _RetainedFlatQueryState:
         self._binding_pin = (binding._PrivateBinding__bundle, binding._PrivateBinding__manifest,
                              binding._PrivateBinding__controls)
         self._pid, self._package = os.getpid(), package
+        # The segment table is built by the first prefix check, not here: the
+        # start allowance covers the passes above and nothing more.
+        self._segments, self._spans, self._scrub_due = None, (), False
         self._controls()
 
     def _controls(self):
@@ -2010,27 +2042,67 @@ class _RetainedFlatQueryState:
             before = os.fstat(stream.fileno())
             identity = native_bridge._file_identity(stream)
             reader._narrow_fence(stream, source, sidecar, cursor, native_bridge, absent)
-            digest = hashlib.sha256()
-            remaining = cursor.offset
-            while remaining:
-                block = absent._budgeted_read(stream, min(1024 * 1024, remaining), source_budget)
-                if not block:
-                    raise ValueError('short_prefix')
-                digest.update(block)
-                remaining -= len(block)
-            if not hmac.compare_digest(digest.hexdigest(), context['decision']['source_prefix']['sha256']):
-                raise ValueError('prefix_changed')
+            pinned = context['decision']['source_prefix']['sha256']
+            size = _OWNER_SOURCE_SEGMENT_BYTES
+            # The table leaves the object for the duration of the check and comes
+            # back only when every step below passed: a failed check keeps none.
+            table, self._segments = getattr(self, '_segments', None), None
+            if size is None:
+                table = None
+                digest = hashlib.sha256()
+                remaining = cursor.offset
+                while remaining:
+                    block = absent._budgeted_read(stream, min(1024 * 1024, remaining), source_budget)
+                    if not block:
+                        raise ValueError('short_prefix')
+                    digest.update(block)
+                    remaining -= len(block)
+                if not hmac.compare_digest(digest.hexdigest(), pinned):
+                    raise ValueError('prefix_changed')
+            else:
+                table = self._segment_check(stream, cursor, pinned, size, table, source_budget, absent)
             reader._narrow_fence(stream, source, sidecar, cursor, native_bridge, absent)
             after = os.fstat(stream.fileno())
             if after.st_size < before.st_size or (after.st_size == before.st_size and after.st_mtime_ns != before.st_mtime_ns):
                 raise ValueError('source_changed_during_hash')
+            self._segments = table
             return identity, after.st_size, after.st_mtime_ns
+
+    def _segment_check(self, stream, cursor, pinned, size, table, source_budget, absent):
+        """The one whole pass that builds the segment table, or a re-hash of the segments in use."""
+        from tools import wd_mind_source_segments as segments
+
+        def read(handle, count):
+            return absent._budgeted_read(handle, count, source_budget)
+
+        if table is None:
+            # Returned only when this same pass reproduces the pinned whole-prefix digest.
+            return segments.open_generation(stream, cursor.offset, segment_bytes=size,
+                                            file_identity=cursor.file_identity, generation=cursor.generation,
+                                            expected_prefix_sha256=pinned, read=read)
+        if type(table) is not segments.SourceGeneration:
+            raise ValueError('segments_binding')
+        ledger = table.ledger
+        if (ledger.end != cursor.offset or ledger.segment_bytes != size
+                or table.file_identity != cursor.file_identity or table.generation != cursor.generation
+                or type(ledger.prefix_sha256) is not str
+                or not hmac.compare_digest(ledger.prefix_sha256, pinned)):
+            raise ValueError('segments_binding')
+        table.check_rows(stream, getattr(self, '_spans', ()), read=read)
+        if getattr(self, '_scrub_due', False):
+            self._scrub_due = False
+            table.scrub(stream, _OWNER_SOURCE_SCRUB_BYTES, read=read)
+        return table
 
     def query(self, *, lane, scope, query):
         if self._handler._retained is not self:
             raise ValueError('retained_owner_changed')
         context = self._controls()
         source_budget = getattr(self._owner, '_source_budget', None)
+        # No row of an earlier answer is carried into this query's checks. The
+        # scrub turn is due only when the table already existed: the whole pass
+        # that builds it has just read every segment.
+        self._spans, self._scrub_due = (), getattr(self, '_segments', None) is not None
         before = (self._prefix(context) if source_budget is None else
                   self._prefix(context, source_budget=source_budget))
         when = reader.dt.datetime.now(reader.dt.timezone.utc)
@@ -2090,6 +2162,9 @@ class _RetainedFlatQueryState:
                 'source_valid_until_utc':record['provenance'].get('valid_until_utc'),
                 'source_offset':entry['offset'], 'source_length':entry['length'],
                 'chunk_index':record['provenance']['chunk_index']})
+        # From here on every prefix check of this answer, the delivery check
+        # included, re-hashes the segments that hold its rows.
+        self._spans = tuple((hit['source_offset'], hit['source_length']) for hit in hits)
         context = self._controls()
         after = (self._prefix(context) if source_budget is None else
                  self._prefix(context, source_budget=source_budget))
@@ -2730,6 +2805,9 @@ def _write_refresh_vector_cache(owner, old_handler, *, source_budget=None):
             retained = owner._retained
             if type(retained) is not _RetainedFlatQueryState:
                 raise ValueError('refresh_retained_missing')
+            # Vectors are stored only after a whole-prefix pass, never after a
+            # segment check: without a segment table the check reads everything.
+            retained._segments = None
             retained._prefix(retained._controls(), source_budget=source_budget)
 
     verify_source()
@@ -3080,7 +3158,8 @@ class _SingleManifestOwner:
                 raise ValueError('prewarm_unavailable')
             # Preflight refusal does not damage a healthy owner. No source read yet.
             try:
-                self._source_budget = _local_query_source_budget(self._snapshot)
+                self._source_budget = _local_query_source_budget(
+                    self._snapshot, segments_ready=getattr(self._retained, '_segments', None) is not None)
             except _StartupSourceBudgetRefused:
                 checking = False  # A known size limit is not source corruption.
                 raise
@@ -3675,7 +3754,8 @@ class _SingleManifestOwner:
             if self._prewarm_generation is not self._generation:
                 raise ValueError('prewarm_unavailable')
             try:
-                self._source_budget = _startup_owner_source_budget(self._snapshot)
+                self._source_budget = _startup_owner_source_budget(
+                    self._snapshot, segments_ready=getattr(self._retained, '_segments', None) is not None)
             except _StartupSourceBudgetRefused:
                 checking = False
                 raise

@@ -142,7 +142,10 @@ def test_short_read_refunds_unused_reservation():
         budget.reserve(1)
 
 
-def test_retained_prefix_reserves_before_open_source_read(monkeypatch):
+@pytest.mark.parametrize('segment_bytes', [None, 1024 * 1024], ids=['whole-prefix', 'segments'])
+def test_retained_prefix_reserves_before_open_source_read(monkeypatch, segment_bytes):
+    monkeypatch.setattr(runtime, '_OWNER_SOURCE_SEGMENT_BYTES', segment_bytes)
+
     class Source(BytesIO):
         def __init__(self):
             super().__init__(b'abc')
@@ -164,12 +167,13 @@ def test_retained_prefix_reserves_before_open_source_read(monkeypatch):
     monkeypatch.setattr(reader, '_narrow_fence', lambda *_args: None)
     monkeypatch.setattr(runtime.os, 'fstat', lambda _fd: SimpleNamespace(st_size=3, st_mtime_ns=1))
     context = {'messages': {'source_path': 'synthetic', 'generation_path': 'synthetic-generation',
-                            'end_cursor': SimpleNamespace(offset=3)},
+                            'end_cursor': SimpleNamespace(offset=3, file_identity='id', generation=None)},
                'decision': {'source_prefix': {'sha256': reader._sha(b'abc')}}}
     retained = object.__new__(runtime._RetainedFlatQueryState)
     with pytest.raises(ValueError, match='source_budget'):
         retained._prefix(context, source_budget=prefix._SourceReadBudget(2))
     assert source.reads == []
+    assert retained._segments is None
 
 
 def test_startup_owner_preflight_refuses_known_overbudget_without_io():
@@ -383,6 +387,9 @@ def test_real_retained_query_charges_three_prefixes_and_selected_rows(
         synthetic_checkout_pins, flat_consumer_case, monkeypatch):
     import json
 
+    # Strict control mode: three whole-prefix hashes. The segment mode is stated in
+    # test_wd_mind_owner_segment_checks.py and by the request test below.
+    monkeypatch.setattr(runtime, '_OWNER_SOURCE_SEGMENT_BYTES', None)
     _package, source_owner, _proposals, snapshot, clock, _response = flat_consumer_case
     _projection, context, _ = source_owner._gate.verify_snapshot(snapshot)
     records = json.loads(snapshot['projection_bytes'])['messages']['records']
@@ -417,11 +424,13 @@ def test_real_retained_query_charges_three_prefixes_and_selected_rows(
 
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
 @pytest.mark.parametrize('exhaust', [False, True], ids=['complete', 'mid_query_exhausted'])
+@pytest.mark.parametrize('segment_bytes', [None, 1024 * 1024], ids=['whole-prefix', 'segments'])
 def test_candidate_request_charges_real_synthetic_source_reads(
-        synthetic_checkout_pins, flat_consumer_case, monkeypatch, located, exhaust):
+        synthetic_checkout_pins, flat_consumer_case, monkeypatch, located, exhaust, segment_bytes):
     import json
 
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(runtime, '_OWNER_SOURCE_SEGMENT_BYTES', segment_bytes)
     _package, source_owner, _proposals, snapshot, clock, _response = flat_consumer_case
     _projection, context, _ = source_owner._gate.verify_snapshot(snapshot)
     records = json.loads(snapshot['projection_bytes'])['messages']['records']
@@ -446,12 +455,13 @@ def test_candidate_request_charges_real_synthetic_source_reads(
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda _self: None)
     monkeypatch.setattr(reader.dt, 'datetime', clock)
     actual_reads = _instrument_source_streams(monkeypatch, snapshot['messages']['source_path'])
-    budgets = []
+    budgets, flags = [], []
     original = runtime._startup_owner_source_budget
-    def capture(snapshot):
+    def capture(snapshot, **kwargs):
         budget = (prefix._SourceReadBudget(context['messages']['end_cursor'].offset + 1)
-                  if exhaust else original(snapshot))
+                  if exhaust else original(snapshot, **kwargs))
         budgets.append(budget)
+        flags.append(kwargs)
         return budget
     monkeypatch.setattr(runtime, '_startup_owner_source_budget', capture)
     request = {'schema': 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
@@ -475,6 +485,14 @@ def test_candidate_request_charges_real_synthetic_source_reads(
     assert len({id(item) for item in budgets}) == 1
     assert sum(size for _, size in actual_reads) > 3 * context['messages']['end_cursor'].offset
     assert budgets[0]._remaining == 1024 ** 3 - sum(size for _, size in actual_reads)
+    assert owner._state == 'READY' and owner._source_budget is None
+    # The first request is preflighted without a segment table. In segment mode it built one, so the
+    # preflight of the second request is told that no whole pass is needed; strict mode never has one.
+    assert flags == [{'segments_ready': False}]
+    first_reads = sum(size for _, size in actual_reads)
+    assert call(dict(request))['status'] == 'CANDIDATES'
+    assert flags[1] == {'segments_ready': segment_bytes is not None} and len(budgets) == 2
+    assert budgets[1]._remaining == 1024 ** 3 - (sum(size for _, size in actual_reads) - first_reads)
     assert owner._state == 'READY' and owner._source_budget is None
 
 
@@ -515,8 +533,8 @@ def test_startup_client_and_owner_account_separate_real_source_reads(
 
     owner_budgets, clients = [], []
     original_budget = runtime._startup_owner_source_budget
-    def capture_owner(snapshot):
-        budget = original_budget(snapshot)
+    def capture_owner(snapshot, **kwargs):
+        budget = original_budget(snapshot, **kwargs)
         owner_budgets.append(budget)
         return budget
     monkeypatch.setattr(runtime, '_startup_owner_source_budget', capture_owner)

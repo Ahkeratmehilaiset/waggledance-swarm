@@ -18,6 +18,8 @@ def test_offsets_fail_closed(offset):
 
 
 def test_query_reserves_two_selected_row_passes(monkeypatch):
+    # Strict control mode; the segment-mode boundary is in test_wd_mind_owner_segment_checks.py.
+    monkeypatch.setattr(runtime, '_OWNER_SOURCE_SEGMENT_BYTES', None)
     offset = 100
     expected = 3 * offset + 6 * (4 * 1024 * 1024 + 1) + 3
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_READ_LIMIT', expected - 1)

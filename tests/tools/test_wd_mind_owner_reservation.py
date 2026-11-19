@@ -22,6 +22,92 @@ PREFIX = b'WD_MIND_OWNER_V1\n'
 WINDOWS = pytest.mark.skipif(os.name != 'nt', reason='Windows reservation uses byte-range locking')
 
 
+class _SyntheticReadyOwner:
+    """Exercise the real adapter close and its pre-close status evidence."""
+    def __init__(self, close_callback):
+        self._close_callback = close_callback
+
+    def status(self):
+        return {'state': 'READY', 'owned': True}
+
+    def close(self):
+        return self._close_callback()
+
+
+def test_blocked_hold_output_allows_cooperative_adapter_close(monkeypatch):
+    """A blocked status writer cannot prevent a cooperative close attempt."""
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_LOCAL_SERVICE_CLOSE_GRACE_SECONDS', 0.05)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    service_started, service_close_seen, adapter_closed = (threading.Event() for _ in range(3))
+    hold_write_started, release_output = threading.Event(), threading.Event()
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1)
+    monkeypatch.setattr(child._LocalManifestQuery, 'start', lambda self: {'state': 'STARTING'})
+    monkeypatch.setattr(child._LocalManifestQuery, 'status', lambda self: {'state': 'READY', 'owned': True})
+    monkeypatch.setattr(child._LocalManifestQuery, 'start_failure_observed', lambda self: False)
+
+    def close_owner():
+        assert hold_write_started.wait(3)
+        adapter_closed.set()
+        return ({'state': 'STOPPED', 'owned': False} if release_output.is_set()
+                else {'state': 'HOLD', 'owned': True})
+
+    adapter._owner = _SyntheticReadyOwner(close_owner)
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+
+    class Service:
+        def start(self): service_started.set()
+        def status(self): return {'state': 'RUNNING'}
+        def close(self, timeout):
+            service_close_seen.set()
+            return {'state': 'STOPPED' if adapter_closed.is_set() else 'HOLD'}
+
+    class Input:
+        def read(self, size):
+            assert service_started.wait(3)
+            return b'S'
+
+    class BlockedOutput(io.BytesIO):
+        def write(self, data):
+            if b'"state":"HOLD"' in bytes(data):
+                hold_write_started.set()
+                if not release_output.wait(3):
+                    raise TimeoutError('synthetic output was not released')
+            return super().write(data)
+
+    monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kwargs: 'synthetic')
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
+    result, output = [], BlockedOutput()
+
+    def run():
+        result.append(child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+            bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+            policy_sha256='b' * 64, approval_reference_sha256='c' * 64))
+
+    owner_thread = threading.Thread(target=run, daemon=True)
+    owner_thread.start()
+    try:
+        assert service_close_seen.wait(3)
+        assert hold_write_started.wait(3)
+        assert adapter_closed.wait(2), 'blocked HOLD output prevented adapter close'
+        assert owner_thread.is_alive()
+        assert b'"state":"STOPPED"' not in output.getvalue()
+        release_output.set()
+        owner_thread.join(3)
+        assert not owner_thread.is_alive()
+        assert result == [0]
+    finally:
+        release_output.set()
+        hold_write_started.set()
+        owner_thread.join(4)
+        assert not owner_thread.is_alive(), 'synthetic owner did not close cooperatively'
+
+
 @pytest.mark.parametrize('unproven_owner', [False, True])
 def test_held_service_allows_cooperative_owner_close_after_bounded_grace(monkeypatch, unproven_owner):
     """Keep service ownership while allowing the real adapter to stop its owner."""
@@ -34,13 +120,13 @@ def test_held_service_allows_cooperative_owner_close_after_bounded_grace(monkeyp
     monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
     service_started, release_service, adapter_closed = threading.Event(), threading.Event(), threading.Event()
     close_calls = []
-    adapter = object.__new__(child._LocalManifestQuery)
-    adapter._owner = object()
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1)
     monkeypatch.setattr(child._LocalManifestQuery, 'start', lambda self: {'state': 'STARTING'})
     monkeypatch.setattr(child._LocalManifestQuery, 'status', lambda self: {'state': 'READY', 'owned': True})
     monkeypatch.setattr(child._LocalManifestQuery, 'start_failure_observed', lambda self: False)
 
-    def close_adapter(self):
+    def close_owner():
         close_calls.append(1)
         adapter_closed.set()
         if unproven_owner and not release_service.is_set():
@@ -48,7 +134,7 @@ def test_held_service_allows_cooperative_owner_close_after_bounded_grace(monkeyp
         release_service.set()
         return {'state': 'STOPPED', 'owned': False}
 
-    monkeypatch.setattr(child._LocalManifestQuery, 'close', close_adapter)
+    adapter._owner = _SyntheticReadyOwner(close_owner)
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
 
     class Service:
@@ -82,7 +168,8 @@ def test_held_service_allows_cooperative_owner_close_after_bounded_grace(monkeyp
         assert result == [0]
         if not unproven_owner:
             assert len(close_calls) == 1, 'confirmed owner close must not be repeated'
-        assert [json.loads(line)['state'] for line in output.getvalue().splitlines()][-1] == 'STOPPED'
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        assert [record['state'] for record in records if 'state' in record][-1] == 'STOPPED'
     finally:
         release_service.set()
         owner_thread.join(4)
@@ -128,6 +215,7 @@ def test_close_clock_failure_retains_service_until_confirmed(monkeypatch, fail_c
     from tools import wd_mind_full_runtime as runtime
     from tools import wd_mind_runtime_process as process
 
+    clock_failure_seen = threading.Event()
     class Clock:
         calls = 0
         @staticmethod
@@ -135,6 +223,7 @@ def test_close_clock_failure_retains_service_until_confirmed(monkeypatch, fail_c
         def monotonic(self):
             self.calls += 1
             if self.calls == fail_call:
+                clock_failure_seen.set()
                 raise failure('synthetic-clock-failure')
             return time.monotonic()
 
@@ -142,16 +231,18 @@ def test_close_clock_failure_retains_service_until_confirmed(monkeypatch, fail_c
     monkeypatch.setattr(child, '_LOCAL_SERVICE_CLOSE_GRACE_SECONDS', 0.05)
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
-    started, close_seen, release, adapter_closed = (threading.Event() for _ in range(4))
-    adapter = object.__new__(child._LocalManifestQuery)
-    adapter._owner = object()
+    started, close_seen, service_hold_seen, release, adapter_closed = (threading.Event() for _ in range(5))
+    cleanup_evidence = {'clean': False}
+    adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
+        b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1)
     monkeypatch.setattr(child._LocalManifestQuery, 'start', lambda self: {'state': 'STARTING'})
     monkeypatch.setattr(child._LocalManifestQuery, 'status', lambda self: {'state': 'READY', 'owned': True})
     monkeypatch.setattr(child._LocalManifestQuery, 'start_failure_observed', lambda self: False)
-    def close_adapter(self):
+    def close_owner():
         adapter_closed.set()
-        return {'state': 'STOPPED', 'owned': False}
-    monkeypatch.setattr(child._LocalManifestQuery, 'close', close_adapter)
+        return ({'state': 'STOPPED', 'owned': False} if release.is_set()
+                else {'state': 'HOLD', 'owned': True})
+    adapter._owner = _SyntheticReadyOwner(close_owner)
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
 
     class Service:
@@ -159,7 +250,10 @@ def test_close_clock_failure_retains_service_until_confirmed(monkeypatch, fail_c
         def status(self): return {'state': 'RUNNING'}
         def close(self, timeout):
             close_seen.set()
-            return {'state': 'STOPPED' if release.is_set() else 'HOLD'}
+            if not release.is_set():
+                service_hold_seen.set()
+                return {'state': 'HOLD'}
+            return {'state': 'STOPPED'}
     class Input:
         def read(self, size):
             assert started.wait(3)
@@ -170,19 +264,23 @@ def test_close_clock_failure_retains_service_until_confirmed(monkeypatch, fail_c
     def run():
         result.append(child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
             bundle_root='synthetic', expected_manifest_sha256='a' * 64,
-            policy_sha256='b' * 64, approval_reference_sha256='c' * 64))
+            policy_sha256='b' * 64, approval_reference_sha256='c' * 64, _cleanup_evidence=cleanup_evidence))
     owner_thread = threading.Thread(target=run, daemon=True)
     owner_thread.start()
     try:
         assert close_seen.wait(3)
-        assert not adapter_closed.wait(0.6), 'clock failure must disable early adapter close'
+        assert service_hold_seen.wait(2), 'service HOLD was not observed'
+        assert clock_failure_seen.wait(2), 'requested clock failure was not injected'
+        assert adapter_closed.wait(2), 'cooperative adapter close did not start'
         assert owner_thread.is_alive()
         assert b'"state":"STOPPED"' not in output.getvalue()
+        assert cleanup_evidence['clean'] is False
         release.set()
         owner_thread.join(3)
         assert not owner_thread.is_alive()
         assert adapter_closed.is_set()
         assert result == [0]
+        assert cleanup_evidence['clean'] is True
     finally:
         release.set()
         owner_thread.join(4)
@@ -195,32 +293,45 @@ def _seed(root, state=b'C'):
     return root
 
 
-def test_synthetic_owner_immediate_control_eof_is_clean_stop_before_ready(monkeypatch):
-    from tools import wd_mind_full_runtime as runtime
-    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
-    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
-    class Adapter:
-        def start(self): return {'state': 'STARTING'}
-        def status(self): return {'state': 'STARTING', 'owned': None}
-        def close(self): return {'state': 'STOPPED', 'owned': False}
-    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
-    output = io.BytesIO()
-    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
-        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
-        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
-    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
-    assert code == 0
-    assert states == ['STARTING', 'STOPPED']
+def _run_synthetic_owner_bounded(call, *, release_events=(), timeout=8):
+    """Always release synthetic gates; a timeout is a failure, never success."""
+    import threading
+    result, errors = [], []
+
+    def run():
+        try:
+            result.append(call())
+        except BaseException as exc:
+            errors.append(exc)
+
+    owner = threading.Thread(target=run, name='synthetic-test-owner', daemon=True)
+    owner.start()
+    try:
+        owner.join(timeout)
+        completed_in_time = not owner.is_alive()
+    finally:
+        for event in release_events:
+            event.set()
+        owner.join(5)
+    assert not owner.is_alive(), 'synthetic owner remains alive after releasing all test gates'
+    assert completed_in_time, 'synthetic owner timed out before test gates were released'
+    if errors:
+        raise errors[0]
+    assert len(result) == 1
+    return result[0]
 
 
-def test_synthetic_eof_does_not_hide_already_failed_start(monkeypatch):
+def test_synthetic_owner_control_eof_before_start_is_clean_stop(monkeypatch):
     import threading
     from tools import wd_mind_full_runtime as runtime
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    starts = []
     class Adapter:
-        def start(self): return {'state': 'STARTING'}
-        def status(self): return {'state': 'HOLD', 'owned': False}
+        def start(self):
+            starts.append(True)
+            return {'state': 'STARTING'}
+        def status(self): return {'state': 'STARTING', 'owned': None}
         def close(self): return {'state': 'STOPPED', 'owned': False}
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
     original_thread = threading.Thread
@@ -232,9 +343,43 @@ def test_synthetic_eof_does_not_hide_already_failed_start(monkeypatch):
                 assert not self.is_alive()
     monkeypatch.setattr(child.threading, 'Thread', EagerControlThread)
     output = io.BytesIO()
-    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+    code = _run_synthetic_owner_bounded(lambda: child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
         bundle_root='synthetic', expected_manifest_sha256='a' * 64,
-        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64))
+    states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert code == 0
+    assert starts == []
+    assert states[-1] == 'STOPPED'
+    assert all(state in ('HOLD', 'STOPPED') for state in states)
+
+
+def test_synthetic_eof_does_not_hide_already_failed_start(monkeypatch):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    monkeypatch.setattr(child, '_read_local_policy_frame', lambda *args, **kwargs: b'synthetic-policy')
+    failed_status_seen, hold_written = threading.Event(), threading.Event()
+    class Adapter:
+        def start(self): return {'state': 'STARTING'}
+        def status(self):
+            failed_status_seen.set()
+            return {'state': 'HOLD', 'owned': False}
+        def close(self): return {'state': 'STOPPED', 'owned': False}
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Adapter())
+    class Input:
+        def read(self, size):
+            assert failed_status_seen.wait(3)
+            assert hold_written.wait(3)
+            return b''
+    class Output(io.BytesIO):
+        def write(self, data):
+            if b'"state":"HOLD"' in bytes(data): hold_written.set()
+            return super().write(data)
+    output = Output()
+    code = _run_synthetic_owner_bounded(lambda: child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64,
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64),
+        release_events=(failed_status_seen, hold_written))
     states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
     assert code == 2
     assert states == ['STARTING', 'HOLD', 'STOPPED']
@@ -270,9 +415,10 @@ def test_synthetic_eof_does_not_hide_late_service_start_failure(monkeypatch):
     monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kwargs: 'synthetic')
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     output = Output()
-    code = child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
+    code = _run_synthetic_owner_bounded(lambda: child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
         bundle_root='synthetic', expected_manifest_sha256='a' * 64,
-        policy_sha256='b' * 64, approval_reference_sha256='c' * 64)
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64),
+        release_events=(entered, release))
     states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
     assert code == 2
     assert states == ['STARTING', 'HOLD', 'STOPPED']
@@ -334,6 +480,8 @@ def test_synthetic_real_service_finishes_after_stop_with_failure_evidence(monkey
         if serve_fails: assert 'HOLD' in states
     finally:
         wake.set()
+        owner.join(4)
+        assert not owner.is_alive(), 'synthetic owner did not close cooperatively'
 
 
 @pytest.mark.parametrize('startup_failed', [False, True])
@@ -349,8 +497,16 @@ def test_synthetic_eof_does_not_hide_adapter_failure_during_cleanup(monkeypatch,
     adapter = child._LocalManifestQuery('codex-lead-1', 'synthetic', 'a' * 64,
         b'synthetic-policy', 'b' * 64, 'c' * 64, 1, 0, 1, admission=admission)
     admission.bind_owner(adapter)
-    release = threading.Event()
+    statuses = []
+    original_status = child._LocalManifestQuery.status
+    def observed_status(self):
+        value = original_status(self)
+        statuses.append((value, self._cancel.is_set(), self._thread.is_alive()))
+        return value
+    monkeypatch.setattr(child._LocalManifestQuery, 'status', observed_status)
+    release, prepare_started, starting_written = threading.Event(), threading.Event(), threading.Event()
     def prepare(self):
+        prepare_started.set()
         assert release.wait(3)
         if startup_failed:
             with self._lock:
@@ -358,16 +514,23 @@ def test_synthetic_eof_does_not_hide_adapter_failure_during_cleanup(monkeypatch,
                 self._start_failure = {'reason': 'OWNER_START', 'exception_type': 'ValueError'}
     monkeypatch.setattr(child._LocalManifestQuery, '_prepare', prepare)
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
+    class Input:
+        def read(self, size):
+            assert prepare_started.wait(3)
+            assert starting_written.wait(3)
+            return b''
     class Output(io.BytesIO):
         def write(self, data):
+            if b'"state":"STARTING"' in bytes(data): starting_written.set()
             if b'"state":"HOLD"' in bytes(data): release.set()
             return super().write(data)
     output = Output()
-    code = child._local_candidate_owner_entry(control_stream=io.BytesIO(b''), output_stream=output,
+    code = _run_synthetic_owner_bounded(lambda: child._local_candidate_owner_entry(control_stream=Input(), output_stream=output,
         bundle_root='synthetic', expected_manifest_sha256='a' * 64,
-        policy_sha256='b' * 64, approval_reference_sha256='c' * 64, _admission=admission)
+        policy_sha256='b' * 64, approval_reference_sha256='c' * 64, _admission=admission),
+        release_events=(release, prepare_started, starting_written))
     states = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
-    assert code == (2 if startup_failed else 0)
+    assert code == (2 if startup_failed else 0), (states, statuses)
     assert states == ['STARTING', 'HOLD', 'STOPPED']
 
 

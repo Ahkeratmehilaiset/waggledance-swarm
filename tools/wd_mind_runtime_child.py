@@ -1105,8 +1105,10 @@ class _LocalManifestQuery:
     """
     __slots__ = ('_owner', '_metadata', '_bundle', '_manifest', '_policy', '_policy_sha', '_approval_sha', '_policy_path',
                  '_admission', '_admission_anchor',
-                 '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_lock', '_cancel',
-                 '_state', '_policy_invalid', '_pending_result', '_host_start_gate', '_host_stop',
+                 '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_thread_done',
+                 '_thread_start_uncertain', '_lock', '_cancel', '_owner_start_gate', '_owner_start_committed',
+                 '_state', '_policy_invalid', '_pending_result', '_preclose_runtime_state',
+                 '_candidate_inflight', '_candidate_accounting_uncertain', '_host_start_gate', '_host_stop',
                  '_host_owner_start_inflight', '_start_failure')
 
     def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
@@ -1122,8 +1124,13 @@ class _LocalManifestQuery:
         self._host_owner_start_inflight = host_owner_start_inflight
         self._worker_timeout, self._lock_timeout, self._shutdown_timeout = worker_timeout, lock_timeout, shutdown_timeout
         self._thread, self._lock, self._cancel = None, threading.Lock(), threading.Event()
+        self._thread_done, self._thread_start_uncertain = threading.Event(), False
+        self._owner_start_gate = host_start_gate if host_start_gate is not None else threading.Lock()
+        self._owner_start_committed = False
         self._state, self._policy_invalid = 'NEW', False
         self._pending_result = None
+        self._preclose_runtime_state = None
+        self._candidate_inflight, self._candidate_accounting_uncertain = 0, False
         self._start_failure = None
 
     def __repr__(self):
@@ -1194,22 +1201,20 @@ class _LocalManifestQuery:
             stage = 'EXTERNAL_POLICY'
             self._check_external_policy()
             stage = 'OWNER_START'
-            if self._host_start_gate is None:
-                if self._cancel.is_set():
+            # Serialize only the decision to launch with cancellation. The
+            # potentially long start runs outside this gate and its thread is
+            # retained until it has positively finished.
+            with self._owner_start_gate:
+                if self._cancel.is_set() or (self._host_stop is not None and self._host_stop.is_set()):
                     return
-                outcome = owner.start()
-            else:
-                # Never hold the host gate across the potentially long build.
-                # A host STOP can only be accepted before this commitment or
-                # after owner.start has returned and the owner is retained.
-                with self._host_start_gate:
-                    if self._cancel.is_set() or self._host_stop.is_set():
-                        return
+                self._owner_start_committed = True
+                if self._host_owner_start_inflight is not None:
                     self._host_owner_start_inflight.set()
-                try:
-                    outcome = owner.start()
-                finally:
-                    with self._host_start_gate:
+            try:
+                outcome = owner.start()
+            finally:
+                if self._host_owner_start_inflight is not None:
+                    with self._owner_start_gate:
                         self._host_owner_start_inflight.clear()
             with self._lock:
                 self._state = ('READY' if not self._cancel.is_set() and type(outcome) is dict
@@ -1224,6 +1229,12 @@ class _LocalManifestQuery:
                 if self._cancel.is_set() and self._owner is None:
                     self._state = 'STOPPED'
 
+    def _prepare_target(self):
+        try:
+            self._prepare()
+        finally:
+            self._thread_done.set()
+
     def start(self):
         if self._admission is not self._admission_anchor:
             raise LaunchRefused('owner_admission_refused')
@@ -1232,7 +1243,10 @@ class _LocalManifestQuery:
             if self._state != 'NEW':
                 raise LaunchRefused('mind_e5_start_refused') from None
             self._state = 'STARTING'
-            self._thread = threading.Thread(target=self._prepare, name='mind-local-owner', daemon=False)
+            # Record uncertainty before constructing or starting the target.
+            # A Thread.start exception does not prove the target cannot run.
+            self._thread_start_uncertain = True
+            self._thread = threading.Thread(target=self._prepare_target, name='mind-local-owner', daemon=False)
             try:
                 self._thread.start()
             except BaseException as exc:
@@ -1240,6 +1254,7 @@ class _LocalManifestQuery:
                 self._state = 'HOLD'
                 self._start_failure = {'reason': 'THREAD_START', 'exception_type': _local_exception_type(exc)}
                 raise
+            self._thread_start_uncertain = False
             return {'state': 'STARTING', 'owned': None, 'authority': 'none'}
 
     def wait(self, *, timeout):
@@ -1314,6 +1329,18 @@ class _LocalManifestQuery:
             pass
         return None
 
+    def close_failure_observed(self):
+        """Return pre-close runtime failure evidence; unknown is not clean."""
+        with self._lock:
+            value, owner = self._preclose_runtime_state, self._owner
+        if owner is None and value is None:
+            return False
+        if value == 'HOLD':
+            return True
+        if value == 'READY' or (value == 'NEW' and not self._owner_start_committed):
+            return False
+        return None
+
     def worker_exit_diagnostic(self):
         if not self._lock.acquire(blocking=False):
             return ('UNKNOWN', None)
@@ -1334,10 +1361,30 @@ class _LocalManifestQuery:
         finally:
             self._lock.release()
 
-    def close(self):
-        self._cancel.set()
+    def close(self, *, _service_start_released=None, _close_started=None):
+        with self._owner_start_gate:
+            self._cancel.set()
+            if _close_started is not None:
+                _close_started.set()
+        if _service_start_released is not None:
+            try:
+                if _service_start_released() is not True:
+                    return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+            except BaseException:
+                return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
         with self._lock:
             owner = self._owner
+            # Once cancellation is set, the admission lock prevents any new
+            # candidate request. A request already in flight can change the
+            # owner's state after a READY observation, so its outcome remains
+            # unknown for this close even if the request exits moments later.
+            if self._candidate_inflight or self._candidate_accounting_uncertain:
+                if self._preclose_runtime_state != 'HOLD':
+                    self._preclose_runtime_state = 'UNKNOWN'
+            if (self._thread_start_uncertain and (self._thread is None or not self._thread_done.is_set()
+                                                  or self._thread.is_alive())):
+                self._state = 'HOLD'
+                return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
             active = self._thread is not None and self._thread.is_alive()
             if active:
                 self._state = 'HOLD'
@@ -1346,17 +1393,40 @@ class _LocalManifestQuery:
                 self._state = 'STOPPED'
                 self._policy = None
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+        if self._preclose_runtime_state is None:
+            try:
+                before = owner.status()
+                state = before.get('state') if type(before) is dict else None
+                if state not in ('READY', 'HOLD') and not (state == 'NEW' and not self._owner_start_committed):
+                    state = 'UNKNOWN'
+            except BaseException:
+                state = 'UNKNOWN'
+            with self._lock:
+                if self._preclose_runtime_state is None:
+                    self._preclose_runtime_state = state
         outcome = owner.close()
         with self._lock:
+            # A request can acquire the owner after the pre-close status read.
+            # If close observes that contention, the request's later outcome
+            # was not covered by the earlier READY observation.
+            if (type(outcome) is dict and outcome.get('state') == 'BUSY'
+                    and self._preclose_runtime_state == 'READY'):
+                self._preclose_runtime_state = 'UNKNOWN'
             self._state = ('STOPPED' if type(outcome) is dict and outcome.get('state') == 'STOPPED'
                            and outcome.get('owned') is False else 'HOLD')
         return outcome
 
     def _candidate_query(self, request, method):
+        registered = False
         try:
             with self._lock:
                 if self._state != 'READY' or self._policy_invalid or self._cancel.is_set():
                     raise ValueError('owner_not_ready')
+                prior_uncertainty = self._candidate_accounting_uncertain
+                self._candidate_accounting_uncertain = True
+                self._candidate_inflight += 1
+                registered = True
+                self._candidate_accounting_uncertain = prior_uncertainty
                 owner = self._owner
             self._check_external_policy()
             result = getattr(owner, method)(request)
@@ -1370,6 +1440,14 @@ class _LocalManifestQuery:
                 with self._lock:
                     self._state = 'HOLD'
             raise LaunchRefused('mind_e5_start_refused') from None
+        finally:
+            if registered:
+                with self._lock:
+                    prior_uncertainty = self._candidate_accounting_uncertain
+                    self._candidate_accounting_uncertain = True
+                    if self._candidate_inflight > 0:
+                        self._candidate_inflight -= 1
+                        self._candidate_accounting_uncertain = prior_uncertainty
 
     def candidates(self, request):
         return self._candidate_query(request, 'candidates')
@@ -2472,8 +2550,16 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     every consumer must independently verify the proposed source references.
     """
     from tools import wd_mind_runtime_process as process
-    policy = adapter = service = service_thread = control_thread = None
-    stop, service_done = threading.Event(), threading.Event()
+    policy = adapter = service = service_thread = control_thread = close_worker_thread = None
+    stop, service_done, control_done = threading.Event(), threading.Event(), threading.Event()
+    close_worker_done = threading.Event()
+    service_gate, adapter_close_gate = threading.Lock(), threading.Lock()
+    output_gate = threading.Lock()
+    service_start_committed = False
+    adapter_close_done = threading.Event()
+    adapter_close_started, cleanup_complete = threading.Event(), threading.Event()
+    close_diagnostic_done = threading.Event()
+    close_diagnostic_thread = None
     service_error, control_error = [], []
     last_state, failed, start_failure = None, False, None
     last_diagnostic, diagnostic_count = None, 0
@@ -2483,6 +2569,21 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     class _HostStopBeforeStart(Exception):
         pass
 
+    def write_record(raw, *, best_effort=False):
+        if not output_gate.acquire(blocking=not best_effort):
+            return False
+        try:
+            offset = 0
+            while offset < len(raw):
+                count = output_stream.write(memoryview(raw)[offset:])
+                if type(count) is not int or not 0 < count <= len(raw) - offset:
+                    raise ValueError('status_write')
+                offset += count
+            output_stream.flush()
+            return True
+        finally:
+            output_gate.release()
+
     def emit(state):
         nonlocal last_state, startup_reported_ready
         if state == last_state:
@@ -2491,13 +2592,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             'manifest_sha256':expected_manifest_sha256, 'authority':'none',
             'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
             'index_refresh':'NOT_SCHEDULED'}, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
-        offset = 0
-        while offset < len(raw):
-            count = output_stream.write(memoryview(raw)[offset:])
-            if type(count) is not int or not 0 < count <= len(raw) - offset:
-                raise ValueError('status_write')
-            offset += count
-        output_stream.flush()
+        write_record(raw)
         last_state = state
         if state == 'READY': startup_reported_ready = True
 
@@ -2545,13 +2640,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         raw = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
         if len(raw) > 1024:
             raise ValueError('diagnostic_size')
-        offset = 0
-        while offset < len(raw):
-            count = output_stream.write(memoryview(raw)[offset:])
-            if type(count) is not int or not 0 < count <= len(raw) - offset:
-                raise ValueError('diagnostic_write')
-            offset += count
-        output_stream.flush()
+        write_record(raw)
         last_diagnostic, diagnostic_count = key, diagnostic_count + 1
 
     def diagnostic_worker():
@@ -2590,14 +2679,100 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         except BaseException:
             pass  # An unverified observation remains UNKNOWN/HOLD.
 
+    def service_start_released():
+        with service_gate:
+            if not service_start_committed:
+                return True
+            return (service_done.is_set() and service_thread is not None
+                    and not service_thread.is_alive())
+
+    def close_adapter_once():
+        if adapter_close_done.is_set():
+            return True
+        if adapter is None or not adapter_close_gate.acquire(blocking=False):
+            return False
+        try:
+            if adapter_close_done.is_set():
+                return True
+            if type(adapter) is _LocalManifestQuery:
+                value = adapter.close(_service_start_released=service_start_released,
+                                      _close_started=adapter_close_started)
+            elif service_start_released():
+                value = adapter.close()
+                adapter_close_started.set()
+            else:
+                return False
+            if (type(value) is dict and value.get('state') == 'STOPPED'
+                    and value.get('owned') is False):
+                adapter_close_done.set()
+                return True
+        except BaseException:
+            pass
+        finally:
+            adapter_close_gate.release()
+        return False
+
+    def close_diagnostic_worker(start_time):
+        try:
+            if start_time is None:
+                return
+            if not adapter_close_started.wait(_LOCAL_SERVICE_CLOSE_GRACE_SECONDS):
+                return
+            current = _local_service_close_clock()
+            if current is None:
+                return
+            remaining = max(0, start_time + _LOCAL_SERVICE_CLOSE_GRACE_SECONDS - current)
+            if cleanup_complete.wait(remaining):
+                return
+            raw = (b'{"authority":"none","reason":"BOUND_EXPIRED_WORKER_UNCONFIRMED",'
+                   b'"schema":"wd.mind-local-owner-close-diagnostic.v1"}\n')
+            # If another writer is blocked, do not wait for it or interfere
+            # with the close thread. Delivery in that case remains unknown.
+            write_record(raw, best_effort=True)
+        except BaseException:
+            pass
+        finally:
+            close_diagnostic_done.set()
+
     def read_stop():
+        nonlocal close_diagnostic_thread
         try:
             if control_stream.read(1) not in (b'S', b''):
                 control_error.append(True)
         except BaseException:
             control_error.append(True)
         finally:
-            stop.set()
+            with service_gate:
+                # STOP acceptance and the owner's start commitment must use
+                # the same short gate, independently of close-worker timing.
+                if type(adapter) is _LocalManifestQuery:
+                    with adapter._owner_start_gate:
+                        adapter._cancel.set()
+                        stop.set()
+                else:
+                    stop.set()
+                stop_time = _local_service_close_clock()
+            # The independently owned close worker performs cancellation and
+            # retries, even when output or diagnostic-thread start blocks.
+            # A diagnostic may never precede a verified close entry.
+            adapter_close_started.wait()
+            try:
+                close_diagnostic_thread = threading.Thread(target=close_diagnostic_worker,
+                    args=(stop_time,), name='mind-owner-close-diagnostic', daemon=False)
+                close_diagnostic_thread.start()
+            except BaseException:
+                pass  # The potentially-started thread remains owned in cleanup.
+    def run_close_worker():
+        try:
+            stop.wait()
+            # The adapter first requests cancellation, but retains the owner
+            # while a committed service start may still use it.
+            while not adapter_close_done.is_set():
+                if close_adapter_once():
+                    break
+                adapter_close_done.wait(0.25)
+        finally:
+            close_worker_done.set()
 
     def start_service():
         try:
@@ -2606,6 +2781,26 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             service_error.append(True)
         finally:
             service_done.set()
+
+    def run_control():
+        try:
+            read_stop()
+        except BaseException:
+            # A failed reader is not evidence of a clean control exchange.
+            # Request cooperative cleanup, while preserving the failure.
+            control_error.append(True)
+            try:
+                with service_gate:
+                    if type(adapter) is _LocalManifestQuery:
+                        with adapter._owner_start_gate:
+                            adapter._cancel.set()
+                            stop.set()
+                    else:
+                        stop.set()
+            except BaseException:
+                pass  # The monitor and ownership evidence remain fail-closed.
+        finally:
+            control_done.set()
 
     try:
         # A running pipe cannot answer any candidate request while this gate
@@ -2632,6 +2827,18 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         host_args = (_host_start_gate, _host_stop, _host_owner_start_inflight)
         if not (all(value is None for value in host_args) or all(value is not None for value in host_args)):
             raise ValueError('host_start_guard')
+        # Retain the close worker before admitting any owner start. If thread
+        # startup is uncertain, cleanup must keep HOLD until it proves exit.
+        close_worker_thread = threading.Thread(target=run_close_worker,
+            name='mind-local-close', daemon=False)
+        close_worker_thread.start()
+        # The framed policy was fully consumed above. There is now exactly
+        # one control reader, retained even if start() fails ambiguously.
+        control_thread = threading.Thread(target=run_control, name='mind-local-control', daemon=False)
+        control_thread.start()
+        with service_gate:
+            if stop.is_set():
+                raise _HostStopBeforeStart()
         if _host_start_gate is None:
             start_status = adapter.start()
         else:
@@ -2642,10 +2849,12 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         if start_status.get('state') != 'STARTING':
             raise ValueError('owner_start')
         emit('STARTING')
-        control_thread = threading.Thread(target=read_stop, name='mind-local-control', daemon=False)
-        control_thread.start()
         while not stop.is_set():
+            if control_error:
+                raise ValueError('control_reader_failed')
             owner_status = adapter.status()
+            if stop.is_set():
+                break
             # Service creation is reachable only after an owned READY state.
             # A query can make the owner BUSY before READY was emitted; still
             # inspect service completion/errors and do not fail that query.
@@ -2658,9 +2867,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 if owner_status.get('owned') is not True or adapter._owner is None:
                     raise ValueError('owner_not_ready')
                 name = process.local_candidate_pipe_name(manifest_sha256=expected_manifest_sha256)
-                service = process.create_local_candidate_service(enabled=True, owner=adapter, pipe_name=name)
-                service_thread = threading.Thread(target=start_service, name='mind-local-service-start', daemon=False)
-                service_thread.start()
+                candidate_service = process.create_local_candidate_service(enabled=True, owner=adapter, pipe_name=name)
+                with service_gate:
+                    if not stop.is_set():
+                        service = candidate_service
+                        service_thread = threading.Thread(target=start_service, name='mind-local-service-start', daemon=False)
+                        service_start_committed = True
+                if service_thread is not None:
+                    service_thread.start()
             if service is not None and service_done.is_set():
                 if service_error:
                     failed = True
@@ -2680,8 +2894,12 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         if stop.is_set():
             try:
                 final_status = adapter.status()
-                if (type(final_status) is not dict
-                        or final_status.get('state') not in ('STARTING', 'READY', 'BUSY')):
+                if (type(final_status) is not dict or
+                        (final_status.get('state') not in ('STARTING', 'READY', 'BUSY') and
+                         not (type(adapter) is _LocalManifestQuery and adapter._cancel.is_set()
+                              and final_status.get('state') == 'HOLD') and
+                         not (adapter_close_done.is_set() and final_status.get('state') == 'STOPPED'
+                              and final_status.get('owned') is False))):
                     failed = True
             except BaseException:
                 failed = True
@@ -2692,6 +2910,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         failed = True
     finally:
         policy = None
+        with service_gate:
+            stop.set()
         if failed:
             try: emit('HOLD')
             except BaseException: pass
@@ -2751,10 +2971,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                         and clock is not None and clock >= next_adapter_close
                         and type(adapter) is _LocalManifestQuery):
                     try:
-                        early_result = adapter.close()
-                        early_adapter_closed = (type(early_result) is dict
-                            and early_result.get('state') == 'STOPPED'
-                            and early_result.get('owned') is False)
+                        early_adapter_closed = close_adapter_once()
                     except BaseException:
                         pass  # The owner remains retained in HOLD.
                     clock = _local_service_close_clock()
@@ -2768,9 +2985,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         if adapter is not None:
             while not early_adapter_closed:
                 try:
-                    owner_status = adapter.close()
-                    if (type(owner_status) is dict and owner_status.get('state') == 'STOPPED'
-                            and owner_status.get('owned') is False):
+                    if close_adapter_once():
                         break
                 except BaseException:
                     pass
@@ -2785,7 +3000,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             if type(adapter) is _LocalManifestQuery:
                 try: startup_failed = adapter.start_failure_observed()
                 except BaseException: startup_failed = None
-                if startup_failed is not False:
+                try: runtime_failed = adapter.close_failure_observed()
+                except BaseException: runtime_failed = None
+                if startup_failed is not False or runtime_failed is not False:
                     failed = True
                     try: emit('HOLD')
                     except BaseException: pass
@@ -2793,11 +3010,20 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                             (include_start_diagnostics is True and not startup_reported_ready)):
                         start_diagnostic_worker()
         if control_thread is not None:
-            while control_thread.is_alive():
+            while not control_done.is_set() or control_thread.is_alive():
                 try: emit('HOLD')
                 except BaseException: failed = True
                 report_verified_worker_exit_during_hold()
                 try: control_thread.join(timeout=0.25)
+                except BaseException: pass
+        if close_worker_thread is not None:
+            while not close_worker_done.is_set() or close_worker_thread.is_alive():
+                try: close_worker_done.wait(0.25)
+                except BaseException: pass
+        cleanup_complete.set()
+        if close_diagnostic_thread is not None:
+            while not close_diagnostic_done.is_set() or close_diagnostic_thread.is_alive():
+                try: close_diagnostic_done.wait(0.25)
                 except BaseException: pass
         if diagnostic_thread is not None:
             diagnostic_stop.set()

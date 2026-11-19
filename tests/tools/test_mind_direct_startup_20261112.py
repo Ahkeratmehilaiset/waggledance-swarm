@@ -241,9 +241,12 @@ $r | ConvertTo-Json -Depth 10 -Compress
 
 
 @WINDOWS
-@pytest.mark.parametrize('lane', ['codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'])
-@pytest.mark.parametrize('resumed', [False, True])
-def test_content_seam_after_actual_native_argument_builder(lane, resumed):
+@pytest.mark.parametrize('lane,resumed,thread_exists', [
+    (lane, resumed, resumed)
+    for lane in ['codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5']
+    for resumed in [False, True]
+] + [pytest.param('codex-lead-1', False, True, id='lead-existing-thread-first-context')])
+def test_content_seam_after_actual_native_argument_builder(lane, resumed, thread_exists):
     # Constructs actual argv without launching a process or asserting delivery.
     read, raw, fleet, refs = _prepared_content_fixture(lane)
     payload = base64.b64encode(json.dumps(read).encode('utf-8')).decode('ascii')
@@ -271,7 +274,7 @@ $launchArguments=Get-WdNativeToolsArguments -Saved $saved -Worktree $worktree -M
         launch = source[start:end]
         native_lead = lane == 'codex-lead-1'
         cli_name = "'codex.cmd'" if native_lead else "'claude.cmd'"
-        native_thread = 'synthetic' if resumed else ''
+        native_thread = 'synthetic' if thread_exists else ''
         script += f'''
 $startupPrompt='FIRST'+$status;$continuationPrompt='RESUME'+$status
 $nativeLead=${str(native_lead).lower()};$nativeResume=[pscustomobject]@{{thread_id='{native_thread}';initial_context_delivered=${str(resumed).lower()}}}
@@ -301,7 +304,9 @@ $r=Select-WdMindContentNativeArguments -CliPath 'C:\\fake.exe' -Arguments $launc
     else:
         assert value['before'].startswith('RESUME' if resumed else 'FIRST')
         resume_flag = 'resume' if lane == 'codex-lead-1' else '--resume'
-        assert (resume_flag in result['arguments']) == resumed
+        assert (resume_flag in result['arguments']) == thread_exists
+        if lane == 'codex-lead-1':
+            assert ('--image' in result['arguments']) == (not resumed)
     assert result['arguments'][-1].count(read['fragment']) == 1
     assert result['source_refs'] == refs
     assert read['receipt']['result_sha256'] == hashlib.sha256(raw).hexdigest()

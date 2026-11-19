@@ -33,6 +33,12 @@ param(
     # and the independently supplied approval reference enter the manifest.
     [string] $MindIdentifierPolicyPath = '',
     [string] $MindApprovalReferenceSha256 = '',
+    # Explicit, optional startup configuration; omission does not enable or
+    # stage a content-read path. The policy itself remains outside the bundle.
+    [switch] $EnableMindStartupContent,
+    # This is an independently operator-approved policy digest, not a digest
+    # inferred from the file at installation time.
+    [string] $ExpectedMindIdentifierPolicySha256 = '',
     # Verify and stage the commit-addressed bundle only: no machine wrapper,
     # data copy, state pointer, Grok resolve or task registration is touched.
     [switch] $StageOnly,
@@ -500,7 +506,7 @@ function New-WdMindPolicyApprovalDescriptor {
     try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
     # Do not retain the policy text or bytes in the returned object.
-    return [pscustomobject]@{ PolicyPath=$snapshot.Path; PolicyHash=$snapshot.Hash;
+    return [pscustomobject]@{ PolicyPath=$snapshot.Path; PolicyHash=$snapshot.Hash; ApprovalReferenceHash=$reference;
         DescriptorBytes=$bytes; DescriptorHash=$hash }
 }
 
@@ -524,6 +530,50 @@ function Add-WdMindPolicyApprovalDescriptor {
     $staged = Read-WdMindRuntimeFileSnapshot -Path $path -Limit 65536
     if ($staged.Hash -cne $Approval.DescriptorHash) { throw 'Mind approval descriptor staging hash differs' }
     $SourceHashes[$name] = $Approval.DescriptorHash.ToUpperInvariant()
+    $SourcePaths[$name] = $path
+    Assert-WdMindPolicyApprovalInput $Approval
+}
+
+function Add-WdMindStartupConfigDescriptor {
+    param([switch] $Enabled, $Approval, [string] $ExpectedPolicyHash,
+          $SourceHashes, $SourcePaths, [string] $StagingRoot)
+    # This descriptor is only configuration for a future pinned reader. It is
+    # neither authentication nor authority to install or start any process.
+    if (-not $Enabled) {
+        if ($ExpectedPolicyHash -cne '') { throw 'Mind startup policy pin requires explicit enablement' }
+        return
+    }
+    if ($null -eq $Approval -or $Approval.PolicyPath -isnot [string] -or
+        $Approval.PolicyHash -cnotmatch '\A[0-9a-f]{64}\z' -or
+        $Approval.ApprovalReferenceHash -cnotmatch '\A[0-9a-f]{64}\z' -or
+        $ExpectedPolicyHash -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+        $Approval.PolicyHash -cne $ExpectedPolicyHash.ToLowerInvariant()) {
+        throw 'Mind startup configuration requires an approved policy binding'
+    }
+    Assert-WdMindPolicyApprovalInput $Approval
+    $name = 'wd-mind-startup-config.json'
+    if ($SourceHashes.Contains($name) -or $SourcePaths.Contains($name)) { throw 'Mind startup descriptor already exists' }
+    [void](Assert-WdPathWithoutReparse -Path $StagingRoot -TrustedRoot 'C:\' -ExpectedType Directory)
+    $descriptor = [ordered]@{
+        schema = 'wd.mind-startup-config.v1'
+        enabled = $true
+        authority = 'none'
+        identifier_policy_path = $Approval.PolicyPath
+        identifier_policy_sha256 = $Approval.PolicyHash
+        approval_reference_sha256 = $Approval.ApprovalReferenceHash
+    }
+    $text = ConvertTo-Json -InputObject $descriptor -Compress
+    $bytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes($text)
+    if ($bytes.Length -gt 16384) { throw 'Mind startup descriptor exceeds byte budget' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    $path = Join-Path $StagingRoot $name
+    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+    $staged = Read-WdMindRuntimeFileSnapshot -Path $path -Limit 16384
+    if ($staged.Hash -cne $hash) { throw 'Mind startup descriptor staging hash differs' }
+    $SourceHashes[$name] = $hash.ToUpperInvariant()
     $SourcePaths[$name] = $path
     Assert-WdMindPolicyApprovalInput $Approval
 }
@@ -1512,6 +1562,16 @@ if ($null -ne $mindPolicyApproval -and ($null -eq $mindRuntimeDescriptors -or
     -not $mindRuntimeDescriptors.Files.Contains('wd-mind-message-policy.json'))) {
     throw 'Mind policy approval requires the complete source-bound runtime descriptor set'
 }
+if ($EnableMindStartupContent -and $null -eq $mindPolicyApproval) {
+    throw 'Mind startup configuration requires an approved policy binding'
+}
+if ($EnableMindStartupContent -and ($ExpectedMindIdentifierPolicySha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+    $mindPolicyApproval.PolicyHash -cne $ExpectedMindIdentifierPolicySha256.ToLowerInvariant())) {
+    throw 'Mind startup policy does not match its independent expected digest'
+}
+if (-not $EnableMindStartupContent -and $ExpectedMindIdentifierPolicySha256 -cne '') {
+    throw 'Mind startup policy pin requires explicit enablement'
+}
 $manualFleetAgents = @()
 $manualActivation = $null
 if ($null -ne $manualApprovalText) {
@@ -1542,6 +1602,9 @@ $bridgePythonStage = Install-WdBridgePythonSite `
 Add-WdMindRuntimeDescriptorFiles -Set $mindRuntimeDescriptors -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
     -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
 Add-WdMindPolicyApprovalDescriptor -Approval $mindPolicyApproval -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
+    -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
+Add-WdMindStartupConfigDescriptor -Enabled:$EnableMindStartupContent -Approval $mindPolicyApproval `
+    -ExpectedPolicyHash $ExpectedMindIdentifierPolicySha256 -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
     -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
 foreach ($stagedName in @($bridgePythonStage.Wheels.Keys)) {
     $sourceHashes['tools-bootstrap/' + $stagedName] = [string]$bridgePythonStage.Wheels[$stagedName]

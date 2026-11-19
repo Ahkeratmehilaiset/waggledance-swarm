@@ -193,6 +193,110 @@ def test_operator_policy_descriptor_binds_hash_without_staging_private_bytes(tmp
         assert run.returncode != 0 and not result['accepted'] and not list(stage.iterdir())
 
 
+def _startup_config_probe(tmp_path, *, enabled=True, policy_bytes=b'{"synthetic_only":true}',
+                          policy_path_kind='normal', missing_approval=False, mutate=False,
+                          collide=False, stage_name='startup-staged', approval_reference='a' * 64,
+                          expected_policy_hash=None):
+    policy = tmp_path / 'synthetic-startup-policy.json'
+    policy.write_bytes(policy_bytes)
+    if expected_policy_hash is None:
+        expected_policy_hash = hashlib.sha256(policy_bytes).hexdigest() if enabled else ''
+    (tmp_path / 'alias').mkdir(exist_ok=True)
+    policy_argument = {'normal': str(policy), 'alias': str(tmp_path / 'alias' / '..' / policy.name),
+                       'relative': policy.name, 'stream': str(policy) + ':synthetic'}[policy_path_kind]
+    stage = tmp_path / stage_name
+    stage.mkdir()
+    script = tmp_path / (stage_name + '-probe.ps1')
+    script.write_text(
+        "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+        f". {_quote(ROOT / '.agent-bridge/bin/BridgeLogReader.ps1')}\n"
+        "$tokens=$null;$errors=$null\n"
+        f"$ast=[Management.Automation.Language.Parser]::ParseFile({_quote(DEPLOY)},[ref]$tokens,[ref]$errors)\n"
+        "if($errors.Count){throw 'PARSE_FAILED'}\n"
+        "$names=@('Resolve-FullPath','Assert-WdPathWithoutReparse','Read-WdMindRuntimeFileSnapshot',"
+        "'New-WdMindPolicyApprovalDescriptor','Assert-WdMindPolicyApprovalInput','Add-WdMindStartupConfigDescriptor')\n"
+        "foreach($name in $names){$f=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true));"
+        "if($f.Count -ne 1){throw 'HELPER_MISSING'};. ([scriptblock]::Create($f[0].Extent.Text))}\n"
+        "$hashes=[ordered]@{};$paths=[ordered]@{}\n"
+        + ("$hashes['wd-mind-startup-config.json']='occupied'\n" if collide else '')
+        + "try {\n"
+        + (" $approval=$null\n" if missing_approval else
+           f" $approval=New-WdMindPolicyApprovalDescriptor -PolicyPath {_quote(policy_argument)} -ApprovalReferenceSha256 {_quote(approval_reference)}\n")
+        + (f" [IO.File]::WriteAllText({_quote(policy)}, '{{}}')\n" if mutate else '')
+        + f" Add-WdMindStartupConfigDescriptor -Enabled:${str(enabled).lower()} -Approval $approval -ExpectedPolicyHash {_quote(expected_policy_hash)} -SourceHashes $hashes -SourcePaths $paths -StagingRoot {_quote(stage)}\n"
+        + f" $head='{COMMIT}';$targetRoot={_quote(stage)};$branch='synthetic';$upstream='synthetic';$sourceHashes=$hashes\n"
+        + " $bridgeCodeDefinition=@{schema='synthetic'};$bridgeCodePackage=@{Hash=('A'*64)}\n"
+        + " $bridgePython=@{Path='inert';Sha256=('B'*64)};$bridgePythonStage=@{Wheels=@{};Site=@{}}\n"
+        + " $entry=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$manifestObject'},$true))\n"
+        + " if($entry.Count -ne 1){throw 'MANIFEST_ASSIGNMENT_MISSING'};. ([scriptblock]::Create($entry[0].Extent.Text))\n"
+        + " [ordered]@{accepted=$true;hashes=$hashes;manifest=$manifestObject}|ConvertTo-Json -Compress -Depth 8\n"
+        + "} catch { [ordered]@{accepted=$false}|ConvertTo-Json -Compress;exit 23 }\n", encoding='utf-8')
+    # The installer helpers run in an isolated child with no inherited bridge or
+    # provider credentials. The synthetic policy bytes never appear on stdout.
+    allowed = ('SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'PATH', 'PATHEXT', 'TEMP', 'TMP',
+               'USERPROFILE', 'LOCALAPPDATA', 'APPDATA')
+    env = {name: os.environ[name] for name in allowed if name in os.environ}
+    process = subprocess.Popen([str(POWERSHELL), '-NoProfile', '-NonInteractive', '-ExecutionPolicy',
+                                'Bypass', '-File', str(script)], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    stdout, stderr = process.communicate(timeout=45)
+    assert b'synthetic_only' not in stdout + stderr
+    result = json.loads(stdout.decode('utf-8-sig').strip().splitlines()[-1])
+    return process.returncode, result, stage, policy
+
+
+def test_startup_configuration_is_default_off(tmp_path):
+    code, result, stage, _ = _startup_config_probe(tmp_path, enabled=False)
+    assert code == 0 and result['accepted'] and result['hashes'] == {}
+    assert not list(stage.iterdir())
+    assert 'wd-mind-startup-config.json' not in result['manifest']['files']
+
+
+def test_startup_configuration_binds_only_path_and_approved_hashes(tmp_path):
+    secret = b'{"synthetic_only":true,"marker":"synthetic-private-marker"}'
+    code, result, stage, policy = _startup_config_probe(tmp_path, policy_bytes=secret)
+    assert code == 0 and result['accepted']
+    config_path = stage / 'wd-mind-startup-config.json'
+    encoded = config_path.read_bytes()
+    assert secret not in encoded and b'synthetic-private-marker' not in encoded
+    assert json.loads(encoded) == {'schema': 'wd.mind-startup-config.v1', 'enabled': True, 'authority': 'none',
+        'identifier_policy_path': str(policy), 'identifier_policy_sha256': hashlib.sha256(secret).hexdigest(),
+        'approval_reference_sha256': 'a' * 64}
+    assert result['hashes'][config_path.name] == hashlib.sha256(encoded).hexdigest().upper()
+    assert result['manifest']['files'][config_path.name] == result['hashes'][config_path.name]
+    assert 'synthetic-private-marker' not in json.dumps(result['manifest'])
+    assert sorted(path.name for path in stage.iterdir()) == [config_path.name]
+
+
+@pytest.mark.parametrize('fault', ['alias', 'relative', 'stream', 'missing_approval', 'mutate', 'collision',
+                                   'missing_pin', 'wrong_pin', 'pin_without_enable'])
+def test_startup_configuration_refuses_before_staging(tmp_path, fault):
+    code, result, stage, _ = _startup_config_probe(tmp_path,
+        enabled=fault != 'pin_without_enable',
+        policy_path_kind=fault if fault in ('alias', 'relative', 'stream') else 'normal',
+        missing_approval=fault == 'missing_approval', mutate=fault == 'mutate', collide=fault == 'collision',
+        expected_policy_hash={'missing_pin': '', 'wrong_pin': '0' * 64,
+                              'pin_without_enable': 'a' * 64}.get(fault))
+    assert code != 0 and not result['accepted']
+    assert not list(stage.iterdir())
+
+
+def test_startup_configuration_hash_is_deterministic_and_tracks_policy(tmp_path):
+    first = _startup_config_probe(tmp_path, stage_name='first')
+    second = _startup_config_probe(tmp_path, stage_name='second')
+    changed = _startup_config_probe(tmp_path, stage_name='changed', policy_bytes=b'{"synthetic_only":false}')
+    ref_changed = _startup_config_probe(tmp_path, stage_name='ref-changed', approval_reference='b' * 64)
+    assert first[0] == second[0] == changed[0] == ref_changed[0] == 0
+    name = 'wd-mind-startup-config.json'
+    first_bytes = (first[2] / name).read_bytes()
+    assert first_bytes == (second[2] / name).read_bytes()
+    assert first[1]['hashes'][name] == second[1]['hashes'][name]
+    assert first[1]['hashes'][name] != changed[1]['hashes'][name]
+    assert first[1]['hashes'][name] != ref_changed[1]['hashes'][name]
+    # The manifest's timestamp is intentionally variable; the file binding is not.
+    assert first[1]['manifest']['files'][name] == second[1]['manifest']['files'][name]
+
+
 @pytest.mark.parametrize("case", ["commit", "hash", "extra", "missing", "worker", "revision", "weights", "bool_size", "bad_path", "case_alias", "file_directory", "roles", "policy_type", "duplicate", "nan", "utf16", "oversize"])
 def test_runtime_descriptor_refuses_before_materialization(tmp_path, case):
     docs = _documents()

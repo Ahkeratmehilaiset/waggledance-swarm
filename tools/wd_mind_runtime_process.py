@@ -432,6 +432,15 @@ class _LocalCandidateService:
         except Exception:
             return True
 
+    def _acceptor_exit_unproven(self):
+        thread = self._thread
+        if thread is None or self._serve_done.is_set():
+            return False
+        try:
+            return not thread.is_alive()
+        except Exception:
+            return True
+
     def status(self):
         with self._lock:
             if ((self._wake_thread is not None and
@@ -443,6 +452,7 @@ class _LocalCandidateService:
                     or (not self._pending.empty() and
                         (self._serve_done.is_set() or self._worker_done.is_set()))
                     or self._uncertain_wake_connection is not None
+                    or self._acceptor_exit_unproven()
                     or self._worker_needs_hold()
                     or (self._worker_start_uncertain and not self._worker_exit_proven())
                     or (self._listener is not None and not self._listener_closed

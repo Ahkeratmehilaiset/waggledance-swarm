@@ -962,6 +962,28 @@ def test_candidate_admission_worker_completion_is_not_thread_exit(condition, exp
     assert service.close(timeout=0)['state'] == expected
 
 
+@pytest.mark.parametrize('worker_present', [False, True])
+def test_candidate_admission_dead_acceptor_without_done_stays_hold(worker_present):
+    class FinishedAcceptor:
+        def is_alive(self): return False
+    class FinishedWorker:
+        ident = 123
+        def is_alive(self): return False
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    service._thread = FinishedAcceptor()
+    service._listener_closed = True
+    service._stop.set()
+    if worker_present:
+        service._worker = FinishedWorker()
+        service._worker_started.set()
+        service._worker_start_confirmed.set()
+        service._worker_done.set()
+    # An exited acceptor is not proof that its finally path completed.
+    assert not service._serve_done.is_set()
+    assert service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
 @pytest.mark.parametrize('condition,ready', [
     ('absent', False), ('not_entered', False), ('finished', False), ('unidentified', False),
     ('dead', False), ('query_error', False), ('start_unconfirmed', False), ('ready', True),

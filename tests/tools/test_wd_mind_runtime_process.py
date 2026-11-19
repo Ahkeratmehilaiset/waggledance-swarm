@@ -234,6 +234,92 @@ def test_synthetic_listener_constructor_exception_retains_unknown_ownership(monk
     assert service.close(timeout=0)['state'] == 'HOLD'
 
 
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows named-pipe admission')
+def test_candidate_duplicate_pipe_denial_has_no_owned_listener():
+    import multiprocessing.connection as connection
+    import uuid
+
+    name = r'\\.\pipe\mind-pr1-test-' + uuid.uuid4().hex
+    first = connection.Listener(address=name, family='AF_PIPE', authkey=None)
+    try:
+        service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), name)
+        with pytest.raises(preflight.RuntimePreflightRefused):
+            service.start()
+        assert service.status()['state'] == 'STOPPED'
+        assert service.close(timeout=0)['state'] == 'STOPPED'
+    finally:
+        first.close()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows error semantics')
+def test_constructor_denial_from_unknown_origin_remains_hold(monkeypatch):
+    import multiprocessing.connection as connection
+
+    retained = []
+    def listener(**kwargs):
+        retained.append(object())
+        raise PermissionError(13, 'synthetic post-allocation denial', None, 5)
+    monkeypatch.setattr(connection, 'Listener', listener)
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    with pytest.raises(preflight.RuntimePreflightRefused):
+        service.start()
+    assert retained and service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows named-pipe implementation')
+def test_post_allocation_constructor_denial_remains_hold(monkeypatch):
+    import multiprocessing.connection as connection
+
+    retained = object()
+    monkeypatch.setattr(connection.PipeListener, '_new_handle', lambda self, first: retained)
+    def post_allocation(*args):
+        raise PermissionError(13, 'synthetic post-allocation denial', None, 5)
+    monkeypatch.setattr(connection.util, 'sub_debug', post_allocation)
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    with pytest.raises(preflight.RuntimePreflightRefused):
+        service.start()
+    assert service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows named-pipe implementation')
+def test_untrusted_python_create_named_pipe_denial_remains_hold(monkeypatch):
+    import multiprocessing.connection as connection
+
+    def fake_create(*args):
+        raise PermissionError(13, 'synthetic native-call substitute', None, 5)
+    monkeypatch.setattr(connection._winapi, 'CreateNamedPipe', fake_create)
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    with pytest.raises(preflight.RuntimePreflightRefused):
+        service.start()
+    assert service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows named-pipe implementation')
+def test_replaced_constructor_cannot_clear_unknown_ownership(monkeypatch):
+    import multiprocessing.connection as connection
+    import uuid
+
+    name = r'\\.\pipe\mind-pr1-test-' + uuid.uuid4().hex
+    first = connection.Listener(address=name, family='AF_PIPE', authkey=None)
+    retained = []
+    def replaced_init(self, address, backlog=None):
+        retained.append(object())
+        self._address = address
+        self._new_handle(first=True)
+    monkeypatch.setattr(connection.PipeListener, '__init__', replaced_init)
+    try:
+        service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), name)
+        with pytest.raises(preflight.RuntimePreflightRefused):
+            service.start()
+        assert retained and service.status()['state'] == 'HOLD'
+        assert service.close(timeout=0)['state'] == 'HOLD'
+    finally:
+        first.close()
+
+
 @pytest.mark.parametrize('close_error', [OSError, KeyboardInterrupt])
 def test_synthetic_service_retains_connection_when_close_is_unproved(close_error):
     service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')

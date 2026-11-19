@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import importlib
 import importlib.util
+import dis
 import json
 import math
 import os
@@ -32,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_CODE = 2 * 1024 * 1024
@@ -193,6 +195,66 @@ def _local_candidate_reply(value, request):
     return value
 
 
+def _first_pipe_create_denied_without_handle(error, address):
+    """Recognize only a native first-instance CreateNamedPipe denial.
+
+    Other constructor errors may occur after a pipe handle was allocated;
+    they cannot prove that this process owns no native resource.  This check
+    is deliberately specific to CPython's Windows AF_PIPE implementation and
+    falls back to unknown ownership if its traceback or bytecode differs.
+    """
+    if (sys.platform != 'win32' or sys.implementation.name != 'cpython' or
+            type(error) is not PermissionError or getattr(error, 'winerror', None) != 5):
+        return False
+    try:
+        import _winapi
+        import multiprocessing.connection as connection
+
+        native_create = _winapi.CreateNamedPipe
+        if (type(native_create) is not types.BuiltinFunctionType or
+                native_create.__module__ != '_winapi' or native_create.__name__ != 'CreateNamedPipe'):
+            return False
+        trace = []
+        tb = error.__traceback__
+        while tb is not None:
+            trace.append(tb)
+            tb = tb.tb_next
+        if len(trace) != 4:
+            return False
+        pipe = connection.PipeListener
+        if type(connection.__file__) is not str:
+            return False
+        source = os.path.normcase(os.path.abspath(connection.__file__))
+        if any(os.path.normcase(os.path.abspath(method.__code__.co_filename)) != source
+               for method in (connection.Listener.__init__, pipe.__init__, pipe._new_handle)):
+            return False
+        expected = (_LocalCandidateService.start.__code__, connection.Listener.__init__.__code__,
+                    pipe.__init__.__code__, pipe._new_handle.__code__)
+        if tuple(item.tb_frame.f_code for item in trace) != expected:
+            return False
+        constructor, create = trace[2].tb_frame, trace[3].tb_frame
+        instance = constructor.f_locals.get('self')
+        if (instance is not create.f_locals.get('self') or
+                create.f_locals.get('first') is not True or
+                constructor.f_locals.get('address') != address or
+                instance.__dict__.get('_address') != address or
+                '_handle_queue' in instance.__dict__):
+            return False
+        instructions = list(dis.get_instructions(pipe._new_handle))
+        loads = [index for index, item in enumerate(instructions)
+                 if item.opname in ('LOAD_ATTR', 'LOAD_METHOD') and item.argval == 'CreateNamedPipe']
+        if len(loads) != 1:
+            return False
+        index = loads[0]
+        if index == 0 or instructions[index - 1].opname != 'LOAD_GLOBAL' or instructions[index - 1].argval != '_winapi':
+            return False
+        calls = [item for item in instructions[index + 1:]
+                 if item.opname in ('CALL', 'CALL_FUNCTION', 'CALL_METHOD')]
+        return bool(calls and calls[0].offset == trace[3].tb_lasti and calls[0].arg == 8)
+    except Exception:
+        return False
+
+
 class _LocalCandidateService:
     """One caller-owned owner and local reference-only service; no caller authentication.
 
@@ -225,6 +287,8 @@ class _LocalCandidateService:
                 self._thread = threading.Thread(target=self._serve, name='mind-local-candidates', daemon=False)
                 self._thread.start()
             except BaseException as exc:
+                if self._listener_creation_unknown and _first_pipe_create_denied_without_handle(exc, self._name):
+                    self._listener_creation_unknown = False
                 # Once Thread.start has been entered, native execution may
                 # have begun even if Python never observed the start event.
                 # Retain the listener and owner until the worker proves exit.

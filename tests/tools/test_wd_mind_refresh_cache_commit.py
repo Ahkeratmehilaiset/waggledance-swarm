@@ -182,6 +182,10 @@ def test_gate_on_refresh_cache_checks_charge_same_budget(
     controls = (str(source), snapshot['messages']['generation_path'], original._controls[2],
                 snapshot['roster_bytes'], snapshot['messages']['policy_bytes'])
     monkeypatch.setattr(package, '_consumer_bundle_controls', lambda *_:controls)
+    # This fixture supplies a synthetic consumer with a dummy manifest pin.
+    # Exercise real source-budget accounting without implying that its bundle
+    # passes the independent verified snapshot-module loader contract.
+    monkeypatch.setattr(runtime._PrivateBinding, '_snapshot_support', lambda _self: package)
     gate = original._gate
     flat = json.loads(gate._flat_raw)
     flat['projection_sha256'] = snapshot['projection_sha256']

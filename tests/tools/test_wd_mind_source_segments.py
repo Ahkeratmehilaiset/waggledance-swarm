@@ -581,3 +581,198 @@ def test_times_are_taken_before_reading_and_a_bad_mark_set_during_a_read_refuses
         with _refused("generation_bad"):
             generation.check_rows(stream, [(0, 1)], read=interrupted)
         assert generation.bad is True and seen == [SEG]
+
+
+def _no_wait(condition, seconds):
+    raise AssertionError("unexpected wait")
+
+
+def test_refresh_reads_nothing_when_fresh_and_only_the_stale_segments_otherwise(tmp_path):
+    data, clock, counting = _data(6 * SEG), _Clock(), _Counting()
+    with _source(tmp_path, data).open("rb") as stream:
+        generation = _generation(stream, len(data), clock, wait=_no_wait)
+        clock.value = 130.0
+        assert generation.refresh(stream, 30.0, 500.0, read=counting) == 30.0 and counting.total == 0
+        assert generation.check_rows(stream, [(SEG, SEG)]) == 2 * SEG            # segments 1 and 5 re-read at 130
+        clock.value = 140.0
+        assert generation.refresh(stream, 30.0, 500.0, read=counting) == 10.0   # 0, 2, 3 and 4 re-read at 140
+        assert counting.total == 4 * SEG
+        assert generation.refresh(stream, 0, 500.0, read=counting) == 0.0       # 1 and 5 are 10 s old
+        assert counting.total == 6 * SEG
+        clock.value = 139.0                                                     # a clock behind the recorded reads
+        with _refused("not_fresh"):                                             # one re-read, then it gives up
+            generation.refresh(stream, 30.0, 500.0, read=counting)
+        assert counting.total == 12 * SEG and generation.oldest_age() is None and generation.bad is False
+        clock.value = 141.0                                                     # the clock has caught up
+        assert generation.refresh(stream, 30.0, 500.0, read=counting) == 1.0 and counting.total == 12 * SEG
+        raw = generation.dump()
+        restored = segments.restore_generation(raw, file_identity="volume-1:file-9", generation=None, clock=clock,
+                                               expected_prefix_sha256=hashlib.sha256(data).hexdigest(), wait=_no_wait)
+        assert restored.oldest_age() is None and restored._wait is _no_wait
+        assert restored.refresh(stream, 30.0, 500.0, read=counting) == 0.0 and counting.total == 18 * SEG
+        for call in (lambda: generation.refresh(stream, -1, 500.0), lambda: generation.refresh(stream, None, 500.0),
+                     lambda: generation.refresh(stream, float("nan"), 500.0),
+                     lambda: generation.refresh(stream, 30.0, float("inf")),
+                     lambda: generation.refresh(stream, 30.0, "9"),
+                     lambda: generation.refresh(stream, 30.0, 500.0, byte_allowance=SEG - 1),
+                     lambda: generation.refresh(stream, 30.0, 500.0, byte_allowance=2.0 * SEG),
+                     lambda: _generation(stream, len(data), wait=7),
+                     lambda: segments.restore_generation(raw, file_identity="volume-1:file-9", generation=None, wait=7,
+                                                         expected_prefix_sha256=hashlib.sha256(data).hexdigest())):
+            with _refused("input"):
+                call()
+
+
+def test_refresh_gives_up_at_its_own_deadline_and_keeps_the_progress(tmp_path):
+    data, clock, counting = _data(6 * SEG), _Clock(), _Counting()
+
+    def slow(stream, size):
+        clock.value += 10.0
+        return stream.read(size)
+
+    with _source(tmp_path, data).open("rb") as stream:
+        generation = _generation(stream, len(data), clock, wait=_no_wait)
+        clock.value = 200.0
+        with _refused("not_fresh"):                                 # 0, 1 at 200 and 2, 3 at 220, then 240 is too late
+            generation.refresh(stream, 50.0, 235.0, byte_allowance=2 * SEG, read=slow)
+        assert clock.value == 240.0 and generation.bad is False
+        with _refused("not_fresh"):                                 # already too late: nothing is read
+            generation.refresh(stream, 50.0, 240.0, read=counting)
+        assert counting.total == 0
+        assert generation.refresh(stream, 50.0, 900.0, read=counting) == 40.0   # only 4 and 5 were still stale
+        assert counting.total == 2 * SEG
+        clock.value = 1000.0
+        with _refused("not_fresh"):                                 # slower than the allowed age: never fresh
+            generation.refresh(stream, 5.0, 1300.0, read=slow)
+        assert generation.bad is False and clock.value >= 1300.0
+        grown = generation.extended(stream, len(data))
+        assert grown.refresh(stream, 10 ** 6, 10 ** 7, read=counting) == generation.oldest_age()
+        assert grown._wait is _no_wait                          # a grown generation keeps the wait hook
+
+
+def test_refresh_errors_free_the_flight_and_only_a_mismatch_marks_bad(tmp_path):
+    data, clock = _data(3 * SEG), _Clock()
+    path = _source(tmp_path, data)
+
+    def broken(stream, size):
+        raise OSError("synthetic")
+
+    def interrupted(stream, size):
+        raise KeyboardInterrupt()
+
+    with path.open("rb") as stream:
+        generation = _generation(stream, len(data), clock, wait=_no_wait)
+        clock.value = 300.0
+        with pytest.raises(OSError):
+            generation.refresh(stream, 10.0, 900.0, read=broken)
+        with pytest.raises(KeyboardInterrupt):
+            generation.refresh(stream, 10.0, 900.0, read=interrupted)
+        assert generation.bad is False
+        assert generation.refresh(stream, 10.0, 900.0) == 0.0       # the flight was freed both times
+    changed = bytearray(data)
+    changed[SEG + 1] ^= 1
+    path.write_bytes(bytes(changed))
+    clock.value = 400.0
+    with path.open("rb") as stream:
+        with _refused("segment_mismatch"):
+            generation.refresh(stream, 10.0, 900.0)
+        with _refused("generation_bad"):
+            generation.refresh(stream, 10.0, 900.0)
+    assert generation.bad is True
+
+
+def _overlapping_refreshes(path, generation, callers):
+    """Start ``callers`` refresh calls; the one that re-reads is released only when all others wait."""
+    release, lock, count, outcomes = threading.Event(), threading.Lock(), [0], []
+
+    def read(stream, size):
+        assert release.wait(20)
+        block = stream.read(size)
+        with lock:
+            count[0] += len(block)
+        return block
+
+    def query():
+        try:
+            with path.open("rb") as stream:
+                outcomes.append(generation.refresh(stream, 10.0, 900.0, read=read))
+        except segments.SourceSegmentsRefused as error:
+            outcomes.append(error.reason)
+        except BaseException as error:                          # reported through the outcome list
+            outcomes.append(repr(error))
+
+    threads = [threading.Thread(target=query, daemon=True) for _ in range(callers)]
+    for thread in threads:
+        thread.start()
+    return release, threads, count, outcomes
+
+
+def _waiting_hook():
+    waiting = threading.Semaphore(0)
+
+    def wait(condition, seconds):
+        waiting.release()
+        assert condition.wait(20)                               # woken by the reading caller, not by the time limit
+
+    return waiting, wait
+
+
+def test_overlapping_stale_refreshes_cause_one_traversal(tmp_path):
+    data, clock = _data(8 * SEG), _Clock()
+    path = _source(tmp_path, data)
+    waiting, wait = _waiting_hook()
+    with path.open("rb") as stream:
+        generation = _generation(stream, len(data), clock, wait=wait)
+    clock.value = 500.0
+    release, threads, count, outcomes = _overlapping_refreshes(path, generation, 5)
+    for _ in range(4):
+        assert waiting.acquire(timeout=20)                      # four callers wait for the one that reads
+    assert count[0] == 0
+    release.set()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert outcomes == [0.0] * 5 and count[0] == len(data) and generation.bad is False
+
+
+def test_a_mismatch_found_by_the_reading_caller_refuses_every_waiting_caller(tmp_path):
+    data, clock = _data(8 * SEG), _Clock()
+    path = _source(tmp_path, data)
+    waiting, wait = _waiting_hook()
+    with path.open("rb") as stream:
+        generation = _generation(stream, len(data), clock, wait=wait)
+    changed = bytearray(data)
+    changed[3] ^= 1
+    path.write_bytes(bytes(changed))
+    clock.value = 500.0
+    release, threads, count, outcomes = _overlapping_refreshes(path, generation, 5)
+    for _ in range(4):
+        assert waiting.acquire(timeout=20)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert sorted(outcomes) == ["generation_bad"] * 4 + ["segment_mismatch"]
+    assert generation.bad is True and count[0] <= len(data)    # one reader only, and it read at most once
+
+
+def test_a_waiting_caller_gives_up_at_its_own_deadline_without_harming_the_flight(tmp_path):
+    data, clock, counting = _data(4 * SEG), _Clock(), _Counting()
+    path = _source(tmp_path, data)
+
+    def late(condition, seconds):
+        assert 0 < seconds <= 10.0
+        clock.value = 520.0                                     # the wait ran out: the clock is past 510
+
+    with path.open("rb") as stream:
+        generation = _generation(stream, len(data), clock, wait=late)
+        clock.value = 500.0
+        release, threads, count, outcomes = _overlapping_refreshes(path, generation, 1)
+        while not generation._sweeping:                         # the single caller has become the reader
+            assert threads[0].is_alive()
+        with _refused("not_fresh"):
+            generation.refresh(stream, 10.0, 510.0, read=counting)
+        assert counting.total == 0 and generation.bad is False and outcomes == []
+        release.set()
+        threads[0].join(timeout=20)
+        # its first pass was stamped 500, which is 20 s old at 520, so it read once more and ended fresh
+        assert outcomes == [0.0] and count[0] == 2 * len(data)
+        assert generation.refresh(stream, 10.0, 900.0, read=counting) == 0.0 and counting.total == 0

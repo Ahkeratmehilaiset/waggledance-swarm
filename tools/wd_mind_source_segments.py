@@ -30,7 +30,7 @@ MAX_LEDGER_BYTES = 80 * 1024 * 1024
 READ_BLOCK_BYTES = 1024 * 1024
 GENERATION_SCHEMA = 'wd.mind-source-generation.v1'
 REASONS = frozenset({'input', 'limit', 'short_read', 'read_type', 'prefix_mismatch', 'segment_mismatch',
-                     'not_extension', 'ledger_format', 'generation_bad', 'binding_mismatch'})
+                     'not_extension', 'ledger_format', 'generation_bad', 'binding_mismatch', 'not_fresh'})
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _DIGEST = hashlib.sha256().digest_size
 _KEYS = frozenset({'schema', 'authority', 'segment_bytes', 'end', 'prefix_sha256', 'root_sha256', 'digests'})
@@ -305,6 +305,12 @@ class Rotation:
         oldest = min(self._checked)
         return None if oldest == -math.inf or now < oldest else now - oldest
 
+    def stale(self, now, max_age):
+        """Indexes whose last verifying read is unknown, older than ``max_age`` or ahead of ``now``."""
+        if not _finite(now) or not _finite(max_age) or max_age < 0:
+            _refuse('input')
+        return [index for index, checked in enumerate(self._checked) if not 0 <= now - checked <= max_age]
+
     def resized(self, old, new, now):
         """Rotation for a ledger extended by ``extend``: segments it re-read start at ``now``."""
         if (type(old) is not SegmentLedger or type(new) is not SegmentLedger or old.count != len(self._checked)
@@ -327,6 +333,10 @@ def _label(value, *, optional=False):
                                             and value.isascii() and value.isprintable())
 
 
+def _wait_on(condition, seconds):
+    condition.wait(seconds)
+
+
 class SourceGeneration:
     """One prefix generation: a ledger bound to file identity, generation label and offset.
 
@@ -338,17 +348,23 @@ class SourceGeneration:
 
     Ages come from one clock inside one process. A machine sleep is not detected
     here: a caller whose clock does not advance during sleep must discard the
-    generation or re-read every segment after a resume.
+    generation or re-read every segment after a resume. ``wait(condition, seconds)``
+    is the hook a waiting ``refresh`` call uses; the default waits on the condition,
+    which fits a clock that counts seconds.
     """
 
-    __slots__ = ('_ledger', '_identity', '_generation', '_rotation', '_bad', '_lock', '_clock')
+    __slots__ = ('_ledger', '_identity', '_generation', '_rotation', '_bad', '_lock', '_clock', '_wait',
+                 '_sweeping')
 
-    def __init__(self, ledger, file_identity, generation, rotation, clock=time.monotonic):
+    def __init__(self, ledger, file_identity, generation, rotation, clock=time.monotonic, wait=None):
         if (type(ledger) is not SegmentLedger or type(rotation) is not Rotation or not callable(clock)
+                or not (wait is None or callable(wait))
                 or not _label(file_identity) or not _label(generation, optional=True)):
             _refuse('input')
         self._ledger, self._identity, self._generation = ledger, file_identity, generation
-        self._rotation, self._bad, self._lock, self._clock = rotation, False, threading.Lock(), clock
+        self._rotation, self._bad, self._clock, self._sweeping = rotation, False, clock, False
+        self._lock = threading.Condition(threading.Lock())
+        self._wait = _wait_on if wait is None else wait
 
     ledger = property(lambda self: self._ledger)
     file_identity = property(lambda self: self._identity)
@@ -372,6 +388,7 @@ class SourceGeneration:
             if error.reason in _BAD:
                 with self._lock:
                     self._bad = True
+                    self._lock.notify_all()
             raise
         with self._lock:
             if self._bad:
@@ -399,6 +416,47 @@ class SourceGeneration:
             plan = self._rotation.plan(self._ledger, byte_allowance)
         return self._verified(stream, plan, read)
 
+    def refresh(self, stream, max_age, deadline, *, byte_allowance=None, read=None):
+        """Bring the oldest segment check within ``max_age`` seconds, re-reading stale segments if needed.
+
+        One caller at a time re-reads (single flight); the others wait for it, each until its own
+        ``deadline``, a value of this generation's clock. Returns the oldest age afterwards. When the
+        deadline comes first, this call alone refuses ``not_fresh``; the segments already re-read stay
+        counted, the generation is not marked bad, and a later call carries on. The same refusal ends a
+        call whose own full re-read left segments stale while the clock did not advance (a clock that
+        is behind a recorded read): re-reading cannot help there, only a later clock value can.
+        """
+        size = self._ledger.segment_bytes
+        allowance = 16 * size if byte_allowance is None else byte_allowance
+        if (not _finite(max_age) or max_age < 0 or not _finite(deadline)
+                or type(allowance) is not int or allowance < size):
+            _refuse('input')
+        step, swept_at = allowance // size, None
+        while True:
+            now = self._now()
+            with self._lock:
+                if self._bad:
+                    _refuse('generation_bad')
+                stale = self._rotation.stale(now, max_age)
+                if not stale:
+                    return self._rotation.oldest_age(now)
+                if now >= deadline or (swept_at is not None and now <= swept_at):
+                    _refuse('not_fresh')
+                if self._sweeping:
+                    self._wait(self._lock, deadline - now)
+                    continue
+                self._sweeping = True
+            swept_at = now
+            try:
+                for start in range(0, len(stale), step):
+                    if start and self._now() >= deadline:
+                        _refuse('not_fresh')
+                    self._verified(stream, stale[start:start + step], read)
+            finally:
+                with self._lock:
+                    self._sweeping = False
+                    self._lock.notify_all()
+
     def oldest_age(self):
         """Age of the least recent segment read; ``None`` means unknown and must be treated as too old."""
         with self._lock:
@@ -414,18 +472,20 @@ class SourceGeneration:
                 _refuse('generation_bad')
             if type(new_end) is int and new_end < self._ledger.end:
                 self._bad = True  # the caller saw the file shorter than the pinned prefix
+                self._lock.notify_all()
         try:
             ledger = extend(stream, self._ledger, new_end, read=read)
         except SourceSegmentsRefused as error:
             if error.reason in _BAD:
                 with self._lock:
                     self._bad = True
+                    self._lock.notify_all()
             raise
         with self._lock:
             if self._bad:
                 _refuse('generation_bad')
             rotation = self._rotation.resized(self._ledger, ledger, now)
-        return SourceGeneration(ledger, self._identity, self._generation, rotation, self._clock)
+        return SourceGeneration(ledger, self._identity, self._generation, rotation, self._clock, self._wait)
 
     def dump(self):
         """Canonical JSON bytes of ledger and binding. Verification times are never written."""
@@ -438,9 +498,10 @@ class SourceGeneration:
 
 
 def open_generation(stream, end, *, segment_bytes, file_identity, generation,
-                    expected_prefix_sha256=None, read=None, clock=time.monotonic):
+                    expected_prefix_sha256=None, read=None, clock=time.monotonic, wait=None):
     """One full pass over ``[0, end)``; every segment counts as read when the pass began."""
-    if not callable(clock) or not _label(file_identity) or not _label(generation, optional=True):
+    if (not callable(clock) or not (wait is None or callable(wait)) or not _label(file_identity)
+            or not _label(generation, optional=True)):
         _refuse('input')
     now = clock()
     if not _finite(now):
@@ -449,18 +510,19 @@ def open_generation(stream, end, *, segment_bytes, file_identity, generation,
                    read=read)
     rotation = Rotation(ledger)
     rotation.mark(range(ledger.count), now)
-    return SourceGeneration(ledger, file_identity, generation, rotation, clock)
+    return SourceGeneration(ledger, file_identity, generation, rotation, clock, wait)
 
 
 def restore_generation(raw, *, file_identity, generation, expected_prefix_sha256, expected_sha256=None,
-                       clock=time.monotonic):
+                       clock=time.monotonic, wait=None):
     """Restore ``SourceGeneration.dump`` output for the same file, generation and whole-prefix digest.
 
     Nothing is read from the source here, so the age stays unknown until every
     segment has been re-read by ``scrub`` or ``check_rows``.
     """
-    if (not callable(clock) or not _label(file_identity) or not _label(generation, optional=True)
-            or type(expected_prefix_sha256) is not str or _HEX.fullmatch(expected_prefix_sha256) is None):
+    if (not callable(clock) or not (wait is None or callable(wait)) or not _label(file_identity)
+            or not _label(generation, optional=True) or type(expected_prefix_sha256) is not str
+            or _HEX.fullmatch(expected_prefix_sha256) is None):
         _refuse('input')
     try:
         if type(raw) is not bytes or not 0 < len(raw) <= MAX_LEDGER_BYTES:
@@ -475,7 +537,8 @@ def restore_generation(raw, *, file_identity, generation, expected_prefix_sha256
                 or type(value['ledger']) is not dict):
             raise ValueError('shape')
         ledger = load(json.dumps(value['ledger'], sort_keys=True, separators=(',', ':')).encode('ascii'))
-        restored = SourceGeneration(ledger, value['file_identity'], value['generation'], Rotation(ledger), clock)
+        restored = SourceGeneration(ledger, value['file_identity'], value['generation'], Rotation(ledger), clock,
+                                    wait)
         if not hmac.compare_digest(restored.dump(), raw):
             raise ValueError('canonical')
     except Exception:

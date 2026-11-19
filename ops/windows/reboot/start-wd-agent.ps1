@@ -32,6 +32,8 @@ param(
   [string] $ReviewedJournalDigest = '',
   [string] $RetirementReason = '',
   [switch] $FreshSession,
+  # Separate operator opt-in; the read-only descriptor alone never starts an owner.
+  [switch] $EnableMindOwnerStartup,
   [string] $SupersededThreadId = '',
   [string] $FreshSessionReason = ''
 )
@@ -358,7 +360,8 @@ function Get-WdNativeLeadResumeState {
 function Invoke-WdNativeLeadTerminal {
   param([string] $CliPath, [string[]] $Arguments, [string] $ThreadId,
     [string] $Worktree, [string] $RuntimeRoot, [string] $Generation,
-    [string] $ExpectedCliHash, [string] $SessionId, [hashtable] $VerifiedCode)
+    [string] $ExpectedCliHash, [string] $SessionId, [hashtable] $VerifiedCode,
+    [switch] $EnableMindOwnerStartup, [string] $MindBundleRoot='', [string] $MindManifestHash='')
   if ([Console]::IsInputRedirected) { throw 'Native Lead requires an interactive terminal' }
   if ($ThreadId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
     throw 'Automatic Lead delivery requires the exact recorded conversation; never guess a recent thread'
@@ -391,11 +394,16 @@ function Invoke-WdNativeLeadTerminal {
     native_process_start_utc='';relay_process_start_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
     bridge_wake_transport='withheld';bridge_wake_producer_status='unchecked';
     bridge_wake_producer_observed_at_utc='';worktree=$Worktree;task_completion_verified=$false;error=''}
-  $native=$null
+  $native=$null; $mindOwner=$null
   try {
     Write-WdTurnJson $readyPath $record
     $line=@($Arguments | ForEach-Object { ConvertTo-WdToolsNativeArgument $_ }) -join ' '
     $native=Start-WdToolsNativeProcess -CliPath $CliPath -ArgumentLine $line -Worktree $Worktree
+    # Start owner preparation only after the interactive CLI process exists.
+    if ($EnableMindOwnerStartup) {
+      try { $mindOwner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot $MindBundleRoot -ExpectedManifestHash $MindManifestHash }
+      catch { Write-Warning 'Mind owner start unavailable; lane continues' -WarningAction Continue }
+    }
     $record.native_pid=$native.Id
     $record.native_process_start_utc=$native.StartTime.ToUniversalTime().ToString('o')
     $record.status='native_process_started'
@@ -467,6 +475,9 @@ function Invoke-WdNativeLeadTerminal {
       if (-not $native.HasExited) { $native.WaitForExit() }
       $native.Dispose()
     }
+    # Signal cooperative stop and retain the supervisor's process/pipes until it
+    # exits and both pipes close. An unresolved owner remains HOLD; never kill.
+    if ($null -ne $mindOwner) { Stop-WdMindOwnerAsync -Owner $mindOwner }
     # Keep delivery refusal distinct from clean UI exit; error evidence remains.
     if ($record.status -cne 'bridge_wake_blocked') { $record.status='stopped' }
     Write-WdTurnJson $readyPath $record
@@ -1922,6 +1933,7 @@ if ($manualLeadAction -and (
 $launchTurnMode = if ($RecoverInteractive) { 'interactive' } else { $turnMode }
 $launchConversationSurface = if ($RecoverInteractive) { 'none' } else { $conversationSurface }
 $nativeLead = $Agent -ceq 'codex-lead-1' -and $turnMode -ceq 'interactive' -and $conversationSurface -ceq 'none'
+if ($EnableMindOwnerStartup -and -not $nativeLead) { throw 'Mind owner opt-in is available only for native Lead' }
 $nativeResume = $null
 $nativeLeadLease = $null
 if ($nativeLead -and ($null -eq $lane.PSObject.Properties['native_resume_policy'] -or
@@ -2748,6 +2760,131 @@ function Test-WdMindCommandLineFits {
     $length = $CliPath.Length + 2 + 1 + (($quoted -join ' ').Length) + 1
     return $length -le 32767
 }
+function Start-WdMindOwnerAsync {
+    # This is a separate operator opt-in, never inferred from a reader descriptor.
+    # All bundle reads and child startup occur on the retained worker, after CLI spawn.
+    param([bool]$Enabled,[string]$BundleRoot,[string]$ExpectedManifestHash)
+    if(-not $Enabled -or $ExpectedManifestHash -cnotmatch '\A[0-9A-Fa-f]{64}\z'){return $null}
+    $state=[hashtable]::Synchronized(@{worker='PREFLIGHT';process=$null;outRead=$null;errRead=$null;stopEvent=$null;completed=$false})
+    $signal=New-Object Threading.ManualResetEvent($false)
+    $owner=[pscustomobject]@{state=$state;signal=$signal;pipeline=$null;async=$null}
+    if(-not (Test-Path variable:script:WdMindOwnerAsyncOwners)){$script:WdMindOwnerAsyncOwners=New-Object Collections.ArrayList}
+    [void]$script:WdMindOwnerAsyncOwners.Add($owner)
+    $worker={
+        param($state,$signal,$root,$manifestHash)
+        $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
+        function Read-OwnerPinned([string]$path,[string]$pin,[int]$limit){
+            if($pin -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or $path -cnotmatch '\A[Cc]:[\\/]' -or
+               $path.Substring(3) -match '[:*?"<>|]' -or @($path.Substring(3).Split([char[]]'\\/') |
+                   Where-Object {$_ -in @('.','..') -or $_ -match '[. ]$'}).Count){throw 'path'}
+            $full=[IO.Path]::GetFullPath($path);$current=$full
+            while($current){if(([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'path'}
+                $parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -ceq $current){break};$current=$parent}
+            $f=[IO.File]::Open($full,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+            try{if($f.Length -lt 1 -or $f.Length -gt $limit){throw 'size'}
+                $b=New-Object byte[] ([int]$f.Length);$i=0
+                while($i -lt $b.Length){$n=$f.Read($b,$i,$b.Length-$i);if($n -le 0){throw 'read'};$i+=$n}
+                if($f.ReadByte() -ne -1){throw 'changed'}}finally{$f.Dispose()}
+            $h=[Security.Cryptography.SHA256]::Create()
+            try{$actual=[BitConverter]::ToString($h.ComputeHash($b)).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}
+            if($actual -cne $pin.ToLowerInvariant()){throw 'pin'};return ,$b
+        }
+        $proc=$null;$stopEvent=$null;$outRead=$null;$errRead=$null;$outDone=$false;$errDone=$false
+        $spawnEntered=$false;$finished=$false;$unknown=$false;$inputDone=$false;$write=$null
+        try {
+            if($signal.WaitOne(0)){throw 'cancelled'}
+            $root=[IO.Path]::GetFullPath($root).TrimEnd('\');$utf8=New-Object Text.UTF8Encoding($false,$true)
+            $manifestPath=Join-Path $root 'deployment-manifest.json'
+            $bytes=Read-OwnerPinned $manifestPath $manifestHash 4194304
+            $manifest=$utf8.GetString($bytes).TrimStart([char]0xFEFF)|ConvertFrom-Json -ErrorAction Stop
+            $supervisorPin=$manifest.files.PSObject.Properties['Start-WdMindOwnerSupervisor.ps1']
+            $configPin=$manifest.files.PSObject.Properties['wd-mind-startup-config.json']
+            if($manifest.schema_version -ne 1 -or $null -eq $supervisorPin -or $null -eq $configPin){throw 'manifest'}
+            $source=Read-OwnerPinned (Join-Path $root 'Start-WdMindOwnerSupervisor.ps1') $supervisorPin.Value 1048576
+            [void](Read-OwnerPinned (Join-Path $root 'wd-mind-startup-config.json') $configPin.Value 16384)
+            [void](Read-OwnerPinned $manifestPath $manifestHash 4194304)
+            if($signal.WaitOne(0)){throw 'cancelled'}
+            $eventName='Local\wd-mind-supervisor-stop-'+[guid]::NewGuid().ToString('N');$created=$false
+            $stopEvent=New-Object Threading.EventWaitHandle($false,[Threading.EventResetMode]::ManualReset,$eventName,[ref]$created)
+            if(-not $created){throw 'event'}
+            [Threading.Monitor]::Enter($state.SyncRoot);try{$state.stopEvent=$stopEvent}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+            $me=[Diagnostics.Process]::GetCurrentProcess();try{$parentStart=$me.StartTime.ToUniversalTime().ToString('o')}finally{$me.Dispose()}
+            $payload=[ordered]@{source=[Convert]::ToBase64String($source);root=$root;manifest=$manifestHash;event=$eventName;
+                parent=$PID;started=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($parentStart))}
+            $wire=$utf8.GetBytes((ConvertTo-Json -InputObject $payload -Compress));if($wire.Length -gt 1500000){throw 'size'}
+            $trampoline='$ProgressPreference="SilentlyContinue";$ErrorActionPreference="Stop";$x=ConvertFrom-Json ([Console]::In.ReadToEnd());$s=(New-Object Text.UTF8Encoding($false,$true)).GetString([Convert]::FromBase64String($x.source)).TrimStart([char]0xFEFF);$started=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($x.started));. ([scriptblock]::Create($s)) -Enabled -BundleRoot $x.root -ExpectedManifestHash $x.manifest -StopEventName $x.event -ControllerPid $x.parent -ControllerStartUtc $started'
+            $info=New-Object Diagnostics.ProcessStartInfo
+            $info.FileName=Join-Path $PSHOME $(if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'})
+            $info.Arguments='-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($trampoline))
+            $info.WorkingDirectory=$root;$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+            $info.RedirectStandardInput=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+            $allowed=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA')
+            foreach($key in @($info.EnvironmentVariables.Keys)){if($allowed -cnotcontains ([string]$key).ToUpperInvariant()){$info.EnvironmentVariables.Remove([string]$key)}}
+            if(-not [IO.File]::Exists($info.FileName) -or $signal.WaitOne(0)){throw 'cancelled'}
+            $proc=New-Object Diagnostics.Process;$proc.StartInfo=$info
+            [Threading.Monitor]::Enter($state.SyncRoot);try{$state.process=$proc;$state.worker='STARTING'}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+            $spawnEntered=$true;if(-not $proc.Start()){throw 'spawn'}
+            $write=$proc.StandardInput.BaseStream.WriteAsync($wire,0,$wire.Length)
+            $outBuf=New-Object byte[] 4096;$errBuf=New-Object byte[] 4096
+            $outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)
+            $errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)
+            $outTotal=0;$bad=$false
+            while($true){
+                if($signal.WaitOne(0) -or $bad){[void]$stopEvent.Set();[Threading.Monitor]::Enter($state.SyncRoot);try{$state.worker='HOLD'}finally{[Threading.Monitor]::Exit($state.SyncRoot)}}
+                if(-not $inputDone -and $write.IsCompleted){try{[void]$write.GetAwaiter().GetResult();$proc.StandardInput.Close()}catch{$bad=$true};$inputDone=$true;[Array]::Clear($wire,0,$wire.Length)}
+                foreach($which in @('out','err')){
+                    $task=if($which -ceq 'out'){$outRead}else{$errRead};$done=if($which -ceq 'out'){$outDone}else{$errDone}
+                    if($done -or $null -eq $task -or -not $task.IsCompleted){continue}
+                    try{$n=$task.GetAwaiter().GetResult()}catch{$unknown=$true;$bad=$true;$n=0}
+                    if($n -eq 0){if($which -ceq 'out'){$outDone=$true}else{$errDone=$true}}
+                    elseif($which -ceq 'out'){$outTotal+=$n;if($outTotal -gt 8192){$bad=$true};$outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)}
+                    else{$bad=$true;$errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)}
+                }
+                [Threading.Monitor]::Enter($state.SyncRoot);try{$state.outRead=$outRead;$state.errRead=$errRead}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+                if($proc.HasExited -and $outDone -and $errDone -and -not $unknown){$finished=$true;break}
+                [Threading.Thread]::Sleep(25)
+            }
+        } catch {
+            if($spawnEntered -and -not $finished){
+                try{[void]$stopEvent.Set()}catch{}
+                [Threading.Monitor]::Enter($state.SyncRoot);try{$state.worker='HOLD'}finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+                if($null -eq $outBuf){$outBuf=New-Object byte[] 4096};if($null -eq $errBuf){$errBuf=New-Object byte[] 4096}
+                while($true){
+                    if(-not $inputDone -and ($null -eq $write -or $write.IsCompleted)){try{$proc.StandardInput.Close()}catch{};$inputDone=$true}
+                    foreach($which in @('out','err')){try{
+                        if($which -ceq 'out'){if($null -eq $outRead -and -not $outDone){$outRead=$proc.StandardOutput.BaseStream.ReadAsync($outBuf,0,$outBuf.Length)}
+                            if($null -ne $outRead -and $outRead.IsCompleted){$n=$outRead.GetAwaiter().GetResult();$outRead=$null;if($n -eq 0){$outDone=$true}}}
+                        else{if($null -eq $errRead -and -not $errDone){$errRead=$proc.StandardError.BaseStream.ReadAsync($errBuf,0,$errBuf.Length)}
+                            if($null -ne $errRead -and $errRead.IsCompleted){$n=$errRead.GetAwaiter().GetResult();$errRead=$null;if($n -eq 0){$errDone=$true}}}
+                    }catch{$unknown=$true}}
+                    try{if($proc.HasExited -and $outDone -and $errDone -and -not $unknown){$finished=$true;break}}catch{}
+                    [Threading.Thread]::Sleep(100)
+                }
+            }
+        } finally {
+            if(($finished -or -not $spawnEntered) -and $null -ne $proc){$proc.Dispose()}
+            if(($finished -or -not $spawnEntered) -and $null -ne $stopEvent){$stopEvent.Dispose()}
+            [Threading.Monitor]::Enter($state.SyncRoot)
+            try{if($finished -or -not $spawnEntered){$state.completed=$true;$state.worker='EXITED_UNVERIFIED';$state.process=$null;$state.outRead=$null;$state.errRead=$null;$state.stopEvent=$null}}
+            finally{[Threading.Monitor]::Exit($state.SyncRoot)}
+        }
+    }
+    try{
+        $pipeline=[Management.Automation.PowerShell]::Create();$owner.pipeline=$pipeline
+        [void]$pipeline.AddScript($worker.ToString()).AddArgument($state).AddArgument($signal).AddArgument($BundleRoot).AddArgument($ExpectedManifestHash)
+        $owner.async=$pipeline.BeginInvoke()
+    }catch{$state.worker='HOLD'}
+    return $owner
+}
+
+function Stop-WdMindOwnerAsync {
+    param($Owner)
+    if($null -eq $Owner){return}
+    [void]$Owner.signal.Set()
+    # This is shutdown, after the interactive CLI has exited; HOLD is retained.
+    if($null -ne $Owner.pipeline -and $null -ne $Owner.async){[void]$Owner.pipeline.EndInvoke($Owner.async)}
+}
+
 function Start-WdMindAsyncStartupController {
     <# In-process runspace owns the whole pinned preflight, process start and
        pipe drain. Its parent retains the owner even after delivery closes. #>
@@ -3569,7 +3706,8 @@ try {
   if ($nativeLead) {
     Invoke-WdNativeLeadTerminal -CliPath $cliPath -Arguments $launchArguments -ThreadId $nativeResume.thread_id `
       -Worktree $worktree -RuntimeRoot $runtimeRoot -Generation $bundleGeneration -ExpectedCliHash $cliExecutableHash `
-      -SessionId $RunId -VerifiedCode $verifiedConversationCode
+      -SessionId $RunId -VerifiedCode $verifiedConversationCode `
+      -EnableMindOwnerStartup:$EnableMindOwnerStartup -MindBundleRoot $PSScriptRoot -MindManifestHash $script:LaneManifestAnchor
     $cliExitCode = 0
   } else {
     $ErrorActionPreference = 'Continue'

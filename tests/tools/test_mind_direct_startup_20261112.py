@@ -1390,3 +1390,135 @@ $mindStartupGuidance=' prior unknown status ';$cliPath='C:\\fake.exe';$codexComm
     text = value['arguments'][-1]
     assert 'prior unknown status' not in text
     assert 'END STATUS DATA.' in text and read['fragment'] in text
+
+
+def _synthetic_owner_launcher_bundle(tmp_path, *, hold=False, tamper=False):
+    # This fake supervisor only writes synthetic markers and honors a private stop event.
+    root = tmp_path / 'owner-launcher-bundle'
+    root.mkdir()
+    ready = tmp_path / 'owner-ready'
+    stopped = tmp_path / 'owner-stopped'
+    source = r'''param([switch]$Enabled,[string]$BundleRoot,[string]$ExpectedManifestHash,[string]$StopEventName,
+[int]$ControllerPid,[string]$ControllerStartUtc)
+$parent=(Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = "+$PID)).ParentProcessId
+if($parent -ne $ControllerPid){exit 2}
+$p=[Diagnostics.Process]::GetProcessById($ControllerPid)
+if($p.StartTime.ToUniversalTime().ToString('o') -cne $ControllerStartUtc){exit 3}
+$evt=[Threading.EventWaitHandle]::OpenExisting($StopEventName)
+[IO.File]::WriteAllText(READY,'ready')
+[Console]::Out.WriteLine('{"state":"READY"}')
+while(-not $evt.WaitOne(25)){}
+[IO.File]::WriteAllText(STOPPED,'stopped')
+$evt.Dispose();$p.Dispose();exit 0
+'''.replace('READY', _literal(ready), 1).replace('STOPPED', _literal(stopped), 1)
+    supervisor = root / 'Start-WdMindOwnerSupervisor.ps1'
+    supervisor.write_bytes(source.encode())
+    config = b'{"synthetic":true}'
+    (root / 'wd-mind-startup-config.json').write_bytes(config)
+    manifest = {'schema_version': 1, 'files': {
+        supervisor.name: hashlib.sha256(supervisor.read_bytes()).hexdigest(),
+        'wd-mind-startup-config.json': hashlib.sha256(config).hexdigest()}}
+    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    (root / 'deployment-manifest.json').write_bytes(raw)
+    if tamper: supervisor.write_text('exit 0', encoding='ascii')
+    return root, hashlib.sha256(raw).hexdigest(), ready, stopped
+
+
+@WINDOWS
+def test_owner_startup_is_explicit_and_default_off():
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', ['Start-WdMindOwnerAsync']) + '''
+$owner=Start-WdMindOwnerAsync -Enabled $false -BundleRoot 'C:\\synthetic-missing' -ExpectedManifestHash ('a'*64)
+@{inert=($null -eq $owner)} | ConvertTo-Json -Compress
+'''
+    assert _run_startup_script(script)['inert'] is True
+
+
+@WINDOWS
+@pytest.mark.parametrize('tamper', [False, True])
+def test_owner_launcher_uses_verified_bytes_real_parent_and_cooperative_stop(tmp_path, tamper):
+    root, pin, ready, stopped = _synthetic_owner_launcher_bundle(tmp_path, tamper=tamper)
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', [
+        'Start-WdMindOwnerAsync', 'Stop-WdMindOwnerAsync']) + f'''
+$clock=[Diagnostics.Stopwatch]::StartNew()
+$owner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -ExpectedManifestHash '{pin}'
+$elapsed=$clock.ElapsedMilliseconds;$until=[DateTime]::UtcNow.AddSeconds(10)
+while(-not $owner.state.completed -and -not (Test-Path -LiteralPath {_literal(ready)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+$wasReady=Test-Path -LiteralPath {_literal(ready)}
+Stop-WdMindOwnerAsync -Owner $owner
+@{{elapsed=$elapsed;ready=$wasReady;stopped=(Test-Path -LiteralPath {_literal(stopped)});
+ completed=$owner.state.completed;state=$owner.state.worker}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script, timeout=30)
+    assert value['elapsed'] < 1000 and value['completed'] is True
+    assert value['ready'] is (not tamper) and value['stopped'] is (not tamper)
+    assert value['state'] == 'EXITED_UNVERIFIED'
+
+
+def test_owner_start_is_after_native_spawn_and_explicit_opt_in():
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8-sig')
+    body = source[source.index('function Invoke-WdNativeLeadTerminal {'):source.index('function Get-WdClaudeResumeState {')]
+    assert body.index('$native=Start-WdToolsNativeProcess') < body.index('if ($EnableMindOwnerStartup)')
+    assert 'Stop-WdMindOwnerAsync -Owner $mindOwner' in body
+    assert '[switch] $EnableMindOwnerStartup' in source
+    assert 'Mind owner opt-in is available only for native Lead' in source
+
+@WINDOWS
+def test_owner_launcher_concurrent_supervisors_never_admit_two_synthetic_owners(tmp_path):
+    # Existing supervisor/host and synthetic reservation: no real policy, bridge or owner.
+    import test_wd_mind_owner_supervisor as supervisor_tests
+    root, marker, _, reservation = supervisor_tests._reservation_bundle(
+        tmp_path, {'name': 'Local\\wd-mind-owner-stop-' + '0'*32, 'start': 'synthetic'})
+    supervisor = root / 'Start-WdMindOwnerSupervisor.ps1'
+    supervisor.write_bytes((REBOOT / supervisor.name).read_bytes())
+    manifest_path = root / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'][supervisor.name] = hashlib.sha256(supervisor.read_bytes()).hexdigest().upper()
+    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    manifest_path.write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', [
+        'Start-WdMindOwnerAsync', 'Stop-WdMindOwnerAsync']) + f'''
+$a=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -ExpectedManifestHash '{pin}'
+$b=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -ExpectedManifestHash '{pin}'
+$until=[DateTime]::UtcNow.AddSeconds(40)
+try {{
+ while(((-not (Test-Path -LiteralPath {_literal(marker)})) -or (-not ($a.state.completed -or $b.state.completed))) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+ $once=(Test-Path -LiteralPath {_literal(marker)}) -and ([IO.File]::ReadAllText({_literal(marker)}) -ceq '1')
+ $oneDone=[bool]($a.state.completed -or $b.state.completed)
+}} finally {{[void]$a.signal.Set();[void]$b.signal.Set();Stop-WdMindOwnerAsync -Owner $a;Stop-WdMindOwnerAsync -Owner $b}}
+@{{once=$once;oneDone=$oneDone;doneA=$a.state.completed;doneB=$b.state.completed}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script, timeout=70)
+    assert value == {'once': True, 'oneDone': True, 'doneA': True, 'doneB': True}
+    assert reservation.read_bytes() == b'WD_MIND_OWNER_V1\nC'
+
+@WINDOWS
+def test_owner_slow_preflight_is_async_and_shutdown_is_cooperative(tmp_path):
+    root, pin, ready, stopped = _synthetic_owner_launcher_bundle(tmp_path)
+    entered = tmp_path / 'synthetic-preflight-entered'
+    release = tmp_path / 'synthetic-preflight-release'
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions('start-wd-agent.ps1', [
+        'Start-WdMindOwnerAsync', 'Stop-WdMindOwnerAsync']) + f'''
+$definition=(Get-Command Start-WdMindOwnerAsync -CommandType Function).Definition
+$needle='$bytes=Read-OwnerPinned $manifestPath $manifestHash 4194304'
+# Embed quoted paths as source in the test-only copy; no production code changes.
+$gate='[IO.File]::WriteAllText(' + {_literal(_literal(entered))} + ",'entered'); while (-not (Test-Path -LiteralPath " + {_literal(_literal(release))} + ')) {{Start-Sleep -Milliseconds 20}}; '
+if(-not $definition.Contains($needle)){{throw 'missing synthetic injection seam'}}
+. ([scriptblock]::Create('function Start-WdMindOwnerAsync {{'+$definition.Replace($needle,$gate+$needle)+'}}'))
+$watch=[Diagnostics.Stopwatch]::StartNew()
+$owner=Start-WdMindOwnerAsync -Enabled $true -BundleRoot {_literal(root)} -ExpectedManifestHash '{pin}'
+$elapsed=$watch.ElapsedMilliseconds;$until=[DateTime]::UtcNow.AddSeconds(10)
+try {{
+ while(-not (Test-Path -LiteralPath {_literal(entered)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+ $blocked=(Test-Path -LiteralPath {_literal(entered)}) -and -not (Test-Path -LiteralPath {_literal(ready)})
+}} finally {{[IO.File]::WriteAllText({_literal(release)},'release')}}
+$until=[DateTime]::UtcNow.AddSeconds(10)
+while(-not $owner.state.completed -and -not (Test-Path -LiteralPath {_literal(ready)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+$started=Test-Path -LiteralPath {_literal(ready)}
+Stop-WdMindOwnerAsync -Owner $owner
+@{{elapsed=$elapsed;blocked=$blocked;started=$started;stopped=(Test-Path -LiteralPath {_literal(stopped)});
+ state=$owner.state.worker}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script, timeout=30)
+    assert value['elapsed'] < 1000 and value['blocked'] and value['started'] and value['stopped']
+    assert value['state'] == 'EXITED_UNVERIFIED'

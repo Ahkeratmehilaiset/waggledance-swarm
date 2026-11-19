@@ -1641,7 +1641,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
             if state['reason'] == 'SOURCE_PREFIX_BUDGET':
                 raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget')
             raise ValueError('refused')
-        output.write(state['result'])
+        if output.write(state['result']) != len(state['result']):
+            raise ValueError('output_write')
         output.flush()
         return 0
     except BaseException as exc:

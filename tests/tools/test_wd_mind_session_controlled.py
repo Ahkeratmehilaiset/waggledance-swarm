@@ -30,7 +30,7 @@ def flat_consumer_case(monkeypatch, request):
     monkeypatch.setattr(reader,'_REQUIRED_CODE',pins)
     return request.getfixturevalue('_base_flat_consumer_case')
 
-@pytest.mark.parametrize('fault',['none','missing_go','wrong_go','extra_go','selected','append','policy'])
+@pytest.mark.parametrize('fault',['none','missing_go','wrong_go','extra_go','selected','append','policy','short_write','none_write'])
 def test_controlled_go_precedes_exactly_one_real_resolution(flat_consumer_case,monkeypatch,tmp_path,fault):
     _,frame,snapshot,_clock=fixtures._located_candidates(flat_consumer_case,monkeypatch)
     _package,owner,_proposals,_snapshot,_clock,_response=flat_consumer_case
@@ -84,7 +84,13 @@ def test_controlled_go_precedes_exactly_one_real_resolution(flat_consumer_case,m
                 if fault=='policy': policy.write_bytes(b'changed')
                 go={'missing_go':b'','wrong_go':b'G'+b'f'*64,'extra_go':b'G'+nonce.encode()+b'X'}.get(fault,b'G'+nonce.encode())
                 control._bytes=io.BytesIO(go)
-            with self.lock: self.data.extend(raw)
+            with self.lock:
+                if self.ready and not raw.endswith(b'\n') and fault=='short_write':
+                    self.data.extend(raw[:1])
+                    return 1
+                if self.ready and not raw.endswith(b'\n') and fault=='none_write':
+                    return None
+                self.data.extend(raw)
             return len(raw)
         def flush(self): pass
     out=Output();err=io.BytesIO()
@@ -97,6 +103,9 @@ def test_controlled_go_precedes_exactly_one_real_resolution(flat_consumer_case,m
     if fault in ('none','append'):
         assert code==0 and err.getvalue()==b'' and counts==['resolve'] and 0<len(raw)<=16384
         assert json.loads(raw)['results'][0]['source_event_sha256']==own[0]['source_event_sha256']
+    elif fault in ('short_write','none_write'):
+        assert code!=0 and b'mind_session_content_refused' in err.getvalue()
+        assert raw==(b'{' if fault=='short_write' else b'') and counts==['resolve']
     else:
         assert code!=0 and not raw and b'mind_session_content_refused' in err.getvalue()
         assert counts==([] if fault in ('missing_go','wrong_go','extra_go') else ['resolve'])

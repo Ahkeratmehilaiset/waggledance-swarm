@@ -253,16 +253,15 @@ class _LocalCandidateService:
                 try:
                     if self._stop.is_set():
                         break
-                    if not connection.poll(1):
-                        continue
-                    request = _local_candidate_request(_local_candidate_json(connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)))
-                    if request['schema'] == 'wd.mind-pipe-request.v2':
-                        response = self._owner.located_candidates(dict(request))
-                    else:
-                        response = self._owner.candidates(dict(request))
-                    response = _local_candidate_reply(response, request)
-                    if not self._stop.is_set():
-                        connection.send_bytes(_local_candidate_encode(response))
+                    if connection.poll(1):
+                        request = _local_candidate_request(_local_candidate_json(connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)))
+                        if request['schema'] == 'wd.mind-pipe-request.v2':
+                            response = self._owner.located_candidates(dict(request))
+                        else:
+                            response = self._owner.candidates(dict(request))
+                        response = _local_candidate_reply(response, request)
+                        if not self._stop.is_set():
+                            connection.send_bytes(_local_candidate_encode(response))
                 except Exception:
                     pass
                 except BaseException:

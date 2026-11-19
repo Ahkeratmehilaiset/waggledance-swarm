@@ -258,6 +258,38 @@ def test_synthetic_service_retains_connection_when_close_is_unproved(close_error
     assert service._uncertain_connection is connection
 
 
+@pytest.mark.parametrize('close_error', [OSError, KeyboardInterrupt])
+def test_synthetic_idle_connection_close_failure_stops_accepting(close_error):
+    class Owner:
+        calls = 0
+        def candidates(self, request):
+            self.calls += 1
+            return {}
+    owner = Owner()
+    service = preflight._LocalCandidateService(owner, 'synthetic')
+    class Connection:
+        def poll(self, timeout): return False
+        def close(self): raise close_error('synthetic connection close failure')
+    connection = Connection()
+    class Listener:
+        accepts = 0
+        closed = False
+        def accept(self):
+            self.accepts += 1
+            if self.accepts > 1:
+                raise AssertionError('accepted another connection after a close failure')
+            return connection
+        def close(self): self.closed = True
+    listener = Listener()
+    service._listener = listener
+    service._serve()
+    assert listener.accepts == 1
+    assert listener.closed
+    assert owner.calls == 0
+    assert service._uncertain_connection is connection
+    assert service.status()['state'] == 'HOLD'
+
+
 def test_synthetic_service_clean_connection_close_allows_stopped():
     service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
     evidence = {'connection_closed': False, 'listener_closed': False}

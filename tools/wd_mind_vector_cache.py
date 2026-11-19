@@ -293,7 +293,9 @@ class _Directory:
             for part in (None, *path.parts[1:]):
                 if part is not None:
                     current /= part
-                self.handles.append(self.native.open(current, 3, 0x80, 3, directory=True))
+                # FILE_LIST_DIRECTORY makes Windows enforce the no-delete-share
+                # lease for the directory itself, including rename attempts.
+                self.handles.append(self.native.open(current, 3, 0x81, 3, directory=True))
             # The operator provisions both directories: a private target alone
             # is insufficient when another identity can alter its parent.
             if len(self.handles) < 3:

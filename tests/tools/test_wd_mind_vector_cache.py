@@ -114,6 +114,43 @@ def test_preflight_busy_writer_is_not_cache_miss(private_dir):
     assert result.returncode != 0 and "CacheRefused" in result.stderr
 
 
+@pytest.mark.parametrize("which", ["parent", "target"])
+def test_directory_lease_blocks_cross_process_rename_until_closed(private_dir, which):
+    """Hold each provisioned directory against replacement during cache access."""
+    directory = private_dir.parent if which == "parent" else private_dir
+    renamed = directory.with_name(directory.name + "-renamed")
+    assert not renamed.exists()
+    program = (
+        "import os,sys\n"
+        "try: os.rename(sys.argv[1],sys.argv[2])\n"
+        "except OSError as exc:\n"
+        " print(exc.winerror); sys.exit(1)\n"
+    )
+    def rename():
+        return subprocess.run([sys.executable, "-c", program, str(directory), str(renamed)],
+                              capture_output=True, text=True, timeout=10)
+
+    try:
+        # Establish that the process can rename the synthetic directory in
+        # this environment before attributing a refusal to the held lease.
+        attempt = rename()
+        assert attempt.returncode == 0, attempt.stderr
+        assert renamed.is_dir() and not directory.exists()
+        os.rename(renamed, directory)
+        with cache._Directory(private_dir):
+            attempt = rename()
+            # Depending on which level is open, Windows can report either
+            # access denied or a sharing violation for the rejected rename.
+            assert attempt.returncode == 1 and attempt.stdout.strip() in ("5", "32")
+            assert directory.is_dir() and not renamed.exists()
+        attempt = rename()
+        assert attempt.returncode == 0, attempt.stderr
+        assert renamed.is_dir() and not directory.exists()
+    finally:
+        if renamed.exists() and not directory.exists():
+            os.rename(renamed, directory)
+
+
 @pytest.mark.parametrize("key", ["source_identity_sha256", "source_generation_sha256", "model_sha256",
                                   "policy_sha256", "projection_code_sha256"])
 def test_pin_change_refuses_whole_cache(private_dir, key):

@@ -68,6 +68,51 @@ try {{
     assert result['message'] == expected
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner close diagnostic parser')
+@pytest.mark.parametrize(('mode', 'accepted'), [
+    ('stopping', True), ('hold', True), ('not_stopping', False),
+    ('stopped', False), ('duplicate', False), ('wrong_reason', False),
+    ('extra_field', False), ('stderr', False),
+])
+def test_close_diagnostic_requires_stop_and_is_retained(mode, accepted):
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    diagnostic = {'authority': 'none', 'reason': 'BOUND_EXPIRED_WORKER_UNCONFIRMED',
+                  'schema': 'wd.mind-local-owner-close-diagnostic.v1'}
+    if mode == 'wrong_reason':
+        diagnostic['reason'] = 'STOPPED'
+    if mode == 'extra_field':
+        diagnostic['extra'] = 'invalid'
+    line = json.dumps(diagnostic, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+    wire = line * (2 if mode == 'duplicate' else 1)
+    path = str(helper).replace("'", "''")
+    reported = 'STOPPED' if mode == 'stopped' else 'HOLD' if mode == 'hold' else 'READY'
+    script = f"""
+$ErrorActionPreference='Stop'
+. '{path}'
+$bytes=[Convert]::FromBase64String('{base64.b64encode(wire).decode()}')
+$stream=New-Object System.IO.MemoryStream
+$process=[pscustomobject]@{{StandardOutput=[pscustomobject]@{{BaseStream=$stream}};HasExited=$false}}
+$record=@{{OutRead=$(if ('{mode}' -ceq 'stderr') {{$null}} else {{[System.Threading.Tasks.Task]::FromResult($bytes.Length)}});
+ ErrRead=$(if ('{mode}' -ceq 'stderr') {{[System.Threading.Tasks.Task]::FromResult($bytes.Length)}} else {{$null}});
+ OutBuffer=$bytes;Line=(New-Object System.IO.MemoryStream);Manifest='{'a'*64}';
+ DiagnosticsEnabled=$false;DiagnosticCount=0;ReportedState='{reported}';Process=$process;
+ Stopping=${str(mode != 'not_stopping').lower()};Invalid=$false;CloseDiagnostic=$null}}
+$global:WdMindManualOwnerRecords=@{{'{'a'*32}'=$record}}
+$handle=[pscustomobject]@{{Token='{'a'*32}'}}
+Update-WdMindManualOwner $record
+$result=if ($record.Invalid) {{$null}} else {{Get-WdMindManualOwnerCloseDiagnostic $handle}}
+[pscustomobject]@{{invalid=$record.Invalid;state=$record.State;reason=$result.reason;authority=$result.authority}} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, text=True, timeout=15, check=True)
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    assert result == {'invalid': not accepted, 'state': 'HOLD',
+                      'reason': 'BOUND_EXPIRED_WORKER_UNCONFIRMED' if accepted else None,
+                      'authority': 'none' if accepted else None}
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
 @pytest.mark.parametrize('shell', [
     str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),

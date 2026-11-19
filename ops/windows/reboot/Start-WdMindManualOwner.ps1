@@ -20,6 +20,7 @@
         -BridgePythonPath $BridgePythonPath -BridgePythonSha256 $BridgePythonSha256
     Get-WdMindManualOwnerStatus -Owner $owner
     Stop-WdMindManualOwner -Owner $owner
+    Get-WdMindManualOwnerCloseDiagnostic -Owner $owner
 #>
 $script:WdMindManualOwnerHelperText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
 
@@ -96,6 +97,13 @@ function Update-WdMindManualOwner {
                             '"manifest_sha256":"'+$Record.Manifest+'","schema":"wd.mind-local-owner-status.v1",'+
                             '"source_authentication":"UNKNOWN","state":"'+$state+'"}'
                         if($line -ceq $expected){$Record.ReportedState=$state;$matched=$true;break}
+                    }
+                    $closeDiagnostic='{"authority":"none","reason":"BOUND_EXPIRED_WORKER_UNCONFIRMED","schema":"wd.mind-local-owner-close-diagnostic.v1"}'
+                    if (-not $matched -and $line -ceq $closeDiagnostic -and $Record.Stopping -and
+                        $Record.ReportedState -cne 'STOPPED' -and $null -eq $Record.CloseDiagnostic) {
+                        $Record.CloseDiagnostic=[pscustomobject]@{schema='wd.mind-local-owner-close-diagnostic.v1';
+                            reason='BOUND_EXPIRED_WORKER_UNCONFIRMED';authority='none'}
+                        $matched=$true
                     }
                     if (-not $matched -and $Record.ContainsKey('DiagnosticsEnabled') -and $Record.DiagnosticsEnabled -and $Record.ReportedState -ceq 'HOLD') {
                         $reasons=@('BINDING_CHECK','CACHE_PREFLIGHT','WORKER_SETUP','HANDLER_BUILD','CACHE_RESULT',
@@ -261,7 +269,7 @@ function Start-WdMindManualOwner {
         $proc=New-Object Diagnostics.Process; $proc.StartInfo=$info
         $record=@{Process=$proc;Manifest=$ExpectedManifestHash.ToLowerInvariant();State='HOLD';ReportedState='';
             Stopping=$false;Invalid=$false;DiagnosticsEnabled=[bool]($IncludeStartupDiagnostics -or $IncludeWorkerStageDiagnostics);
-            WorkerDiagnosticsEnabled=[bool]$IncludeWorkerStageDiagnostics;DiagnosticCount=0;StartDiagnostic=$null;
+            WorkerDiagnosticsEnabled=[bool]$IncludeWorkerStageDiagnostics;DiagnosticCount=0;StartDiagnostic=$null;CloseDiagnostic=$null;
             OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);Line=(New-Object IO.MemoryStream);
             OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false}
         $handle=[pscustomobject]@{schema='wd.mind-manual-owner-handle.v1';Token=$token;authority='none'}
@@ -306,6 +314,14 @@ function Get-WdMindManualOwnerStartDiagnostic {
     if(-not $record.Invalid){Update-WdMindManualOwner $record}
     if($record.Invalid){throw 'mind_manual_status'}
     return $record.StartDiagnostic
+}
+
+function Get-WdMindManualOwnerCloseDiagnostic {
+    [CmdletBinding()] param([Parameter(Mandatory)] $Owner)
+    $record=Get-WdMindManualOwnerRecord $Owner
+    if(-not $record.Invalid){Update-WdMindManualOwner $record}
+    if($record.Invalid){throw 'mind_manual_status'}
+    return $record.CloseDiagnostic
 }
 
 function Stop-WdMindManualOwner {

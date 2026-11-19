@@ -277,6 +277,10 @@ def test_synthetic_owner_start_prewarm_then_candidates_account_source_reads(
     import json
 
     package, original, _proposals, old, clock, _response = flat_consumer_case
+    # The consumer fixture uses a dummy manifest pin; isolate the verified
+    # module loader from this source-budget test, whose real source gates and
+    # read-accounting assertions remain in use. Loader coverage is separate.
+    monkeypatch.setattr(runtime._PrivateBinding, '_snapshot_support', lambda _self: package)
     snapshot = dict(old, messages=dict(old['messages']))
     source = Path(snapshot['messages']['source_path'])
     sidecar = Path(snapshot['messages']['generation_path'])

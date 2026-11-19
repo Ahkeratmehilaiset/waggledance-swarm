@@ -59,8 +59,10 @@ class Adapter:
             os._exit(41)  # This synthetic actor exits itself; no external kill.
         return {'state': 'STARTING'}
     def status(self):
-        return {'state': 'STARTING' if mode == 'building' and not gate('build') else 'READY',
+        return {'state': 'NEW' if mode == 'building' and not gate('build') else 'READY',
                 'owned': True}
+    def start_diagnostic(self):
+        return {'reason': 'NONE', 'exception_type': 'NONE', 'authority': 'none'}
     def wait(self, *, timeout):
         assert timeout == 300
         return {'state': 'READY', 'owned': True}
@@ -104,10 +106,25 @@ def factory(**kw):
     assert kw['identifier_policy_bytes'] == policy
     assert kw['expected_identifier_policy_sha256'] == policy_sha
     assert kw['operator_approval_reference_sha256'] == 'c' * 64
-    return Adapter()
+    adapter = child._LocalManifestQuery(kw['lane'], 'synthetic', manifest, policy, policy_sha,
+        'c' * 64, 1, 0, 1, admission=kw.get('_admission'))
+    adapter._owner, adapter._state = Adapter(), 'READY'
+    if kw.get('_admission') is not None:
+        kw['_admission'].bind_owner(adapter)
+    return adapter
+def adapter_status(self):
+    if mode == 'building' and not gate('build'):
+        return {'state': 'STARTING', 'owned': True}
+    return self._owner.status()
+child._LocalManifestQuery.start = lambda self: self._owner.start()
+child._LocalManifestQuery.status = adapter_status
+child._LocalManifestQuery.wait = lambda self, **kw: self._owner.wait(**kw)
+child._LocalManifestQuery.query = lambda self: self._owner.query()
+child._LocalManifestQuery.finalize_result = lambda self: self._owner.finalize_result()
 def service_factory(**kw):
     assert kw['enabled'] is True
-    assert isinstance(kw['owner'], Adapter)
+    assert type(kw['owner']) is child._LocalManifestQuery
+    assert isinstance(kw['owner']._owner, Adapter)
     assert kw['pipe_name'] == process.local_candidate_pipe_name(manifest_sha256=manifest)
     return Service()
 child._AUDIT_ROOT = slot  # Explicit synthetic root; never the installed root.

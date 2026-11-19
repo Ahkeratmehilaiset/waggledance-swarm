@@ -1685,6 +1685,47 @@ def test_reset_interruption_keeps_original_if_reporting_fails(monkeypatch, notif
     assert isinstance(exc.value.__cause__, notification_failure)
 
 
+@pytest.mark.parametrize('marker_state', ['missing', 'reserved', 'damaged'])
+@pytest.mark.parametrize('reason', ['observed', 'identity', 'unknown'])
+def test_synthetic_production_observation_refusals_are_fixed_and_path_free(
+        tmp_path, monkeypatch, capsys, marker_state, reason):
+    root, runtime, marker = _paths(tmp_path)
+    interpreter = runtime / 'synthetic-interpreter.exe'
+    interpreter.write_bytes(b'synthetic')
+    initial = {'missing': None, 'reserved': child._OWNER_RESERVATION_MAGIC + b'R',
+               'damaged': b'synthetic-damaged'}[marker_state]
+    if initial is not None:
+        marker.write_bytes(initial)
+        old = time.time_ns() - 20_000_000_000
+        os.utime(marker, ns=(old, old))
+    store = tmp_path / 'synthetic-bundles'
+    commit, pin = 'a' * 40, 'b' * 64
+    (store / commit).mkdir(parents=True)
+    monkeypatch.setattr(admin, '_BUNDLE_STORE', store)
+    monkeypatch.setattr(admin, '_FIXED_PRODUCTION_ROOT', root)
+    monkeypatch.setattr(child, '_AUDIT_ROOT', root)
+    monkeypatch.setattr(admin, '_validate_bootstrap_loader', lambda _root: None)
+    monkeypatch.setattr(admin, '_current_binding', lambda *_: (
+        {'interpreter_status': 'VERIFIED', 'interpreter_root': str(runtime),
+         'interpreter': str(interpreter)}, lambda: None))
+    monkeypatch.setattr(admin, '_observe_windows', lambda: (
+        time.time_ns() - 1_000_000_000, ((os.getpid() + 1, str(interpreter)),)))
+    if reason != 'observed':
+        def refuse(*_args, **_kwargs):
+            raise admin.ReservationAdminRefused(
+                'runtime_identity_invalid' if reason == 'identity' else 'synthetic private detail')
+        monkeypatch.setattr(admin, '_no_runtime_process', refuse)
+    operation = 'create' if marker_state == 'missing' else 'reset'
+    assert admin.main([operation, '--source-commit', commit, '--manifest-sha256', pin]) == 2
+    captured = capsys.readouterr()
+    expected = {'observed': 'owner_marker_runtime_process_observed',
+                'identity': 'owner_marker_runtime_identity_unknown',
+                'unknown': 'owner_marker_refused'}[reason]
+    assert captured.err.strip() == expected
+    assert '_complete' not in captured.out
+    assert not marker.exists() if initial is None else marker.read_bytes() == initial
+
+
 def test_production_entry_and_root_refuse_before_mutation(tmp_path, monkeypatch, capsys):
     root, runtime, marker = _paths(tmp_path)
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)

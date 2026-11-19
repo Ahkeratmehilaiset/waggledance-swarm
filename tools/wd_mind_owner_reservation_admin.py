@@ -1089,6 +1089,8 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
     except (_AdminReason, ReservationAdminRefused) as exc:
         reason = str(exc)
+        reason = {'runtime_process_observed': 'RUNTIME_PROCESS_OBSERVED',
+                  'runtime_identity_invalid': 'RUNTIME_IDENTITY_UNKNOWN'}.get(reason, reason)
         safe = _REASONS | {'RUNTIME_PROCESS_OBSERVED', 'RUNTIME_IDENTITY_UNKNOWN',
                            'RESET_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN',
                            'CREATE_PUBLICATION_UNCERTAIN;CLEANUP_UNCERTAIN'}

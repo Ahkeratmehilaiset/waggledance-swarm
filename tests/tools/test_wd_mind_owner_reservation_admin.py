@@ -388,6 +388,51 @@ def test_cleanup_refuses_different_file_identity_without_deleting_it(tmp_path):
     assert (root / 'owned-staging').read_bytes() == b'owned'
 
 
+def test_owned_staging_denies_a_second_writer(tmp_path):
+    root, _, marker = _paths(tmp_path)
+    staging = root / (marker.name + '.init-' + 'a' * 32)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    invalid_handle = wintypes.HANDLE(-1).value
+    with admin._pin_directory_chain(root) as directory_handle:
+        fd = admin._relative_create(directory_handle, staging.name)
+        writer = None
+        try:
+            info = os.fstat(fd)
+            # Include DELETE sharing: the retained staging handle requests
+            # DELETE for its eventual relative rename, so omitting it would
+            # refuse this open for the wrong reason.
+            writer = create(str(staging), 0x40000000, 0x7, None, 3, 0x80, None)
+            error = ctypes.get_last_error()
+            assert writer == invalid_handle and error == 32  # ERROR_SHARING_VIOLATION
+        finally:
+            if writer not in (None, invalid_handle):
+                assert kernel.CloseHandle(writer)
+            admin._discard_owned_temp(fd, staging, (info.st_dev, info.st_ino))
+            os.close(fd)
+    assert not marker.exists() and not staging.exists()
+
+
+def test_staging_readback_rejects_corruption_before_publication(tmp_path, monkeypatch):
+    root, _, marker = _paths(tmp_path)
+    real_fsync = os.fsync
+    def corrupt_after_flush(fd):
+        real_fsync(fd)
+        os.lseek(fd, 0, os.SEEK_END)
+        assert os.write(fd, b'!') == 1
+    monkeypatch.setattr(admin.os, 'fsync', corrupt_after_flush)
+    with admin._pin_directory_chain(root) as directory_handle:
+        with pytest.raises(ValueError, match='staging_content_changed'):
+            admin._atomic_reserved(marker, directory_handle, b'C')
+    assert not marker.exists()
+    assert not list(root.glob(marker.name + '.init-*'))
+
+
 def test_fstat_failure_after_relative_create_closes_and_removes_owned_staging(tmp_path, monkeypatch):
     root, runtime, marker = _paths(tmp_path)
     captured = []
@@ -1236,6 +1281,10 @@ def test_image_exit_proof_is_limited_to_image_error_31_or_5(error):
 
 @pytest.mark.parametrize('pid,parent,name,peb,protection,native_pid,native_parent,query_ok,expected', [
     (4, 0, 'System', None, 0x72, 4, 0, True, True),
+    (22, 4, 'Secure System', None, 0x72, 22, 4, True, True),
+    (22, 4, 'Secure System', 1, 0x72, 22, 4, True, False),
+    (22, 4, 'Secure System', None, 0x71, 22, 4, True, False),
+    (22, 5, 'Secure System', None, 0x72, 22, 5, True, False),
     (20, 4, 'Registry', None, 0x72, 20, 4, True, True),
     (21, 4, 'Memory Compression', None, 0x72, 21, 4, True, True),
     (0, 0, 'Idle', None, 0x72, 0, 0, True, False),

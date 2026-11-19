@@ -181,7 +181,7 @@ def _process_snapshot(kernel):
 
 def _verified_kernel_process(process, pid, parent, name):
     """Use facts from the same opened process; a bare name is insufficient."""
-    if name not in ('System', 'Registry', 'Memory Compression') or (pid != 4 and parent != 4):
+    if name not in ('System', 'Secure System', 'Registry', 'Memory Compression') or (pid != 4 and parent != 4):
         return False
     ntdll = ctypes.WinDLL('ntdll', use_last_error=True)
     query = ntdll.NtQueryInformationProcess
@@ -467,7 +467,7 @@ def _relative_create(directory_handle, leaf, *, _scope=_SYNTHETIC_SCOPE, verify_
     try:
         if verify_binding is not None: verify_binding()
         status = native(ctypes.byref(out), 0xc0110080, ctypes.byref(attributes), ctypes.byref(status_block),
-            None, 0x80, 3, 2, 0x00200060, None, 0)  # FILE_CREATE, no reparse, synchronous
+            None, 0x80, 1, 2, 0x00200060, None, 0)  # FILE_SHARE_READ only; FILE_CREATE, no reparse
         if status != 0:
             raise ValueError('relative_create_refused')
         fd = msvcrt.open_osfhandle(out.value, os.O_RDWR | os.O_BINARY | getattr(os, 'O_NOINHERIT', 0))
@@ -548,6 +548,11 @@ def _atomic_reserved(path, directory_handle, state=b'R', *, _scope=_SYNTHETIC_SC
         if os.write(fd, raw) != len(raw):
             raise ValueError('write')
         os.fsync(fd)
+        # Check the complete content through the same handle used to write and
+        # publish it; a different path lookup would not prove staging bytes.
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.read(fd, len(raw) + 1) != raw:
+            raise ValueError('staging_content_changed')
         absent._plain(tmp, directory=False)
         by_path = os.lstat(tmp)
         if ((by_path.st_dev, by_path.st_ino) != identity or by_path.st_nlink != 1

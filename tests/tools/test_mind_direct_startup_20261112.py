@@ -419,7 +419,7 @@ $selected=Select-WdMindContentNativeArguments -CliPath 'C:\\fake.exe' -Arguments
 @pytest.mark.parametrize('case', ['default_native', 'activated_native', 'configured_managed', 'invalid_fleet'])
 def test_actual_startup_gate_preserves_status_unless_native_content_is_requested(filename, case):
     source = (REBOOT / filename).read_text(encoding='utf-8-sig')
-    start = source.index('$mindContentOwner=$null;$mindContentRequested=$false;')
+    start = source.index('$mindContentOwner=$null;$mindStatusOwner=$null;$mindContentRequested=$false;')
     marker = '$mindOriginalPrompt = $prompt' if filename == 'start-wd-tools-consumer.ps1' else '$mindOriginalStartupPrompt = $startupPrompt'
     block = source[start:source.index(marker, start)]
     tools = filename == 'start-wd-tools-consumer.ps1'
@@ -436,7 +436,7 @@ $files=[ordered]@{{'wd-fleet.json'='{fleet}'}}
 if (${str(config).lower()}) {{$files['wd-mind-startup-config.json']='synthetic'}}
 $deployment=[pscustomobject]@{{files=[pscustomobject]$files}}
 $snapshotText='{{"files":{{"Invoke-WdMindStartupRead.ps1":"' + ('B'*64) + '"}}}}'
-function Start-WdMindAsyncStartupController {{param([bool]$Enabled,[bool]$Native,[string]$BundleRoot,[string]$ExpectedManifestHash,[string]$ExpectedFleetSha256,[string]$Lane) $script:startCalls++; return 'synthetic-owner'}}
+function Start-WdMindAsyncStartupController {{param([bool]$Enabled,[bool]$Native,[string]$BundleRoot,[string]$ExpectedManifestHash,[string]$ExpectedFleetSha256,[string]$Lane,[string]$ReadKind) $script:startCalls++; return 'synthetic-owner'}}
 function Assert-LanePathWithoutReparse {{param($Path,$TrustedRoot,$ExpectedType)}}
 function Assert-FilePathWithoutReparse {{param($Candidate,$Root)}}
 function Read-Utf8LaneSnapshot {{param($Path) if($Path -like '*Invoke-WdMindStartupRead.ps1'){{[pscustomobject]@{{Hash=('B'*64);Text=$script:helperText}}}}else{{[pscustomobject]@{{Hash=('A'*64);Text=$snapshotText}}}}}}
@@ -457,7 +457,7 @@ $read={'$toolsMindStartupRead' if tools else '$mindStartupRead'}
     requested = case in ('activated_native', 'invalid_fleet')
     started = case == 'activated_native'
     assert value['requested'] is requested
-    assert value['started'] == int(started) and value['statusCalls'] == int(not requested)
+    assert value['started'] == 2 * int(started) and value['statusCalls'] == int(not requested)
     assert value['reason'] == ('deferred_for_content' if requested else 'synthetic')
 
 
@@ -1192,3 +1192,201 @@ def test_discarded_duplicate_fields_never_reach_context(tmp_path, location):
     assert 'synthetic-private-duplicate-never-deliver' not in json.dumps(result)
     if result['outcome'] == 'success':
         assert json.loads(result['view_json']) == _view()
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('resume', [False, True])
+@pytest.mark.parametrize('age', [30, 899, 901, -30])
+def test_status_argv_preserves_snapshot_and_rechecks_age(tmp_path, filename, resume, age):
+    lane = 'codex-tools-1' if filename == 'start-wd-tools-consumer.ps1' else 'codex-lead-1'
+    fleet = 'c' * 64
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions(filename, [
+        'Test-WdMindCommandLineFits', 'Select-WdMindStatusNativeArguments']) + f'''
+$now=[DateTimeOffset]::UtcNow
+$v=[ordered]@{{schema='wd.mind-direct-status.v1';authority='none';lane='{lane}';fleet_sha256='{fleet}';
+ as_of_utc=$now.AddSeconds(-1).ToString('o');observation_status='OBSERVED';
+ facts=@(@{{observed_utc=$now.AddSeconds({-age}).ToString('o');event_ref=('a'*64)}})}}
+$json=ConvertTo-Json -InputObject $v -Compress -Depth 16
+$frame=[pscustomobject]@{{controller_schema='wd.mind-status-controller.v1';complete_verified=$true;
+ lane='{lane}';fleet_sha256='{fleet}';outcome='success';authority='none';delivery='NOT_PROVEN';receipt='NOT_PROVEN';
+ record_written=$false;view_json=$json;view_sha256=('b'*64);delivery_as_of_utc=$now.ToString('o');
+ delivery_age_seconds=30;delivery_lane_ages=[pscustomobject]@{{'fable-5'=[pscustomobject]@{{event_utc=$now.AddSeconds(-901).ToString('o')}}}};
+ delivery_source_max_event=[pscustomobject]@{{event_utc=$now.AddSeconds(-30).ToString('o')}}}}
+$g=' prior unknown status ';$a=@({'"resume",' if resume else ''}('BASELINE'+$g))
+$r=Select-WdMindStatusNativeArguments -CliPath 'C:\\fake.exe' -Arguments $a -CompleteVerified $true `
+ -Read $frame -Lane '{lane}' -FleetSha256 '{fleet}' -PreviousGuidance $g
+$r | ConvertTo-Json -Depth 20 -Compress
+'''
+    value = _run_startup_script(script)
+    assert value['status'] == ('prepared' if age in (30, 899) else 'UNKNOWN')
+    text = value['arguments'][-1]
+    if age in (30, 899):
+        assert 'receipt NOT_PROVEN' in text and 'session delivery NOT_PROVEN' in text
+        assert 'claim.expired is valid only at the snapshot as_of' in text
+        assert '"freshness":"UNKNOWN"' in text and '"delivery_age_seconds":' in text
+        assert 'prior unknown status' not in text
+    else:
+        assert 'prior unknown status' in text
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('fault', ['valid', 'wrong_lane', 'wrong_fleet', 'wrong_hash', 'claims_receipt', 'tampered_controller'])
+def test_status_async_worker_rejects_bad_pins_and_frames(tmp_path, filename, fault):
+    lane = 'codex-tools-1' if filename == 'start-wd-tools-consumer.ps1' else 'codex-lead-1'
+    case = _async_controller_bundle(tmp_path, lane=lane)
+    frame = dict(controller_schema='wd.mind-status-controller.v1', complete_verified=True,
+                 manifest_sha256='m'*64, fleet_sha256=case['fleet'], lane=lane, outcome='success',
+                 reason='status_projection', authority='none', delivery='NOT_PROVEN', receipt='NOT_PROVEN',
+                 record_written=False, view_json='{}', view_sha256=hashlib.sha256(b'{}').hexdigest(),
+                 delivery_as_of_utc='2026-11-19T00:00:00.000000Z', delivery_age_seconds=None,
+                 delivery_lane_ages={}, delivery_source_max_event=None)
+    if fault == 'wrong_lane': frame['lane'] = 'fable-5'
+    if fault == 'wrong_fleet': frame['fleet_sha256'] = '0'*64
+    if fault == 'wrong_hash': frame['view_sha256'] = '0'*64
+    if fault == 'claims_receipt': frame['record_written'] = True
+    payload = base64.b64encode(json.dumps(frame, separators=(',', ':')).encode()).decode()
+    source = ("param([switch]$Enabled,[string]$BundleRoot,[string]$ExpectedManifestHash,[string]$Lane,"
+              "[int]$ControllerPid,[string]$ControllerStartUtc,[int]$DeadlineMilliseconds) "
+              "$x=[Text.Encoding]::ASCII.GetString([Convert]::FromBase64String('" + payload +
+              "')).Replace(('m'*64),$ExpectedManifestHash.ToLowerInvariant());"
+              "$b=[Text.Encoding]::ASCII.GetBytes($x);[Console]::OpenStandardOutput().Write($b,0,$b.Length)")
+    target = case['root'] / 'Start-WdMindStatusController.ps1'
+    target.write_bytes(source.encode())
+    manifest_path = case['root'] / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'][target.name] = hashlib.sha256(target.read_bytes()).hexdigest().upper()
+    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    manifest_path.write_bytes(raw)
+    if fault == 'tampered_controller': target.write_text('exit 0', encoding='ascii')
+    pin = hashlib.sha256(raw).hexdigest()
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions(filename, [
+        'Start-WdMindAsyncStartupController', 'Get-WdMindAsyncStartupResult']) + f'''
+$owner=Start-WdMindAsyncStartupController -Enabled $true -Native $true -BundleRoot {_literal(case['root'])} `
+ -ExpectedManifestHash '{pin}' -ExpectedFleetSha256 '{case['fleet']}' -Lane '{lane}' -ReadKind status -DeadlineMilliseconds 15000
+$until=[DateTime]::UtcNow.AddSeconds(15)
+while(-not $owner.state.completed -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+if(-not $owner.state.completed){{throw 'status worker did not settle'}}
+$r=Get-WdMindAsyncStartupResult -Owner $owner
+@{{complete=$r.complete_verified;read=$r.read}} | ConvertTo-Json -Depth 20 -Compress
+'''
+    value = _run_startup_script(script, timeout=30)
+    assert value['complete'] is (fault == 'valid')
+    assert (value['read'] is not None) is (fault == 'valid')
+
+
+def _real_status_bundle_for_launcher(tmp_path, lane, *, hold=False):
+    # Real pinned controller + status helper, synthetic fleet/log/wrapper only.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('synthetic_status_cases', REBOOT.parents[2] / 'tests/tools/test_wd_mind_status_controller.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.LANE = lane
+    root, _, fleet, started, release = module.bundle(tmp_path, hold=hold)
+    controller = root / 'Start-WdMindStatusController.ps1'
+    controller.write_bytes((REBOOT / controller.name).read_bytes())
+    config = dict(schema='wd.mind-startup-config.v1', enabled=True, authority='none',
+                  identifier_policy_path=str(tmp_path / 'synthetic-policy.json'),
+                  identifier_policy_sha256='a'*64, approval_reference_sha256='b'*64)
+    config_bytes = json.dumps(config, separators=(',', ':')).encode()
+    (root / 'wd-mind-startup-config.json').write_bytes(config_bytes)
+    manifest_path = root / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'][controller.name] = hashlib.sha256(controller.read_bytes()).hexdigest()
+    manifest['files']['wd-mind-startup-config.json'] = hashlib.sha256(config_bytes).hexdigest()
+    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    manifest_path.write_bytes(raw)
+    return root, hashlib.sha256(raw).hexdigest(), fleet, started, release
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('resume', [False, True])
+def test_real_status_controller_prepares_before_first_or_resume_argv(tmp_path, filename, resume):
+    lane = 'codex-tools-1' if filename == 'start-wd-tools-consumer.ps1' else 'codex-lead-1'
+    root, pin, fleet, _, _ = _real_status_bundle_for_launcher(tmp_path, lane)
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions(filename, [
+        'Start-WdMindAsyncStartupController', 'Get-WdMindAsyncStartupResult',
+        'Test-WdMindCommandLineFits', 'Select-WdMindStatusNativeArguments']) + f'''
+$owner=Start-WdMindAsyncStartupController -Enabled $true -Native $true -BundleRoot {_literal(root)} `
+ -ExpectedManifestHash '{pin}' -ExpectedFleetSha256 '{fleet}' -Lane '{lane}' -ReadKind status -DeadlineMilliseconds 15000
+$until=[DateTime]::UtcNow.AddSeconds(15)
+while(-not $owner.state.completed -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+if(-not $owner.state.completed){{throw 'status worker did not settle'}}
+$r=Get-WdMindAsyncStartupResult -Owner $owner;$g=' prior unknown status '
+$a=@({'"resume",' if resume else ''}('BASELINE'+$g))
+$selected=Select-WdMindStatusNativeArguments -CliPath 'C:\\fake.exe' -Arguments $a `
+ -CompleteVerified ([bool]$r.complete_verified) -Read $r.read -Lane '{lane}' -FleetSha256 '{fleet}' -PreviousGuidance $g
+@{{result=$r;selected=$selected}} | ConvertTo-Json -Depth 20 -Compress
+'''
+    value = _run_startup_script(script, timeout=30)
+    assert value['result']['complete_verified'] is True
+    assert value['selected']['status'] == 'prepared'
+    text = value['selected']['arguments'][-1]
+    assert 'a'*64 in text and 'delivery_age_seconds' in text
+    assert 'receipt NOT_PROVEN' in text and 'session delivery NOT_PROVEN' in text
+    assert 'prior unknown status' not in text
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+def test_real_status_slow_reader_does_not_wait_and_discards_late_result(tmp_path, filename):
+    lane = 'codex-tools-1' if filename == 'start-wd-tools-consumer.ps1' else 'codex-lead-1'
+    root, pin, fleet, started, release = _real_status_bundle_for_launcher(tmp_path, lane, hold=True)
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions(filename, [
+        'Start-WdMindAsyncStartupController', 'Get-WdMindAsyncStartupResult']) + f'''
+$owner=Start-WdMindAsyncStartupController -Enabled $true -Native $true -BundleRoot {_literal(root)} `
+ -ExpectedManifestHash '{pin}' -ExpectedFleetSha256 '{fleet}' -Lane '{lane}' -ReadKind status -DeadlineMilliseconds 15000
+$until=[DateTime]::UtcNow.AddSeconds(12)
+try {{
+ while(-not (Test-Path -LiteralPath {_literal(started)}) -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+ if(-not (Test-Path -LiteralPath {_literal(started)})){{throw 'synthetic status reader did not start'}}
+ $clock=[Diagnostics.Stopwatch]::StartNew();$r=Get-WdMindAsyncStartupResult -Owner $owner;$elapsed=$clock.ElapsedMilliseconds
+}} finally {{[IO.File]::WriteAllText({_literal(release)},'release')}}
+$until=[DateTime]::UtcNow.AddSeconds(12)
+while(-not $owner.state.completed -and [DateTime]::UtcNow -lt $until){{Start-Sleep -Milliseconds 20}}
+@{{complete=$r.complete_verified;read=$r.read;elapsed=$elapsed;finished=$owner.state.completed;late=$owner.state.ready}} | ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script, timeout=30)
+    assert value['elapsed'] < 500 and value['complete'] is False and value['read'] is None
+    assert value['finished'] is True and value['late'] is False
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('resume', [False, True])
+def test_actual_native_poll_includes_status_and_content_separately(filename, resume):
+    tools = filename == 'start-wd-tools-consumer.ps1'
+    lane = 'codex-tools-1' if tools else 'codex-lead-1'
+    read, _, fleet, _ = _prepared_content_fixture(lane)
+    payload = base64.b64encode(json.dumps(read).encode()).decode()
+    source = (REBOOT / filename).read_text(encoding='utf-8-sig')
+    start = source.rindex('if ($mindContentRequested) {')
+    end = 'Invoke-WdNativeToolsTerminal -Saved' if tools else 'if ($nativeLead) {'
+    block = source[start:source.index(end, start)]
+    arguments = '$nativeToolsArguments' if tools else '$launchArguments'
+    script = 'Set-StrictMode -Version Latest\n' + _startup_functions(filename, [
+        'Get-WdMindAsyncStartupResult', 'Test-WdMindCommandLineFits',
+        'Select-WdMindStatusNativeArguments', 'Select-WdMindContentNativeArguments']) + f'''
+$now=[DateTimeOffset]::UtcNow
+$view=[ordered]@{{schema='wd.mind-direct-status.v1';lane='{lane}';fleet_sha256='{fleet}';
+ as_of_utc=$now.AddSeconds(-1).ToString('o');observation_status='OBSERVED';facts=@(@{{observed_utc=$now.AddSeconds(-30).ToString('o')}})}}
+$status=[pscustomobject]@{{controller_schema='wd.mind-status-controller.v1';complete_verified=$true;lane='{lane}';fleet_sha256='{fleet}';
+ outcome='success';authority='none';delivery='NOT_PROVEN';receipt='NOT_PROVEN';record_written=$false;
+ view_json=(ConvertTo-Json -InputObject $view -Compress -Depth 16);view_sha256=('b'*64);delivery_as_of_utc=$now.ToString('o');
+ delivery_age_seconds=30;delivery_lane_ages=[pscustomobject]@{{}};delivery_source_max_event=$null}}
+$content=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')) | ConvertFrom-Json
+function Make-Owner($x){{[pscustomobject]@{{state=[hashtable]::Synchronized(@{{ready=$true;closed=$false;read=$x;worker='DONE'}});
+ clock=[Diagnostics.Stopwatch]::StartNew();deadline=15000;closeSignal=(New-Object Threading.ManualResetEvent($false))}}}}
+$mindStatusOwner=Make-Owner $status;$mindContentOwner=Make-Owner $content
+$mindContentRequested=$true;$mindExpectedFleet='{fleet}';$agent='{lane}';$Agent='{lane}'
+$mindStartupGuidance=' prior unknown status ';$cliPath='C:\\fake.exe';$codexCommand='C:\\fake.exe'
+{arguments}=@({'"resume",' if resume else ''}('BASELINE'+$mindStartupGuidance))
+{block}
+@{{arguments={arguments};status=$statusSelected.status;content=$mindSelected.argv;delivery=$statusSelected.delivery}} | ConvertTo-Json -Depth 20 -Compress
+'''
+    value = _run_startup_script(script)
+    assert value['status'] == 'prepared' and value['content'] == 'included'
+    assert value['delivery'] == 'NOT_PROVEN'
+    text = value['arguments'][-1]
+    assert 'prior unknown status' not in text
+    assert 'END STATUS DATA.' in text and read['fragment'] in text

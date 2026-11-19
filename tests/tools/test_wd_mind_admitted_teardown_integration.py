@@ -8,6 +8,7 @@ from pathlib import Path
 import struct
 import subprocess
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -127,7 +128,7 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
     monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', lambda **kwargs: location)
     monkeypatch.setattr(runtime, '_worker_factory_preflight', lambda *unused: child)
     monkeypatch.setattr(runtime, '_fixed_worker_audit_lock', lambda: Path(args['lock-file']))
-    snapshot = {'projection_sha256':'b' * 64}
+    snapshot = {'projection_sha256':'b' * 64, 'messages': {'end_cursor': SimpleNamespace(offset=1)}}
     fleet = json.dumps({'lanes':[{'agent':'codex-lead-1'}],
                         'tools_supervisor':{'agent':'codex-tools-1'}}).encode()
     binding = runtime._PrivateBinding(snapshot, staged_graceful['bundle_root'],

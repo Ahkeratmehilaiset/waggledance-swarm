@@ -527,6 +527,13 @@ def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None,
 # Startup limits source bytes returned by unbuffered bridge-log reads. This is
 # independent of the result-frame bound and does not bound other file IO.
 _STARTUP_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
+# Startup re-checks the frozen prefix by fixed-size segments: the one whole pass
+# also builds a table of segment digests, and the later checks re-hash only the
+# segments that hold a selected row plus the newest one. None instead of a size
+# keeps a whole-prefix re-hash at every check (the strict control mode).
+_STARTUP_SOURCE_SEGMENT_BYTES = 1024 * 1024
+_SELECTED_MAX_CANDIDATES = 3
+_SELECTED_MAX_ROW_BYTES = 4 * 1024 * 1024
 
 
 class _SourceReadBudget:
@@ -565,9 +572,24 @@ class _SelectedReadDeadline(Exception):
     pass
 
 
-def _preflight_selected_source_prefix(budget, offset):
+def _selected_segment_check_bytes(segment_bytes):
+    """Most source bytes one segment check of the selected rows can re-hash."""
+    from tools import wd_mind_source_segments as segments
+    return segments.max_check_bytes(segment_bytes, _SELECTED_MAX_CANDIDATES, _SELECTED_MAX_ROW_BYTES)
+
+
+def _preflight_selected_source_prefix(budget, offset, segment_bytes=None):
+    if segment_bytes is None:
+        # One boundary byte, the initial whole pass and three whole-prefix checks.
+        needed = 1 + 4 * offset
+    else:
+        # One boundary byte, the one whole pass, the newest segment once, two
+        # segment checks, and both reads of every selected row with its boundary
+        # byte: with this much left the single query cannot run out of budget.
+        needed = (1 + offset + segment_bytes + 2 * _selected_segment_check_bytes(segment_bytes)
+                  + 2 * _SELECTED_MAX_CANDIDATES * (_SELECTED_MAX_ROW_BYTES + 1))
     try:
-        budget.require(1 + 4 * offset)
+        budget.require(needed)
     except ValueError as exc:
         if type(exc) is ValueError:
             raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget') from None
@@ -644,8 +666,8 @@ def _selected_pin_module(root, files, module_name, relative):
 
 def _pin_selected_resolver_code(bundle_root, expected_manifest_sha256):
     root, files = _selected_manifest(bundle_root, expected_manifest_sha256)
-    _selected_pin_module(root, files, 'tools.wd_mind_retained_query',
-                         'tools-bootstrap/tools/wd_mind_retained_query.py')
+    for name in ('wd_mind_retained_query', 'wd_mind_source_segments'):
+        _selected_pin_module(root, files, 'tools.' + name, 'tools-bootstrap/tools/' + name + '.py')
 
 
 def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
@@ -665,7 +687,8 @@ def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
     for name in ('wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
                  'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process',
                  'wd_mind_absent_generation_prefix_readonly', 'wd_mind_startup_content',
-                 'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind'):
+                 'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind',
+                 'wd_mind_source_segments'):
         _selected_pin_module(root, files, 'tools.' + name, 'tools-bootstrap/tools/' + name + '.py')
     _selected_pin_module(root, files, 'waggledance.core.bridge_log_reader',
                          'tools-bootstrap/waggledance/core/bridge_log_reader.py')
@@ -677,7 +700,8 @@ def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
         raise ValueError('package_missing')
     for name in ('wd_mind_absent_generation_prefix_readonly', 'wd_mind_content_query_readonly',
                  'wd_mind_startup_content', 'wd_mind_content_snapshot_package',
-                 'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process'):
+                 'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process',
+                 'wd_mind_source_segments'):
         qualified = 'tools.' + name
         if qualified in sys.modules:
             if getattr(parent, name, None) is not sys.modules[qualified]:
@@ -702,14 +726,16 @@ def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
 class _SelectedRowResolver:
     """Process-local source verifier. Pipe peers supply locations, never text or pins."""
     __slots__ = ('_root', '_pin', '_policy_sha', '_approval_sha', '_controls', '_runtime_controls',
-                 '_cursor', '_prefix_sha', '_private', '_pid', '_lock', '_closed', '_source_budget')
+                 '_cursor', '_prefix_sha', '_private', '_pid', '_lock', '_closed', '_source_budget',
+                 '_generation')
 
-    def __init__(self, root, pin, policy_sha, approval_sha, controls, runtime_controls, cursor, prefix_sha, private, source_budget=None):
+    def __init__(self, root, pin, policy_sha, approval_sha, controls, runtime_controls, cursor, prefix_sha, private,
+                 source_budget=None, generation=None):
         self._root, self._pin = root, pin
         self._policy_sha, self._approval_sha = policy_sha, approval_sha
         self._controls, self._runtime_controls = controls, runtime_controls
         self._cursor, self._prefix_sha, self._private = cursor, prefix_sha, private
-        self._source_budget = source_budget
+        self._source_budget, self._generation = source_budget, generation
         self._pid, self._lock, self._closed = os.getpid(), threading.Lock(), False
 
     def __repr__(self):
@@ -747,6 +773,25 @@ class _SelectedRowResolver:
                 'decision': {'source_prefix': {'sha256':self._prefix_sha}},
                 'policy':reader._message_policy(policy, None), 'roster':reader._roster(roster),
                 'private':self._private}
+
+    def _prefix_check(self, context, candidates=()):
+        """Fence and re-hash the frozen prefix: all of it, or with a segment table only the segments in use."""
+        if self._generation is None:
+            from tools import wd_mind_retained_query as retained
+            if self._source_budget is not None:
+                self._source_budget.reserve(self._cursor.offset)
+            retained._source_check(context)
+            return
+        from tools import wd_mind_content_query_readonly as reader
+        bridge, absent = reader._narrow_dependencies()
+        source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
+        spans = [(item['source_offset'], item['source_length']) for item in candidates]
+        budget, cursor = self._source_budget, self._cursor
+        with bridge._open_log(source) as stream:
+            reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            self._generation.check_rows(stream, spans,
+                                        read=lambda handle, size: _bounded_source_read(handle, budget, size))
+            reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
 
     def _selected(self, context, candidates, lane, scope, when):
         from tools import wd_mind_content_query_readonly as reader
@@ -821,7 +866,8 @@ class _SelectedRowResolver:
             if (type(frame) is not dict or set(frame) != {'schema','nonce','lane','scope','status','candidates'}
                     or frame['schema'] != 'wd.mind-pipe-candidates.v2' or frame['nonce'] != expected_nonce
                     or frame['lane'] != lane or frame['scope'] != scope or frame['status'] != 'CANDIDATES'
-                    or type(frame['candidates']) is not list or not 1 <= len(frame['candidates']) <= 3):
+                    or type(frame['candidates']) is not list
+                    or not 1 <= len(frame['candidates']) <= _SELECTED_MAX_CANDIDATES):
                 raise ValueError('frame')
             seen = set()
             for item in frame['candidates']:
@@ -830,7 +876,8 @@ class _SelectedRowResolver:
                         or any(type(item[key]) is not str or _SHA256.fullmatch(item[key]) is None
                                for key in ('ref_sha256','doc_id_sha256','source_event_sha256'))
                         or type(item['source_offset']) is not int or item['source_offset'] < 0
-                        or type(item['source_length']) is not int or not 0 < item['source_length'] <= 4 * 1024 * 1024
+                        or type(item['source_length']) is not int
+                        or not 0 < item['source_length'] <= _SELECTED_MAX_ROW_BYTES
                         or type(item['chunk_index']) is not int or item['chunk_index'] < 0):
                     raise ValueError('candidate')
                 triple = (item['ref_sha256'], item['doc_id_sha256'], item['source_event_sha256'])
@@ -849,16 +896,11 @@ class _SelectedRowResolver:
                 if time.monotonic() >= deadline_monotonic:
                     raise _SelectedReadDeadline()
             self._check_controls(); deadline()
-            from tools import wd_mind_retained_query as retained
             context = self._context()
-            if self._source_budget is not None:
-                self._source_budget.reserve(self._cursor.offset)
-            retained._source_check(context); deadline()
+            self._prefix_check(context, candidates); deadline()
             first = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
             self._check_controls(); deadline()
-            if self._source_budget is not None:
-                self._source_budget.reserve(self._cursor.offset)
-            retained._source_check(context); deadline()
+            self._prefix_check(context, candidates); deadline()
             self._check_controls(); deadline()
             final = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
             for (before, before_raw), (after, after_raw) in zip(first, final):
@@ -883,12 +925,20 @@ class _SelectedRowResolver:
 
 def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                                  identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
-                                 expected_approval_reference_sha256=None, source_read_limit=None):
+                                 expected_approval_reference_sha256=None, source_read_limit=None,
+                                 source_segment_bytes=None):
     """Capture a locally pinned LF-complete prefix without deriving a projection or vectors.
 
     All inputs are independent caller-supplied pins. Prefix and selected rows are
     rechecked for every call; sender identity and same-user ABA remain UNKNOWN.
     The caller owns this one-process state and any synchronous I/O deadlines.
+
+    With ``source_segment_bytes`` the one whole pass also builds a table of
+    segment digests, and each later check re-hashes only the segments that hold
+    a selected row plus the newest one. Bytes outside those segments are then
+    read once in this process and not again, so a change there after the whole
+    pass is not noticed by this resolver. ``None`` re-hashes the whole prefix at
+    every check.
     """
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
@@ -896,7 +946,9 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
                 or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
                 or type(expected_identifier_policy_sha256) is not str or not _SHA256.fullmatch(expected_identifier_policy_sha256)
                 or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(), expected_identifier_policy_sha256)
-                or type(expected_approval_reference_sha256) is not str or not _SHA256.fullmatch(expected_approval_reference_sha256)):
+                or type(expected_approval_reference_sha256) is not str
+                or not _SHA256.fullmatch(expected_approval_reference_sha256)
+                or not (source_segment_bytes is None or type(source_segment_bytes) is int)):
             raise ValueError('input')
         source_budget = None if source_read_limit is None else _SourceReadBudget(source_read_limit)
         _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256)
@@ -933,31 +985,41 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
         if bridge._validate_cursor(cursor):
             raise ValueError('source_cursor')
         if source_budget is not None:
-            # This single startup query needs one initial and three retained
-            # prefix checks; refuse before scanning if they cannot all fit.
-            _preflight_selected_source_prefix(source_budget, cursor.offset)
+            # This single startup query needs one whole pass and three later
+            # checks (whole passes, or segment checks with a segment table);
+            # refuse before scanning if they cannot all fit.
+            _preflight_selected_source_prefix(source_budget, cursor.offset, source_segment_bytes)
         with bridge._open_log(source) as stream:
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
             stream.seek(cursor.offset - 1)
             if _bounded_source_read(stream, source_budget, 1) != b'\n':
                 raise ValueError('source_boundary')
-            stream.seek(0)
-            digest = hashlib.sha256()
-            remaining = cursor.offset
-            while remaining:
-                block = _bounded_source_read(stream, source_budget, min(1024 * 1024, remaining))
-                if not block:
-                    raise ValueError('source_short')
-                digest.update(block)
-                remaining -= len(block)
+            generation = None
+            if source_segment_bytes is None:
+                stream.seek(0)
+                digest = hashlib.sha256()
+                remaining = cursor.offset
+                while remaining:
+                    block = _bounded_source_read(stream, source_budget, min(1024 * 1024, remaining))
+                    if not block:
+                        raise ValueError('source_short')
+                    digest.update(block)
+                    remaining -= len(block)
+                prefix_sha = digest.hexdigest()
+            else:
+                # The same single pass yields the whole-prefix digest and one
+                # digest per segment; every block read is charged to the budget.
+                from tools import wd_mind_source_segments as segments
+                generation = segments.open_generation(
+                    stream, cursor.offset, segment_bytes=source_segment_bytes,
+                    file_identity=cursor.file_identity, generation=cursor.generation,
+                    read=lambda handle, size: _bounded_source_read(handle, source_budget, size))
+                prefix_sha = generation.ledger.prefix_sha256
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
         result = _SelectedRowResolver(bundle_root, expected_manifest_sha256,
             expected_identifier_policy_sha256, expected_approval_reference_sha256, controls,
-            runtime_controls, cursor, digest.hexdigest(), private, source_budget)
-        from tools import wd_mind_retained_query as retained
-        if source_budget is not None:
-            source_budget.reserve(cursor.offset)
-        retained._source_check(result._context())
+            runtime_controls, cursor, prefix_sha, private, source_budget, generation)
+        result._prefix_check(result._context())
         result._check_controls()
         return result
     except _SelectedSourcePrefixBudgetRefused:
@@ -1564,7 +1626,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 state['resolver'] = create_selected_row_resolver(enabled=True, bundle_root=bundle_root,
                     expected_manifest_sha256=manifest_pin, identifier_policy_bytes=policy,
                     expected_identifier_policy_sha256=policy_pin,
-                    expected_approval_reference_sha256=approval, source_read_limit=_STARTUP_SOURCE_READ_LIMIT)
+                    expected_approval_reference_sha256=approval, source_read_limit=_STARTUP_SOURCE_READ_LIMIT,
+                    source_segment_bytes=_STARTUP_SOURCE_SEGMENT_BYTES)
                 policy = None
                 if time.monotonic() >= deadline:
                     raise ValueError('deadline')

@@ -85,6 +85,7 @@ def test_prefix_is_reserved_before_retained_verifier(monkeypatch):
     resolver = object.__new__(session._SelectedRowResolver)
     resolver._cursor = SimpleNamespace(offset=2)
     resolver._source_budget = session._SourceReadBudget(1)
+    resolver._generation = None
     resolver._lock = threading.Lock()
     resolver._pid = os.getpid()
     resolver._closed = False
@@ -104,6 +105,7 @@ def test_startup_candidate_supplies_fixed_source_limit(monkeypatch):
     monkeypatch.setattr(session, '_selected_pin_read', lambda *_args: b'{}')
     def reject_after_recording(**kwargs):
         calls.append(kwargs['source_read_limit'])
+        assert kwargs['source_segment_bytes'] == session._STARTUP_SOURCE_SEGMENT_BYTES == 1024 * 1024
         raise ValueError('synthetic')
     monkeypatch.setattr(session, 'create_selected_row_resolver', reject_after_recording)
     args = ['--mind-local-candidate-read', '--policy-path', 'synthetic-policy',

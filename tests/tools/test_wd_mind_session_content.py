@@ -37,7 +37,7 @@ INPUT_KEYS = content._Q4_KEYS - PROVIDER_KEYS
 TOKEN = "mind_session_content_refused"
 
 
-def _located_candidates(flat_consumer_case, monkeypatch):
+def _located_candidates(flat_consumer_case, monkeypatch, **resolver_options):
     """Synthetic source rows are real; deployment/policy pin readers are fixtures."""
     from tools import wd_mind_full_runtime as runtime
     package, existing, proposals, snapshot, clock, _ = flat_consumer_case
@@ -63,7 +63,7 @@ def _located_candidates(flat_consumer_case, monkeypatch):
     resolver = session.create_selected_row_resolver(enabled=True, bundle_root=existing._root,
         expected_manifest_sha256=existing._pin, identifier_policy_bytes=policy_bytes,
         expected_identifier_policy_sha256=content._sha(policy_bytes),
-        expected_approval_reference_sha256='c' * 64)
+        expected_approval_reference_sha256='c' * 64, **resolver_options)
     frame = {'schema':'wd.mind-pipe-candidates.v2', 'nonce':'1'*64, 'lane':'codex-lead-1',
              'scope':'shared', 'status':'CANDIDATES', 'candidates':candidates}
     return resolver, frame, snapshot, clock
@@ -94,25 +94,30 @@ def test_selected_row_resolver_selected_gate_uses_retained_prefix_verifier(flat_
     assert rows
 
 
+@pytest.mark.parametrize('module', ['wd_mind_retained_query', 'wd_mind_source_segments'])
 @pytest.mark.parametrize('fault', ['none', 'uppercase', 'origin', 'code', 'missing_pin', 'manifest'])
-def test_selected_row_resolver_requires_manifest_pinned_prefix_code(tmp_path, monkeypatch, fault):
-    from tools import wd_mind_retained_query as retained
+def test_selected_row_resolver_requires_manifest_pinned_prefix_code(tmp_path, monkeypatch, fault, module):
+    import importlib
     bundle = tmp_path / 'bundle'
-    path = bundle / 'tools-bootstrap' / 'tools' / 'wd_mind_retained_query.py'
-    path.parent.mkdir(parents=True)
-    code = Path(retained.__file__).read_bytes()
-    path.write_bytes(code)
-    relative = 'tools-bootstrap/tools/wd_mind_retained_query.py'
-    code_pin = content._sha(code)
-    if fault == 'uppercase':
-        code_pin = code_pin.upper()
-    manifest = {'schema_version':1, 'files':{} if fault == 'missing_pin' else {relative:code_pin}}
-    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    (bundle / 'tools-bootstrap' / 'tools').mkdir(parents=True)
+    files = {}
+    for name in ('wd_mind_retained_query', 'wd_mind_source_segments'):
+        loaded = importlib.import_module('tools.' + name)
+        path = bundle / 'tools-bootstrap' / 'tools' / (name + '.py')
+        code = Path(loaded.__file__).read_bytes()
+        path.write_bytes(code)
+        code_pin = content._sha(code)
+        faulty = name == module
+        if faulty and fault == 'uppercase':
+            code_pin = code_pin.upper()
+        if not (faulty and fault == 'missing_pin'):
+            files['tools-bootstrap/tools/' + name + '.py'] = code_pin
+        if faulty and fault == 'code': path.write_bytes(code + b'\n# changed\n')
+        monkeypatch.setattr(loaded, '__file__', str(bundle / 'other.py' if faulty and fault == 'origin' else path))
+    raw = json.dumps({'schema_version':1, 'files':files}, separators=(',', ':')).encode()
     (bundle / 'deployment-manifest.json').write_bytes(raw)
     pin = content._sha(raw)
     if fault == 'manifest': pin = '0'*64
-    if fault == 'code': path.write_bytes(code + b'\n# changed\n')
-    monkeypatch.setattr(retained, '__file__', str(bundle / 'other.py' if fault == 'origin' else path))
     if fault in ('none', 'uppercase'):
         session._pin_selected_resolver_code(str(bundle), pin)
     else:
@@ -128,7 +133,8 @@ def test_selected_row_resolver_requires_manifest_pinned_prefix_code(tmp_path, mo
         'wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
         'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process',
         'wd_mind_absent_generation_prefix_readonly', 'wd_mind_startup_content',
-        'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind')),
+        'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind',
+        'wd_mind_source_segments')),
     'tools-bootstrap/waggledance/core/bridge_log_reader.py',
 ])
 def test_selected_preflight_accepts_deploy_style_uppercase_module_pins(tmp_path, relative):
@@ -149,7 +155,8 @@ def test_selected_preflight_loads_missing_module_with_uppercase_manifest(tmp_pat
     modules = ('wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
                'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process',
                'wd_mind_absent_generation_prefix_readonly', 'wd_mind_startup_content',
-               'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind')
+               'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind',
+               'wd_mind_source_segments')
     files = {}
     package_names = ('tools', 'waggledance', 'waggledance.core')
     for name in package_names:
@@ -196,7 +203,8 @@ def test_selected_preflight_loads_missing_module_with_uppercase_manifest(tmp_pat
 
 @pytest.mark.parametrize('target', ['wd_mind_content_query_readonly',
                                     'wd_mind_content_snapshot_package',
-                                    'wd_mind_full_runtime', 'wd_mind_retained_query', 'unchanged', 'pycache'])
+                                    'wd_mind_full_runtime', 'wd_mind_retained_query',
+                                    'wd_mind_source_segments', 'unchanged', 'pycache'])
 def test_selected_resolver_refuses_changed_module_before_import(tmp_path, target):
     """A mismatched module cannot run its top-level code in a fresh interpreter."""
     source = Path(session.__file__).resolve().parent.parent
@@ -208,7 +216,7 @@ def test_selected_resolver_refuses_changed_module_before_import(tmp_path, target
              'tools/wd_mind_content_snapshot_package.py', 'tools/wd_mind_full_runtime.py',
              'tools/wd_mind_retained_query.py', 'tools/wd_mind_runtime_process.py',
              'tools/wd_mind_absent_generation_prefix_readonly.py',
-             'tools/wd_mind_startup_content.py', 'waggledance/__init__.py',
+             'tools/wd_mind_startup_content.py', 'tools/wd_mind_source_segments.py', 'waggledance/__init__.py',
              'waggledance/core/__init__.py', 'waggledance/core/bridge_log_reader.py']
     files = {}
     for name in names:
@@ -470,9 +478,12 @@ def test_real_synthetic_resolver_prefix_budget_reaches_fixed_reason(
     policy = snapshot['identifier_policy_binding'][0]
     policy_path = tmp_path / 'synthetic-policy.json'
     policy_path.write_bytes(policy)
-    # The tail allowance fits; the known four-prefix preflight misses by one byte.
-    monkeypatch.setattr(session, '_STARTUP_SOURCE_READ_LIMIT',
-                        64 * 1024 ** 2 + 1 + 4 * resolver._cursor.offset)
+    # The tail allowance fits; the startup preflight (one whole pass, the newest
+    # segment, two segment checks and both reads of three rows) misses by one byte.
+    size = session._STARTUP_SOURCE_SEGMENT_BYTES
+    needed = (1 + resolver._cursor.offset + size + 2 * session._selected_segment_check_bytes(size)
+              + 2 * 3 * (4 * 1024 ** 2 + 1))
+    monkeypatch.setattr(session, '_STARTUP_SOURCE_READ_LIMIT', 64 * 1024 ** 2 + 1 + needed - 1)
     args = _local_client_args(policy_path, policy)
     if controlled:
         args[0] = '--mind-local-candidate-read-controlled'

@@ -58,6 +58,14 @@ def test_mind_retained_query_is_packaged_and_smoke_imported():
     assert 'tools.wd_mind_retained_query' in definition['import_smoke']['package_modules']
 
 
+def test_mind_source_segments_is_packaged_and_smoke_imported_without_entrypoint():
+    definition = _definition()
+    path = 'tools/wd_mind_source_segments.py'
+    assert path in definition['python_files']
+    assert 'tools.wd_mind_source_segments' in definition['import_smoke']['package_modules']
+    assert path not in definition['python_entrypoints'].values()
+
+
 def test_mind_runtime_child_is_an_explicit_packaged_entrypoint():
     definition = _definition()
     assert 'tools/wd_mind_runtime_child.py' in definition['python_files']

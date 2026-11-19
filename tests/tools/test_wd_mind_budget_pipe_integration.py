@@ -80,6 +80,9 @@ def test_synthetic_pin_routes_are_consistent_without_pipe(synthetic_checkout_pin
 def test_synthetic_owner_real_pipe_selected_resolver_budget(
         synthetic_checkout_pins, flat_consumer_case, tmp_path, monkeypatch, gate_on):
     package, original, _, old, clock, _ = flat_consumer_case
+    # The randomized pipe pin is synthetic, not a watcher manifest pin.
+    # Exercise pipe/source budgets here; verified loader coverage is separate.
+    monkeypatch.setattr(runtime._PrivateBinding, '_snapshot_support', lambda _self: package)
     _isolate_synthetic_pin(original, monkeypatch)
     _fixtures._located_candidates(flat_consumer_case, monkeypatch)  # synthetic pin/control fixtures
     snapshot = dict(old, messages=dict(old['messages']))

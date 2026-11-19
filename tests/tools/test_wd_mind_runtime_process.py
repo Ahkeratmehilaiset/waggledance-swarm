@@ -16,6 +16,37 @@ import pytest
 from tools import wd_mind_runtime_process as preflight
 
 
+@pytest.fixture(autouse=True)
+def _audit_opted_in_synthetic_service_handles(monkeypatch, request):
+    # Optional diagnostic harness: log only synthetic pipe/handle metadata,
+    # before listener creation and after start, never environment contents.
+    audit = os.environ.get('WD_TEST_ADMISSION_AUDIT')
+    if not audit:
+        yield
+        return
+    original = preflight.create_local_candidate_service
+    def factory(*args, **kwargs):
+        name = kwargs.get('pipe_name')
+        with Path(audit).open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'case':request.node.name, 'pid':os.getpid(), 'synthetic_pipe':name}) + '\n')
+            stream.flush()
+        service = original(*args, **kwargs)
+        start = service.start
+        def audited_start():
+            try:
+                return start()
+            finally:
+                inner = getattr(service._listener, '_listener', None)
+                handles = list(getattr(inner, '_handle_queue', ()))
+                with Path(audit).open('a', encoding='utf-8') as stream:
+                    stream.write(json.dumps({'case':request.node.name, 'pid':os.getpid(), 'listener_handles':handles}) + '\n')
+                    stream.flush()
+        service.start = audited_start
+        return service
+    monkeypatch.setattr(preflight, 'create_local_candidate_service', factory)
+    yield
+
+
 def _candidate_frame(request):
     return {'schema':'wd.mind-pipe-candidates.v1', 'nonce':request['nonce'],
             'lane':request['lane'], 'scope':request['scope'], 'status':'CANDIDATES',
@@ -593,9 +624,22 @@ def test_candidate_ipc_completed_unsuccessful_wake_can_retry(monkeypatch):
 @pytest.mark.parametrize('error', [KeyboardInterrupt, RuntimeError])
 def test_candidate_ipc_uncertain_wake_start_stays_hold_after_service_exit(monkeypatch, error):
     from multiprocessing.connection import Client
+    import multiprocessing.connection as connection
+    accepting = threading.Event()
+    original_listener = connection.Listener
+    def instrumented_listener(**kwargs):
+        listener = original_listener(**kwargs)
+        accept = listener.accept
+        def observed_accept():
+            accepting.set()
+            return accept()
+        listener.accept = observed_accept
+        return listener
+    monkeypatch.setattr(connection, 'Listener', instrumented_listener)
     name = preflight.local_candidate_pipe_name(manifest_sha256=_hash(os.urandom(32)))
     service = preflight.create_local_candidate_service(enabled=True, owner=_SyntheticCandidateOwner(), pipe_name=name)
     service.start()
+    assert accepting.wait(5)
     original = threading.Thread
     class UncertainWake:
         def __init__(self, *args, **kwargs): self.target = kwargs['target']
@@ -725,6 +769,334 @@ def test_candidate_ipc_five_simultaneous_lane_queries_close_cleanly():
         assert service.close(timeout=10)['state'] == 'STOPPED'
 
 
+def _audited_admission_service(tmp_path, owner, label):
+    # The diagnostic harness may supply an audit-only destination.  Record
+    # the exact synthetic pipe and PID before constructing the listener so an
+    # interrupted test can be woken cooperatively without touching other pipes.
+    audit = Path(os.environ.get('WD_TEST_ADMISSION_AUDIT', str(tmp_path / 'admission-audit.jsonl')))
+    seed = os.environ.get('WD_TEST_ADMISSION_SEED', os.urandom(16).hex())
+    name = preflight.local_candidate_pipe_name(manifest_sha256=_hash((seed + ':' + label).encode()))
+    with audit.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'case':label, 'pid':os.getpid(), 'synthetic_pipe':name}) + '\n')
+        stream.flush()
+    service = preflight.create_local_candidate_service(enabled=True, owner=owner, pipe_name=name)
+    try:
+        service.start()
+    except BaseException:
+        service.close(timeout=5)
+        raise
+    finally:
+        listener = getattr(service._listener, '_listener', None)
+        handles = list(getattr(listener, '_handle_queue', ()))
+        with audit.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'case':label, 'pid':os.getpid(), 'listener_handles':handles}) + '\n')
+            stream.flush()
+    return service, name
+
+
+def _finish_admission_test(service, name, queries, gate):
+    from multiprocessing.connection import Client
+    gate.set()
+    service._stop.set()
+    # The exact pipe belongs to this test and was recorded before it started.
+    try:
+        with Client(address=name, family='AF_PIPE', authkey=None):
+            pass
+    except (FileNotFoundError, OSError):
+        pass
+    state = service.close(timeout=8)
+    for query in queries:
+        query.close(timeout=8)
+    return state
+
+
+def _await_pending(service, count):
+    deadline = time.monotonic() + 6
+    while service._pending.qsize() < count and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert service._pending.qsize() == count
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
+def test_candidate_admission_fifo_five_and_full_refusal(tmp_path):
+    lanes = ('codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
+    gate, entered = threading.Event(), threading.Event()
+    calls = []
+    class Owner:
+        def candidates(self, request):
+            calls.append(request['lane'])
+            if len(calls) == 1:
+                entered.set()
+                if not gate.wait(8):
+                    raise RuntimeError('synthetic owner deadline')
+            result = _candidate_frame(request)
+            result['candidates'][0]['source_event_sha256'] = _hash(request['lane'].encode())
+            return result
+    service, name = _audited_admission_service(tmp_path, Owner(), 'fifo-five')
+    queries, requests = [], []
+    try:
+        for index, lane in enumerate(lanes):
+            req = _candidate_request(lane, 'own')
+            req['nonce'] = _hash(('nonce:' + lane).encode())
+            q = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=req)
+            queries.append(q); requests.append(req); q.start()
+            if index == 0:
+                assert entered.wait(5)
+        _await_pending(service, 4)
+        # Ordinary admitted work is RUNNING, not an ownership HOLD; the child
+        # monitor treats any non-RUNNING service as a production failure.
+        assert service.status()['state'] == 'RUNNING'
+        with service._pending.mutex:
+            expected_order = [item[1]['lane'] for item in list(service._pending.queue)]
+        extra = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=_candidate_request())
+        queries.append(extra); extra.start()
+        assert extra.wait(timeout=5)['status'] == 'REFUSED'
+        gate.set()
+        for request, query in zip(requests, queries):
+            result = query.wait(timeout=8)
+            assert result['status'] == 'CANDIDATES'
+            frame = json.loads(result['candidate_frame'])
+            assert frame['lane'] == request['lane'] and frame['nonce'] == request['nonce']
+            assert frame['candidates'][0]['source_event_sha256'] == _hash(request['lane'].encode())
+        assert calls == [lanes[0]] + expected_order
+    finally:
+        state = _finish_admission_test(service, name, queries, gate)
+    assert state['state'] == 'STOPPED'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
+def test_candidate_admission_deadline_does_not_retry_queued_requests(tmp_path, monkeypatch):
+    real_time = time
+    class Clock:
+        offset = 0
+        @staticmethod
+        def monotonic(): return real_time.monotonic() + Clock.offset
+        @staticmethod
+        def sleep(value): return real_time.sleep(value)
+    monkeypatch.setattr(preflight, 'time', Clock)
+    gate, entered = threading.Event(), threading.Event()
+    calls = []
+    class Owner:
+        def candidates(self, request):
+            calls.append(request['lane']); entered.set()
+            if not gate.wait(8): raise RuntimeError('synthetic owner deadline')
+            return _candidate_frame(request)
+    service, name = _audited_admission_service(tmp_path, Owner(), 'deadline-five')
+    queries = []
+    try:
+        for index, lane in enumerate(('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')):
+            q = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=_candidate_request(lane))
+            queries.append(q); q.start()
+            if index == 0: assert entered.wait(5)
+        _await_pending(service, 4)
+        Clock.offset = 91
+        gate.set()
+        assert all(q.wait(timeout=8)['status'] == 'REFUSED' for q in queries)
+        assert calls == ['codex-lead-1']
+    finally:
+        state = _finish_admission_test(service, name, queries, gate)
+    assert state['state'] == 'STOPPED'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
+def test_candidate_admission_close_holds_owner_and_discards_queued(tmp_path):
+    gate, entered = threading.Event(), threading.Event()
+    calls = []
+    class Owner:
+        def candidates(self, request):
+            calls.append(request['lane']); entered.set()
+            if not gate.wait(8): raise RuntimeError('synthetic owner deadline')
+            return _candidate_frame(request)
+    service, name = _audited_admission_service(tmp_path, Owner(), 'shutdown-five')
+    queries = []
+    try:
+        for index, lane in enumerate(('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')):
+            q = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=_candidate_request(lane))
+            queries.append(q); q.start()
+            if index == 0: assert entered.wait(5)
+        _await_pending(service, 4)
+        assert service.close(timeout=0)['state'] == 'HOLD'
+        gate.set()
+        assert all(q.wait(timeout=8)['status'] == 'REFUSED' for q in queries)
+        assert calls == ['codex-lead-1']
+    finally:
+        state = _finish_admission_test(service, name, queries, gate)
+    assert state['state'] == 'STOPPED'
+
+
+def test_candidate_admission_retains_each_uncertain_connection():
+    class BrokenConnection:
+        def close(self): raise OSError('synthetic close failure')
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    first, second = BrokenConnection(), BrokenConnection()
+    service._close_candidate_connection(first)
+    service._close_candidate_connection(second)
+    assert service._uncertain_connection is first
+    assert service._uncertain_connections == [second]
+    assert service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+@pytest.mark.parametrize('condition,expected', [
+    ('alive', 'HOLD'), ('unidentified', 'HOLD'), ('query_error', 'HOLD'), ('exited', 'STOPPED')
+])
+@pytest.mark.parametrize('acceptor_present', [True, False])
+@pytest.mark.parametrize('start_uncertain', [True, False])
+def test_candidate_admission_worker_completion_is_not_thread_exit(condition, expected, acceptor_present, start_uncertain):
+    class FinishedAcceptor:
+        def is_alive(self): return False
+    class Worker:
+        ident = None if condition == 'unidentified' else 123
+        def is_alive(self):
+            if condition == 'query_error': raise OSError('synthetic unavailable thread state')
+            return condition == 'alive'
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    service._thread = FinishedAcceptor() if acceptor_present else None
+    service._worker = Worker()
+    service._worker_start_uncertain = start_uncertain
+    service._worker_done.set()
+    service._serve_done.set()
+    service._listener_closed = True
+    service._stop.set()
+    assert service.status()['state'] == expected
+    assert service.close(timeout=0)['state'] == expected
+
+
+@pytest.mark.parametrize('condition,ready', [
+    ('absent', False), ('not_entered', False), ('finished', False), ('unidentified', False),
+    ('dead', False), ('query_error', False), ('start_unconfirmed', False), ('ready', True),
+])
+def test_candidate_admission_reports_running_only_for_started_live_worker(condition, ready):
+    class Acceptor:
+        def is_alive(self): return True
+    class Worker:
+        ident = None if condition == 'unidentified' else 123
+        def is_alive(self):
+            if condition == 'query_error': raise OSError('synthetic unavailable thread state')
+            return condition != 'dead'
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    service._thread = Acceptor()
+    service._listener = object()
+    service._worker_started = threading.Event()
+    service._worker_start_confirmed = threading.Event()
+    if condition != 'absent':
+        service._worker = Worker()
+    if condition not in ('absent', 'not_entered'):
+        service._worker_started.set()
+    if condition not in ('absent', 'not_entered', 'start_unconfirmed'):
+        service._worker_start_confirmed.set()
+    if condition == 'finished':
+        service._worker_done.set()
+    assert (service.status()['state'] == 'RUNNING') is ready
+
+
+@pytest.mark.parametrize('mode', ['failure', 'concurrent_close', 'timeout'])
+def test_candidate_admission_worker_start_failure_is_cancellable(monkeypatch, mode):
+    import multiprocessing.connection as connection
+    entered, release = threading.Event(), threading.Event()
+    original_thread = threading.Thread
+    class Listener:
+        def close(self): pass
+        def accept(self): raise AssertionError('no accept before worker readiness')
+    class WorkerStartFails:
+        ident = None
+        def start(self):
+            entered.set()
+            if mode in ('concurrent_close', 'timeout') and not release.wait(3):
+                raise RuntimeError('synthetic failsafe timeout')
+            raise RuntimeError('synthetic ambiguous worker start')
+        def is_alive(self): return False
+        def join(self, *args): raise RuntimeError('worker was not observed started')
+    def factory(*args, **kwargs):
+        return WorkerStartFails() if kwargs.get('name') == 'mind-local-candidate-worker' else original_thread(*args, **kwargs)
+    monkeypatch.setattr(connection, 'Listener', lambda **kwargs: Listener())
+    monkeypatch.setattr(preflight.threading, 'Thread', factory)
+    if mode == 'timeout':
+        monkeypatch.setattr(preflight, '_LOCAL_CANDIDATE_WORKER_START_SECONDS', 0.15)
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    monkeypatch.setattr(service, '_wake', lambda: None)  # fake listener; no OS pipe exists
+    result = []
+    def launch():
+        try: service.start()
+        except BaseException as exc: result.append(type(exc))
+    caller = original_thread(target=launch, name='synthetic-service-caller')
+    caller.start()
+    try:
+        assert entered.wait(3)
+        if mode == 'concurrent_close':
+            assert service.close(timeout=0)['state'] == 'HOLD'
+            caller.join(2)
+            assert not caller.is_alive()  # close cancels start without lock deadlock
+        elif mode == 'timeout':
+            caller.join(2)
+            assert not caller.is_alive()  # bounded readiness wait, no forced stop
+            assert service.close(timeout=0)['state'] == 'HOLD'
+    finally:
+        release.set()
+        caller.join(5)
+        if service._thread is not None:
+            service._thread.join(5)
+        if service._wake_thread is not None and service._wake_thread.ident is not None:
+            service._wake_thread.join(5)
+    assert not caller.is_alive() and service._thread is not None and not service._thread.is_alive()
+    assert result == [preflight.RuntimePreflightRefused]
+    assert service.status()['state'] == 'HOLD'
+    assert service.close(timeout=0)['state'] == 'HOLD'
+
+
+def test_candidate_admission_started_worker_not_ready_until_start_returns(monkeypatch):
+    import multiprocessing.connection as connection
+    start_release, exit_release = threading.Event(), threading.Event()
+    original_thread = threading.Thread
+    class Listener:
+        def close(self): pass
+        def accept(self): raise AssertionError('no accept before confirmed worker start')
+    class StartedThenRaises:
+        def __init__(self, target):
+            def wrapped():
+                try: target()
+                finally: exit_release.wait(3)
+            self.real = original_thread(target=wrapped, name='synthetic-started-worker')
+        @property
+        def ident(self): return self.real.ident
+        def is_alive(self): return self.real.is_alive()
+        def join(self, *args): return self.real.join(*args)
+        def start(self):
+            self.real.start()
+            if not start_release.wait(3): raise RuntimeError('synthetic failsafe timeout')
+            raise RuntimeError('synthetic error after actual thread start')
+    def factory(*args, **kwargs):
+        return StartedThenRaises(kwargs['target']) if kwargs.get('name') == 'mind-local-candidate-worker' else original_thread(*args, **kwargs)
+    monkeypatch.setattr(connection, 'Listener', lambda **kwargs: Listener())
+    monkeypatch.setattr(preflight.threading, 'Thread', factory)
+    service = preflight._LocalCandidateService(_SyntheticCandidateOwner(), 'synthetic')
+    monkeypatch.setattr(service, '_wake', lambda: None)  # fake listener; no OS pipe exists
+    result = []
+    def launch():
+        try: service.start()
+        except BaseException as exc: result.append(type(exc))
+    caller = original_thread(target=launch, name='synthetic-service-caller')
+    caller.start()
+    try:
+        assert service._worker_started.wait(3)
+        assert not service._worker_start_confirmed.is_set()
+        assert service.status()['state'] == 'STARTING'
+        start_release.set()
+        assert service._worker_done.wait(3)
+        caller.join(2)
+        assert not caller.is_alive() and result == [preflight.RuntimePreflightRefused]
+        assert service.status()['state'] == 'HOLD'
+        assert service.close(timeout=0)['state'] == 'HOLD'
+    finally:
+        start_release.set(); exit_release.set()
+        caller.join(5)
+        if service._thread is not None: service._thread.join(5)
+        if service._wake_thread is not None and service._wake_thread.ident is not None:
+            service._wake_thread.join(5)
+    assert not caller.is_alive() and not service._thread.is_alive()
+    assert service.status()['state'] == 'FAILED'
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
 def test_candidate_ipc_rejects_text_and_retains_owner_on_timeout(monkeypatch):
     gate = threading.Event()
@@ -737,9 +1109,8 @@ def test_candidate_ipc_rejects_text_and_retains_owner_on_timeout(monkeypatch):
     name = preflight.local_candidate_pipe_name(manifest_sha256=_hash(os.urandom(32)))
     service = preflight.create_local_candidate_service(enabled=True, owner=SlowOwner(), pipe_name=name)
     service.start()
-    # This case is blocked inside candidates(), so STOP needs no wake client.
-    # Exercise clean owner release separately from wake-constructor uncertainty.
-    monkeypatch.setattr(service, '_wake', lambda: None)
+    # Acceptance is separate from the owner worker: STOP must wake accept even
+    # while the synthetic owner is blocked. Use the real cooperative wake.
     query = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=_candidate_request())
     try:
         query.start()

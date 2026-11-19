@@ -25,6 +25,7 @@ import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
 import secrets
 import stat
@@ -124,6 +125,7 @@ def _guardian_entrypoint(argv, stdin, stdout):
 
 
 _LOCAL_CANDIDATE_PIPE_PREFIX = r"\\.\pipe\wd-mind-"
+_LOCAL_CANDIDATE_WORKER_START_SECONDS = 15.0
 _LOCAL_CANDIDATE_MAX_BYTES = 4096
 _LOCAL_CANDIDATE_LANES = frozenset(('codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'))
 
@@ -211,6 +213,18 @@ class _LocalCandidateService:
         self._stop, self._lock, self._failed = threading.Event(), threading.Lock(), False
         self._serve_done, self._start_uncertain = threading.Event(), False
         self._wake_done, self._wake_start_uncertain = None, False
+        # Five admitted connections include the one being served. The owner
+        # is still used by exactly one worker; this is not parallel inference.
+        self._pending = queue.Queue(maxsize=5)
+        self._admission = threading.BoundedSemaphore(5)
+        self._worker = None
+        self._worker_started = threading.Event()
+        self._worker_start_confirmed = threading.Event()
+        self._admission_done = threading.Event()
+        self._worker_done = threading.Event()
+        self._worker_start_uncertain = False
+        self._uncertain_connections = []
+        self._connection_lock = threading.Lock()
 
     def start(self):
         from multiprocessing.connection import Listener
@@ -237,9 +251,41 @@ class _LocalCandidateService:
                 if not isinstance(exc, Exception):
                     raise
                 raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+        # The owner starts this service in its own managed thread. Do not
+        # report that start completed until the worker has entered; wait
+        # without holding the state lock so close can cancel at any point.
+        try:
+            deadline = time.monotonic() + _LOCAL_CANDIDATE_WORKER_START_SECONDS
+            for event in (self._worker_started, self._worker_start_confirmed):
+                while not event.wait(0.05):
+                    if self._stop.is_set() or self._serve_done.is_set() or time.monotonic() >= deadline:
+                        raise RuntimePreflightRefused('runtime_process_preflight_refused')
+            if self._stop.is_set() or time.monotonic() >= deadline or not self._worker_ready():
+                raise RuntimePreflightRefused('runtime_process_preflight_refused')
+        except BaseException:
+            # Keep uncertain thread/pipe ownership reachable through this
+            # service; close requests only cooperative stop, never killing.
+            self._stop.set()
+            try:
+                self.close(timeout=0)
+            except Exception:
+                pass
+            raise
 
     def _serve(self):
         try:
+            if not self._stop.is_set():
+                try:
+                    self._worker = threading.Thread(target=self._work, name='mind-local-candidate-worker', daemon=False)
+                    self._worker.start()
+                    self._worker_start_confirmed.set()
+                except BaseException as exc:
+                    # A raising Thread.start is not proof it did not start.
+                    self._worker_start_uncertain = self._worker is not None
+                    self._failed = True
+                    self._stop.set()
+                    if not isinstance(exc, Exception):
+                        raise
             while not self._stop.is_set():
                 connection = None
                 try:
@@ -255,13 +301,21 @@ class _LocalCandidateService:
                         break
                     if connection.poll(1):
                         request = _local_candidate_request(_local_candidate_json(connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)))
-                        if request['schema'] == 'wd.mind-pipe-request.v2':
-                            response = self._owner.located_candidates(dict(request))
-                        else:
-                            response = self._owner.candidates(dict(request))
-                        response = _local_candidate_reply(response, request)
-                        if not self._stop.is_set():
-                            connection.send_bytes(_local_candidate_encode(response))
+                        if self._admission.acquire(blocking=False):
+                            try:
+                                # This is an admission deadline, not the
+                                # caller's deadline or proof of receipt.
+                                self._pending.put_nowait((time.monotonic() + 90, request, connection))
+                            except BaseException:
+                                # A raised enqueue cannot prove whether ownership
+                                # moved. Retain the reference and never retry.
+                                with self._connection_lock:
+                                    self._uncertain_connections.append(connection)
+                                self._accept_ownership_unknown = True
+                                self._stop.set()
+                                connection = None
+                                raise
+                            connection = None  # ownership passed to worker
                 except Exception:
                     pass
                 except BaseException:
@@ -269,14 +323,11 @@ class _LocalCandidateService:
                     break
                 finally:
                     if connection is not None:
-                        try:
-                            connection.close()
-                        except BaseException:
-                            self._failed = True
-                            self._uncertain_connection = connection
+                        self._close_candidate_connection(connection)
                 if self._uncertain_connection is not None:
                     break
         finally:
+            self._stop.set()
             with self._pipe_lifecycle_lock:
                 self._listener_closing = True
                 try:
@@ -285,8 +336,101 @@ class _LocalCandidateService:
                     self._failed = True
                 else:
                     self._listener_closed = True
+            # No producer may enqueue after this event. The worker must not
+            # retire merely because stop raced an in-flight admission.
+            self._admission_done.set()
+            if self._worker is not None:
+                try:
+                    # Bounded close continues to report HOLD while a worker
+                    # owns a running query or its connection.
+                    self._worker.join()
+                except BaseException:
+                    self._worker_start_uncertain = True
+                    self._failed = True
+            self._serve_done.set()
+
+    def _close_candidate_connection(self, connection):
+        try:
+            connection.close()
+        except BaseException:
+            self._failed = True
+            with self._connection_lock:
+                if self._uncertain_connection is None:
+                    self._uncertain_connection = connection
+                else:
+                    self._uncertain_connections.append(connection)
+            self._stop.set()
+
+    def _work(self):
+        try:
+            self._worker_started.set()
+            while not self._admission_done.is_set() or not self._pending.empty():
+                try:
+                    deadline, request, connection = self._pending.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                try:
+                    if self._stop.is_set() or time.monotonic() >= deadline:
+                        continue
+                    if request['schema'] == 'wd.mind-pipe-request.v2':
+                        response = self._owner.located_candidates(dict(request))
+                    else:
+                        response = self._owner.candidates(dict(request))
+                    response = _local_candidate_reply(response, request)
+                    if not self._stop.is_set() and time.monotonic() < deadline:
+                        connection.send_bytes(_local_candidate_encode(response))
+                except Exception:
+                    pass
+                except BaseException:
+                    self._failed = True
+                    self._stop.set()
                 finally:
-                    self._serve_done.set()
+                    self._close_candidate_connection(connection)
+                    self._admission.release()
+                    self._pending.task_done()
+                if self._stop.is_set() and self._thread is not None:
+                    # Wake a possibly blocked accept without retrying a query.
+                    self._wake()
+        except BaseException:
+            self._failed = True
+            self._stop.set()
+            if self._thread is not None:
+                self._wake()
+        finally:
+            self._worker_done.set()
+
+    def _worker_exit_proven(self):
+        # The target sets done before the native thread actually exits.  An
+        # ambiguous start with no thread identity is not evidence of no worker.
+        worker = self._worker
+        if worker is None:
+            return not self._worker_start_uncertain
+        try:
+            return (self._worker_done.is_set() and worker.ident is not None
+                    and not worker.is_alive())
+        except Exception:
+            return False
+
+    def _worker_ready(self):
+        worker = self._worker
+        if (worker is None or self._worker_start_uncertain or not self._worker_started.is_set()
+                or not self._worker_start_confirmed.is_set()):
+            return False
+        try:
+            return (not self._worker_done.is_set() and worker.ident is not None
+                    and worker.is_alive())
+        except Exception:
+            return False
+
+    def _worker_needs_hold(self):
+        if self._worker is None:
+            return self._worker_start_uncertain
+        if self._serve_done.is_set() or self._thread is None:
+            return not self._worker_exit_proven()
+        try:
+            return not self._thread.is_alive() and not self._worker_exit_proven()
+        except Exception:
+            return True
 
     def status(self):
         with self._lock:
@@ -295,7 +439,12 @@ class _LocalCandidateService:
                     or self._listener_creation_unknown
                     or self._accept_ownership_unknown or self._wake_ownership_unknown
                     or self._uncertain_connection is not None
+                    or self._uncertain_connections
+                    or (not self._pending.empty() and
+                        (self._serve_done.is_set() or self._worker_done.is_set()))
                     or self._uncertain_wake_connection is not None
+                    or self._worker_needs_hold()
+                    or (self._worker_start_uncertain and not self._worker_exit_proven())
                     or (self._listener is not None and not self._listener_closed
                         and (self._thread is None or self._serve_done.is_set())) or
                     (self._start_uncertain and not self._serve_done.is_set())):
@@ -305,7 +454,7 @@ class _LocalCandidateService:
             elif self._thread is None:
                 state = 'STOPPED' if self._stop.is_set() else 'NEW'
             elif self._thread.is_alive():
-                state = 'HOLD' if self._stop.is_set() else 'RUNNING'
+                state = 'HOLD' if self._stop.is_set() else 'RUNNING' if self._worker_ready() else 'STARTING'
             else:
                 state = 'STOPPED'
         return {'state':state, 'authority':'none', 'caller_authentication':'UNKNOWN'}
@@ -326,7 +475,9 @@ class _LocalCandidateService:
                          and (self._listener is None or self._listener_closed)
                          and not self._listener_creation_unknown
                          and not self._accept_ownership_unknown and not self._wake_ownership_unknown
-                         and self._uncertain_connection is None
+                         and self._uncertain_connection is None and not self._uncertain_connections
+                         and self._pending.empty()
+                         and self._worker_exit_proven()
                          and self._uncertain_wake_connection is None else 'HOLD')
                 return {'state':state, 'authority':'none', 'caller_authentication':'UNKNOWN'}
             if self._start_uncertain and not self._serve_done.is_set() and not thread.is_alive():
@@ -382,6 +533,9 @@ class _LocalCandidateService:
                                                           or wake_thread.is_alive()))
                          or self._accept_ownership_unknown or self._wake_ownership_unknown
                          or self._uncertain_connection is not None
+                          or self._uncertain_connections
+                          or not self._pending.empty()
+                          or not self._worker_exit_proven()
                          or self._uncertain_wake_connection is not None
                          else 'FAILED' if self._failed else 'STOPPED')
         finally:

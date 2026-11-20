@@ -8,7 +8,7 @@
    blocking native call can exceed the deadline; uncertain ownership is HOLD
    and no child is terminated. Byte buffers are cleared after observed exit
    and EOF where possible; immutable .NET strings cannot be reliably erased.
-   Age bounds include the remaining deadline at the final clock sample. UTC
+   Age bounds include initial monotonic elapsed time and the remaining deadline. UTC
    jumps or a scheduler pause after the final sample/check remain UNKNOWN;
    this is not an absolute wall-clock or post-return freshness guarantee.
    Output already emitted by a downstream consumer cannot be retracted.
@@ -220,7 +220,7 @@ function Invoke-WdMindManualRead {
            $view.sender_authentication -cne 'UNKNOWN' -or $view.index_match -cne 'UNKNOWN' -or
            $view.same_user_aba -cne 'UNKNOWN' -or $view.current_status_freshness -cne 'UNKNOWN' -or
            $view.results -isnot [array] -or $view.results.Count -lt 1 -or $view.results.Count -gt 3){throw 'shape'}
-        $refs=@();$times=@();$ages=@();$now=[DateTimeOffset]::UtcNow
+        $refs=@();$times=@();$ages=@();$initialElapsed=$clock.Elapsed.TotalSeconds;$now=[DateTimeOffset]::UtcNow
         foreach($hit in $view.results){
             Assert-SemanticKeys $hit @('text','source_event_sha256','event_time_utc_floor','source_agent','event_age_seconds_upper_bound')
             if($hit.text -isnot [string] -or [string]::IsNullOrWhiteSpace($hit.text) -or $hit.text.Length -gt 8192 -or
@@ -275,7 +275,14 @@ function Invoke-WdMindManualRead {
             if($elapsedBeforeUtc -ge $TimeoutSeconds){throw 'timeout'}
             $finalNow=[DateTimeOffset]::UtcNow
             $remaining=[Math]::Max(0.0,([double]$TimeoutSeconds-$elapsedBeforeUtc))
+            # The initial observation survives a backward UTC adjustment;
+            # ceiling and a one-second cushion avoid fractional undercounts.
+            $advance=[long]([Math]::Ceiling(($elapsedBeforeUtc-$initialElapsed)+$remaining)+1)
+            if($advance -lt 0){throw 'age'}
             foreach($hit in $result.data.results){
+                $initialAge=[long]$hit.event_age_seconds_upper_bound
+                if($initialAge -gt ([long]::MaxValue-$advance)){throw 'age'}
+                $monotonicUpper=$initialAge+$advance
                 $when=[DateTimeOffset]::MinValue
                 if(-not [DateTimeOffset]::TryParse($hit.event_time_utc_floor,[Globalization.CultureInfo]::InvariantCulture,
                         [Globalization.DateTimeStyles]::None,[ref]$when) -or $when -gt $finalNow){throw 'time'}
@@ -285,7 +292,8 @@ function Invoke-WdMindManualRead {
                 if([double]::IsNaN($upper) -or [double]::IsInfinity($upper) -or
                    $upper -lt 0 -or $upper -ge [double]([long]::MaxValue)){throw 'age'}
                 $upperAge=[long]$upper
-                if($upperAge -gt [long]$hit.event_age_seconds_upper_bound){$hit.event_age_seconds_upper_bound=$upperAge}
+                if($monotonicUpper -gt $upperAge){$upperAge=$monotonicUpper}
+                $hit.event_age_seconds_upper_bound=$upperAge
             }
             if($clock.Elapsed.TotalSeconds -ge $TimeoutSeconds){throw 'timeout'}
         } catch {

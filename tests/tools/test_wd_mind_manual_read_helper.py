@@ -52,7 +52,9 @@ def _bundle(tmp_path, fault='none', *, lane='codex-lead-1', source_agent='codex-
     fleet = b'{"synthetic_fleet":true}'
     fleet_pin = _sha(fleet)
     approval = 'c' * 64
-    event_time = (datetime.now(timezone.utc) - timedelta(seconds=1200)).replace(microsecond=0)
+    event_time = (datetime(2020, 1, 1, tzinfo=timezone.utc)
+                  if fault == 'clock_backward_mild' else
+                  (datetime.now(timezone.utc) - timedelta(seconds=1200)).replace(microsecond=0))
     frame = {'schema': 'wd.mind-flat-verified-session.v1', 'authority': 'none', 'lane': lane,
              'fleet_sha256': fleet_pin, 'sender_authentication': 'UNKNOWN', 'index_match': 'UNKNOWN',
              'same_user_aba': 'UNKNOWN', 'current_status_freshness': 'UNKNOWN',
@@ -129,9 +131,9 @@ def _bundle(tmp_path, fault='none', *, lane='codex-lead-1', source_agent='codex-
         needle = b'        foreach($name in $pins.Keys){'
         assert helper_bytes.count(needle) == 1
         helper_bytes = helper_bytes.replace(needle, b'        Start-Sleep -Milliseconds 2500\n' + needle)
-    if fault in ('clock_forward', 'clock_backward'):
+    if fault in ('clock_forward', 'clock_backward', 'clock_backward_mild'):
         initial = event_time + timedelta(seconds=1200)
-        final = initial + timedelta(seconds=60 if fault == 'clock_forward' else -1300)
+        final = initial + timedelta(seconds={'clock_forward': 60, 'clock_backward': -1300, 'clock_backward_mild': -10}[fault])
         needle = b'function Invoke-WdMindManualRead {'
         assert helper_bytes.count(needle) == 1 and b'[DateTimeOffset]::UtcNow' in helper_bytes
         clock = ("$script:WdSyntheticClockCalls=0\nfunction Get-WdSyntheticClock {\n"
@@ -141,6 +143,14 @@ def _bundle(tmp_path, fault='none', *, lane='codex-lead-1', source_agent='codex-
                  + _literal(final.isoformat()) + ")\n}\n").encode()
         helper_bytes = helper_bytes.replace(needle, clock + needle)
         helper_bytes = helper_bytes.replace(b'[DateTimeOffset]::UtcNow', b'$(Get-WdSyntheticClock)')
+    if fault == 'clock_backward_mild':
+        # Synthetic sample points model 9 seconds elapsed and 10 seconds left.
+        for actual, synthetic in (
+            (b'$initialElapsed=$clock.Elapsed.TotalSeconds', b'$initialElapsed=1.0'),
+            (b'$elapsedBeforeUtc=$clock.Elapsed.TotalSeconds', b'$elapsedBeforeUtc=10.0'),
+        ):
+            assert helper_bytes.count(actual) == 1
+            helper_bytes = helper_bytes.replace(actual, synthetic)
     files = {'Invoke-WdMindManualRead.ps1': helper_bytes,
              'Invoke-WdBridgePython.ps1': wrapper,
              'tools-bootstrap/tools/wd_bridge_mind_session.py': b'# synthetic pin target; never executed\n',
@@ -248,6 +258,16 @@ def test_manual_read_age_upper_covers_late_pin_and_cleanup(tmp_path, fault):
 
 
 @WINDOWS
+def test_manual_read_age_covers_elapsed_when_utc_moves_slightly_backward(tmp_path):
+    values = _bundle(tmp_path, fault='clock_backward_mild')
+    result, _ = _run(values, timeout=20)
+    assert result['state'] == 'SUCCESS'
+    hit = result['data']['results'][0]
+    # Initial 1200 + monotonic elapsed 9 + remaining deadline 10.
+    assert hit['event_age_seconds_upper_bound'] >= 1219
+
+
+@WINDOWS
 @pytest.mark.parametrize(('fault', 'expected'), [('clock_forward', 'SUCCESS'), ('clock_backward', 'REFUSED')])
 def test_manual_read_rechecks_wall_clock_before_return(tmp_path, fault, expected):
     values = _bundle(tmp_path, fault=fault)
@@ -278,11 +298,10 @@ def test_manual_read_preserves_historical_timestamp(tmp_path):
 
 
 @WINDOWS
-def test_manual_read_preserves_int64_max_age_without_overflow(tmp_path):
+def test_manual_read_refuses_int64_age_overflow(tmp_path):
     values = _bundle(tmp_path, fault='age_int64_max')
     result, _ = _run(values, timeout=5)
-    assert result['state'] == 'SUCCESS'
-    assert result['data']['results'][0]['event_age_seconds_upper_bound'] == 2**63 - 1
+    assert result['state'] == 'REFUSED' and result['data'] is None
 
 
 @WINDOWS

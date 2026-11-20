@@ -25,6 +25,7 @@ MAGIC = b"WD_MIND_OWNER_V1\n"
 MARKER = "mind-owner-reservation.v1"
 POLICY = b"synthetic-policy-only"
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows byte-range reservation")
+_UNCONFIRMED_TEST_ACTORS = []
 
 ACTOR = r'''
 import hashlib, json, os, sys, threading, time
@@ -40,6 +41,10 @@ if (not (repo / '.git').exists() or not slot.is_absolute() or not controls.is_ab
 sys.path.insert(0, str(repo))
 from tools import wd_mind_runtime_child as child
 from tools import wd_mind_runtime_process as process
+import subprocess
+def forbid_native_child(*args, **kwargs):
+    raise RuntimeError('synthetic actor cannot launch native descendants')
+subprocess.Popen = forbid_native_child
 policy = b'synthetic-policy-only'
 policy_sha = hashlib.sha256(policy).hexdigest()
 event_lock = threading.Lock()
@@ -223,26 +228,39 @@ class Actor:
 
     def finish(self):
         timed_out = False
+        forced = False
         try:
             code = self.proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             timed_out = True
-            # Release only this fixture's cooperative gates; retain the
-            # process until it actually exits, even if that has no deadline.
+            # First release only this synthetic actor's cooperative gates.
             self.release_test_gates()
-            while True:
+            try:
+                code = self.proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                # The actor is a test-created process, launched from the fixed
+                # ACTOR above, which explicitly forbids native descendants.
+                # Never target a PID, lane, bridge or production owner.
+                forced = True
                 try:
-                    code = self.proc.wait(timeout=1)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+                    self.proc.kill()
+                    code = self.proc.wait(timeout=5)
+                except BaseException as exc:
+                    # Keep a live reference while this runner remains active;
+                    # this does not prove cleanup or cover runner death.
+                    _UNCONFIRMED_TEST_ACTORS.append(self)
+                    raise AssertionError('test-owned actor exit unconfirmed; cleanup UNKNOWN') from exc
+        reader_deadline = time.monotonic() + 5
         for reader in self.readers:
-            while reader.is_alive():
-                reader.join(timeout=0.25)
+            reader.join(timeout=max(0, reader_deadline - time.monotonic()))
+        assert not any(reader.is_alive() for reader in self.readers), \
+            'Actor output reader did not exit; EOF and cleanup UNKNOWN'
         self.collect()
         assert self.reader_errors.empty(), "Actor output reader failed; EOF not established"
         assert all(event.is_set() for event in self.reader_eof.values()), "Actor pipe EOF not established"
-        assert not timed_out, "Synthetic actor exceeded its deadline; exit and EOF subsequently observed"
+        assert not timed_out, ("Synthetic actor exceeded its deadline; " +
+                               ("test-owned actor forcibly ended; " if forced else "") +
+                               "exit and EOF subsequently observed")
         return code
 
     def release_test_gates(self):
@@ -315,6 +333,90 @@ def test_finish_timeout_retains_actor_until_exit_and_reports_failure():
     with pytest.raises(AssertionError, match='exceeded its deadline'):
         actor.finish()
     assert released == [True] and actor.proc.calls == 2
+
+
+def test_finish_deadline_ends_only_synthetic_owned_actor_and_reports_failure():
+    class SyntheticProcess:
+        def __init__(self): self.calls, self.kills = 0, 0
+        def wait(self, *, timeout):
+            self.calls += 1
+            if self.calls < 3:
+                raise subprocess.TimeoutExpired('synthetic', timeout)
+            return 124
+        def kill(self): self.kills += 1
+    actor = Actor.__new__(Actor)
+    actor.proc = SyntheticProcess()
+    actor.readers = []
+    actor.reader_eof = {'state': threading.Event(), 'event': threading.Event()}
+    for evidence in actor.reader_eof.values(): evidence.set()
+    actor.reader_errors = queue.Queue()
+    released = []
+    actor.release_test_gates = lambda: released.append(True)
+    actor.collect = lambda: None
+    with pytest.raises(AssertionError, match='test-owned actor forcibly ended'):
+        actor.finish()
+    assert released == [True] and actor.proc.calls == 3 and actor.proc.kills == 1
+
+
+def test_finish_does_not_invent_eof_when_reader_is_still_alive():
+    class SyntheticProcess:
+        def wait(self, *, timeout): return 0
+    class SyntheticReader:
+        def join(self, *, timeout): assert 0 <= timeout <= 5
+        def is_alive(self): return True
+    actor = Actor.__new__(Actor)
+    actor.proc = SyntheticProcess()
+    actor.readers = [SyntheticReader()]
+    actor.reader_eof = {'state': threading.Event(), 'event': threading.Event()}
+    actor.reader_errors = queue.Queue()
+    with pytest.raises(AssertionError, match='EOF and cleanup UNKNOWN'):
+        actor.finish()
+    assert not any(event.is_set() for event in actor.reader_eof.values())
+
+
+def test_finish_retains_unconfirmed_owned_actor_when_termination_refused():
+    class SyntheticProcess:
+        def wait(self, *, timeout): raise subprocess.TimeoutExpired('synthetic', timeout)
+        def kill(self): raise PermissionError('synthetic')
+    actor = Actor.__new__(Actor)
+    actor.proc = SyntheticProcess()
+    actor.release_test_gates = lambda: None
+    try:
+        with pytest.raises(AssertionError, match='cleanup UNKNOWN'):
+            actor.finish()
+        assert _UNCONFIRMED_TEST_ACTORS[-1] is actor
+    finally:
+        _UNCONFIRMED_TEST_ACTORS.remove(actor)
+
+
+def test_finish_ends_and_reaps_only_its_hung_synthetic_actor():
+    process = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(60)'],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    class ShortWait:
+        def wait(self, *, timeout): return process.wait(timeout=min(timeout, 0.25) if process.poll() is None else timeout)
+        def kill(self): process.kill()
+    actor = Actor.__new__(Actor)
+    actor.proc = ShortWait()
+    actor.reader_eof = {'state': threading.Event(), 'event': threading.Event()}
+    actor.reader_errors = queue.Queue()
+    actor.pending = queue.Queue()
+    actor.readers = [threading.Thread(target=actor._drain, args=(name, stream), daemon=True)
+                     for name, stream in (('state', process.stdout), ('event', process.stderr))]
+    try:
+        for reader in actor.readers: reader.start()
+        actor.release_test_gates = lambda: None
+        actor.collect = lambda: None
+        with pytest.raises(AssertionError, match='test-owned actor forcibly ended'):
+            actor.finish()
+        assert process.poll() is not None and all(event.is_set() for event in actor.reader_eof.values())
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        for reader in actor.readers:
+            if reader.ident is not None:
+                reader.join(timeout=5)
 
 
 @pytest.mark.parametrize("phase", ["building", "ready"])

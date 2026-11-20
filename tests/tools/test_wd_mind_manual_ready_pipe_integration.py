@@ -10,6 +10,8 @@ import json
 import math
 import os
 import struct
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -27,10 +29,14 @@ from tools import wd_mind_full_runtime as runtime
 from tools import wd_mind_runtime_child as child
 from tools import wd_mind_runtime_process as process
 
+_IN_SYNTHETIC_PIPE_CHILD = False
+_UNCONFIRMED_TEST_CHILDREN = []
 
-def _close_until_confirmed(stream, evidence, errors):
-    """Keep the handle owned until a successful close and closed observation."""
-    while True:
+
+def _close_until_confirmed(stream, evidence, errors, *, timeout=5):
+    """Record close evidence only after a successful close and observation."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             stream.close()
             if stream.closed:
@@ -39,6 +45,72 @@ def _close_until_confirmed(stream, evidence, errors):
         except BaseException as exc:
             errors.append(exc)
         time.sleep(0.25)
+    raise TimeoutError('synthetic stream close not confirmed; cleanup UNKNOWN')
+
+
+def _run_manual_pipe_in_owned_test_child(tmp_path, *, timeout=90):
+    """Outer hard deadline for this one synthetic process and its threads.
+
+    The nested case is not allowed to create any native descendant; model and
+    worker are already synthetic fixtures.  On deadline, end only the exact
+    child returned by Popen and require actual exit; never infer test success,
+    pipe EOF or owner cleanup from a forced exit.
+    """
+    if _IN_SYNTHETIC_PIPE_CHILD:
+        return False
+    root = Path(__file__).resolve().parents[2]
+    # pytest owns tmp_path; keep every child artifact in a unique private child
+    # directory without requiring a machine-specific developer/CI layout.
+    private = tmp_path / 'owned-pipe-child'
+    private.mkdir()
+    env = {key: value for key, value in os.environ.items() if key.upper() in {
+        'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP',
+        'USERPROFILE', 'LOCALAPPDATA', 'APPDATA'}}
+    env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    bootstrap = (
+        "import sys,subprocess\nsys.path.insert(0,sys.argv[1])\nimport pytest\n"
+        "class ForbiddenPopen(subprocess.Popen):\n"
+        " def __init__(self,*args,**kwargs):\n"
+        "  raise RuntimeError('synthetic test cannot launch descendants')\n"
+        "subprocess.Popen=ForbiddenPopen\n"
+        "class ChildMarker:\n"
+        " def pytest_collection_modifyitems(self,items):\n"
+        "  for item in items: item.module._IN_SYNTHETIC_PIPE_CHILD=True\n"
+        "raise SystemExit(pytest.main(['-p','no:cacheprovider','-q',sys.argv[2],"
+        "'--basetemp',sys.argv[3]],plugins=[ChildMarker()]))\n"
+    )
+    node = 'tests/tools/test_wd_mind_manual_ready_pipe_integration.py::test_manual_owner_no_ready_real_pipe_verified_synthetic_query'
+    log = private / 'synthetic-owned-child.log'
+    with log.open('wb') as output:
+        process = subprocess.Popen([sys.executable, '-B', '-c', bootstrap,
+            str(root), node, str(private / 'inner')], cwd=root, env=env,
+            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()  # only this locally created synthetic child handle
+                process.wait(timeout=5)
+            except BaseException as exc:
+                # Preserve ownership information in this runner, but do not
+                # claim cleanup or protection against the runner itself dying.
+                _UNCONFIRMED_TEST_CHILDREN.append(process)
+                raise AssertionError('synthetic child exit unconfirmed; cleanup UNKNOWN') from exc
+            raise AssertionError('synthetic child timed out and was ended; cleanup UNKNOWN') from None
+        except BaseException:
+            # An interrupted wait must not silently abandon the specific
+            # synthetic child.  Report any inability to observe its exit.
+            if process.poll() is None:
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except BaseException as exc:
+                    _UNCONFIRMED_TEST_CHILDREN.append(process)
+                    raise AssertionError('synthetic child exit unconfirmed; cleanup UNKNOWN') from exc
+            raise
+    assert code == 0, f'synthetic child failed with exit {code}; log: {log}'
+    return True
 
 
 def test_close_evidence_waits_for_confirmed_close(monkeypatch):
@@ -60,9 +132,48 @@ def test_close_evidence_waits_for_confirmed_close(monkeypatch):
     assert len(errors) == 1 and isinstance(errors[0], OSError)
 
 
+def test_close_deadline_never_invents_evidence():
+    class NeverClosed:
+        closed = False
+        def close(self): raise OSError('synthetic close failure')
+    evidence, errors = threading.Event(), []
+    with pytest.raises(TimeoutError, match='cleanup UNKNOWN'):
+        _close_until_confirmed(NeverClosed(), evidence, errors, timeout=0)
+    assert not evidence.is_set()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows test-owned process')
+def test_outer_watchdog_ends_and_reaps_only_its_hung_synthetic_child(tmp_path, monkeypatch):
+    original = subprocess.Popen
+    children = []
+    def start_hung_test_child(_args, **kwargs):
+        process = original([sys.executable, '-B', '-c', 'import time; time.sleep(60)'], **kwargs)
+        children.append(process)
+        return process
+    # A caller-controlled environment must not disable the outer watchdog.
+    monkeypatch.setenv('WD_MIND_SYNTHETIC_PIPE_CHILD', '1')
+    monkeypatch.setattr(subprocess, 'Popen', start_hung_test_child)
+    try:
+        with pytest.raises(AssertionError, match='timed out and was ended; cleanup UNKNOWN'):
+            _run_manual_pipe_in_owned_test_child(tmp_path, timeout=0.3)
+        assert len(children) == 1 and children[0].poll() is not None
+    finally:
+        for process in children:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='requires Windows AF_PIPE')
 def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
         synthetic_checkout_pins, flat_consumer_case, tmp_path, monkeypatch):
+    if _run_manual_pipe_in_owned_test_child(tmp_path):
+        return
+    # The inner process uses a private synthetic path, never the installed
+    # owner's audit marker, even on a failed synthetic start.
+    synthetic_audit = tmp_path / 'synthetic-owner-audit'
+    synthetic_audit.mkdir()
+    monkeypatch.setattr(child, '_AUDIT_ROOT', synthetic_audit)
     package, original, _, old, clock, _ = flat_consumer_case
     monkeypatch.setattr(runtime._PrivateBinding, '_snapshot_support', lambda _: package)
     pin = _isolate_synthetic_pin(original, monkeypatch)
@@ -135,6 +246,7 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
                                                   worker_factory=factory, shutdown_timeout=0)
 
+    allow_owner_close = threading.Event()
     class SyntheticOwnerAdapter:
         # This is a test-only replacement for _LocalManifestQuery; its owner is
         # the real synthetic _SingleManifestOwner, not the production loader.
@@ -145,6 +257,8 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
         def status(self):
             return owner.status()
         def close(self):
+            if not allow_owner_close.is_set():
+                return {'state': 'HOLD', 'owned': True}
             return owner.close()
         def candidates(self, request):
             return owner.candidates(request)
@@ -184,6 +298,19 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
     control_write = os.fdopen(control_write_fd, 'wb', buffering=0)
     output_read = os.fdopen(output_read_fd, 'rb', buffering=0)
     output_write = os.fdopen(output_write_fd, 'wb', buffering=0)
+    hold_written = threading.Event()
+    class ObservedOutput:
+        def __init__(self): self.pending = bytearray()
+        def write(self, data):
+            count = output_write.write(data)
+            self.pending.extend(data[:count])
+            while b'\n' in self.pending:
+                line, _, tail = self.pending.partition(b'\n')
+                self.pending = bytearray(tail)
+                if json.loads(line).get('state') == 'HOLD':
+                    hold_written.set()
+            return count
+        def flush(self): output_write.flush()
     control_write.write(b'MCL1' + struct.pack('>I', len(policy)) + policy)
     entry_result, entry_errors, cleanup = [], [], {'clean': False}
     output_writer_closed, control_reader_closed = threading.Event(), threading.Event()
@@ -191,7 +318,7 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
     def run_entry():
         try:
             entry_result.append(child._local_candidate_owner_entry(
-                control_stream=control_read, output_stream=output_write, bundle_root=str(original._root),
+                control_stream=control_read, output_stream=ObservedOutput(), bundle_root=str(original._root),
                 expected_manifest_sha256=pin, policy_sha256=hashlib.sha256(policy).hexdigest(),
                 approval_reference_sha256='c' * 64, _cleanup_evidence=cleanup))
         except BaseException as exc:
@@ -228,7 +355,12 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
     except BaseException as exc:
         pending_error = exc
     finally:
-        # This is an ownership state, not a deadline or termination promise.
+        # This absolute deadline covers cooperative cleanup inside the isolated
+        # child. The outer process watchdog bounds blocking OS calls as well.
+        cleanup_deadline = time.monotonic() + 20
+        def require_cleanup_time(stage):
+            if time.monotonic() >= cleanup_deadline:
+                raise TimeoutError(f'synthetic {stage} not confirmed; cleanup UNKNOWN')
         try:
             print('HOLD: synthetic owner, pipes and threads remain owned until exit and EOF', flush=True)
         except BaseException as exc:
@@ -237,6 +369,7 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
         # Real anonymous-pipe EOF, not a fabricated STOP frame. Failed close is
         # uncertainty: retain the handle and retry rather than claiming EOF.
         while True:
+            require_cleanup_time('control writer close')
             try:
                 control_write.close()
                 if control_write.closed:
@@ -245,10 +378,18 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
                 if pending_error is None:
                     pending_error = exc
             time.sleep(0.25)
+        # Hold the synthetic adapter's close until the real status writer has
+        # successfully written HOLD. This makes the HOLD case deterministic,
+        # rather than assuming the scheduler cannot complete cleanup first.
+        if pending_error is None:
+            if not hold_written.wait(min(10, max(0, cleanup_deadline - time.monotonic()))):
+                pending_error = AssertionError('synthetic HOLD write was not observed')
+        allow_owner_close.set()
         # Retain ownership after any assertion/timeout or interruption. A
         # Thread.start with no identity is ambiguous, so it is never promoted
-        # to proof of exit. This intentionally has no hard completion bound.
+        # to proof of exit. A deadline is failure, never cleanup evidence.
         while True:
+            require_cleanup_time('owner entry exit')
             try:
                 if entry.ident is not None:
                     entry.join(0.25)
@@ -262,15 +403,22 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
                     pending_error = exc
         # Only the actually exited entry closes the sole output writer. Keep
         # the reader until actual EOF even if an earlier assertion failed.
-        while True:
+        wire_value, wire_errors = [], []
+        def read_wire():
             try:
-                wire = output_read.read()
-                break
+                wire_value.append(output_read.read())
             except BaseException as exc:
-                if pending_error is None:
-                    pending_error = exc
-            time.sleep(0.25)
+                wire_errors.append(exc)
+        wire_reader = threading.Thread(target=read_wire, daemon=True)
+        wire_reader.start()
+        wire_reader.join(max(0, cleanup_deadline - time.monotonic()))
+        if wire_reader.is_alive():
+            raise TimeoutError('synthetic output EOF not observed; cleanup UNKNOWN')
+        if wire_errors:
+            raise wire_errors[0]
+        wire = wire_value[0]
         while True:
+            require_cleanup_time('output reader close')
             try:
                 output_read.close()
                 if output_read.closed:
@@ -282,6 +430,7 @@ def test_manual_owner_no_ready_real_pipe_verified_synthetic_query(
         # A late session worker may start its query thread while cleanup is in
         # progress. Re-scan until every captured started thread has truly exited.
         while True:
+            require_cleanup_time('tracked thread exit')
             try:
                 before = tuple(tracked)
                 for thread in before:

@@ -423,6 +423,132 @@ def _local_client_args(policy_path, policy, *, lane='codex-lead-1', timeout='10'
             '--approval-reference-sha256', 'c'*64, '--lane', lane, '--timeout-seconds', timeout]
 
 
+@pytest.mark.parametrize(('mode', 'timeout', 'accepted'), [
+    ('--mind-manual-candidate-read', '1', True),
+    ('--mind-manual-candidate-read', '90', True),
+    ('--mind-manual-candidate-read', '91', True),
+    ('--mind-manual-candidate-read', '240', True),
+    ('--mind-manual-candidate-read', '300', True),
+    ('--mind-manual-candidate-read', '0', False),
+    ('--mind-manual-candidate-read', '301', False),
+    ('--mind-manual-candidate-read', '030', False),
+    ('--mind-manual-candidate-read', '1.5', False),
+    ('--mind-local-candidate-read', '91', False),
+    ('--mind-local-candidate-read-controlled', '91', False),
+    ('--mind-local-candidate-prompt', '91', False),
+])
+def test_manual_timeout_mode_boundaries_refuse_before_source(monkeypatch, tmp_path, mode, timeout, accepted):
+    seen = []
+    def resolver(**kwargs):
+        seen.append(kwargs)
+        raise ValueError('synthetic stop after validated inputs')
+    monkeypatch.setattr(session, 'create_selected_row_resolver', resolver)
+    policy = b'{}'
+    path = tmp_path / 'synthetic-policy'
+    path.write_bytes(policy)
+    args = _local_client_args(path, policy, timeout=timeout)
+    args[0] = mode
+    if mode == '--mind-local-candidate-prompt':
+        args += ['--fleet-sha256', 'f' * 64]
+    out, err = io.BytesIO(), io.BytesIO()
+    control = io.BytesIO() if mode.endswith('-controlled') else None
+    assert session._local_candidate_entry(args, out, err, str(Path.cwd()), 'a' * 64, control=control) == 2
+    assert out.getvalue() == b''
+    assert bool(seen) is accepted
+    if seen:
+        assert seen[0]['source_read_limit'] == session._STARTUP_SOURCE_READ_LIMIT
+
+
+def test_manual_timeout_dispatches_from_main(monkeypatch):
+    seen = []
+    monkeypatch.setattr(session, '_local_candidate_entry',
+                        lambda *args, **kwargs: seen.append(args[0]) or 17)
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a' * 64)
+    assert session.main(['--mind-manual-candidate-read']) == 17
+    assert seen == [['--mind-manual-candidate-read']]
+
+
+@pytest.mark.parametrize(('returned_at', 'accepted'), [
+    (100.0, True), (190.0, False), (191.0, False), (401.0, False),
+])
+def test_manual_timeout_uses_outer_deadline_and_bounded_resolver(monkeypatch, tmp_path, returned_at, accepted):
+    from tools import wd_mind_runtime_process as process
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(session, 'time', SimpleNamespace(monotonic=lambda: clock.value))
+    observed = {}
+    class Resolver:
+        def resolve(self, **kwargs):
+            observed['resolve_deadline'] = kwargs['deadline_monotonic']
+            clock.value = returned_at
+            return _flat_prompt_fixture()
+    def make_resolver(**kwargs):
+        observed['outer_deadline'] = kwargs['deadline_monotonic']
+        observed['cancel'] = kwargs['cancel_event']
+        observed['budget'] = kwargs['source_read_limit']
+        return Resolver()
+    monkeypatch.setattr(session, 'create_selected_row_resolver', make_resolver)
+    class Query:
+        def start(self): pass
+        def wait(self, *, timeout):
+            observed['candidate_wait'] = timeout
+            return {'status':'CANDIDATES', 'authority':'none', 'sender_authentication':'UNKNOWN',
+                    'source_verification':'UNVERIFIED', 'candidate_frame':b'synthetic-frame'}
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **_: Query())
+    policy = b'{}'
+    path = tmp_path / 'synthetic-policy'
+    path.write_bytes(policy)
+    args = _local_client_args(path, policy, timeout='300')
+    args[0] = '--mind-manual-candidate-read'
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(args, out, err, str(Path.cwd()), 'a' * 64)
+    assert observed['outer_deadline'] == 400.0
+    assert observed['resolve_deadline'] == 190.0
+    assert observed['candidate_wait'] == 90
+    assert observed['budget'] == session._STARTUP_SOURCE_READ_LIMIT
+    if not accepted:
+        assert code == 2 and out.getvalue() == b'' and err.getvalue()
+        assert observed['cancel'].is_set()
+    else:
+        assert code == 0 and err.getvalue() == b''
+        assert json.loads(out.getvalue())['authority'] == 'none'
+
+
+def test_manual_timeout_keeps_blocked_worker_owned_without_kill(monkeypatch, tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    actual_thread = threading.Thread
+    class EarlyJoin(actual_thread):
+        def join(self, timeout=None):
+            assert entered.wait(2)
+    monkeypatch.setattr(session, 'threading', SimpleNamespace(
+        Event=threading.Event, Lock=threading.Lock, Thread=EarlyJoin))
+    def blocked(**kwargs):
+        entered.set()
+        release.wait(3)
+        session._selected_checkpoint(kwargs['deadline_monotonic'], kwargs['cancel_event'])
+    monkeypatch.setattr(session, 'create_selected_row_resolver', blocked)
+    policy = b'{}'
+    path = tmp_path / 'synthetic-policy'
+    path.write_bytes(policy)
+    args = _local_client_args(path, policy, timeout='300')
+    args[0] = '--mind-manual-candidate-read'
+    out, err = io.BytesIO(), io.BytesIO()
+    before = {id(item) for item in session._LOCAL_CANDIDATE_PENDING}
+    try:
+        assert session._local_candidate_entry(args, out, err, str(Path.cwd()), 'a'*64) == 2
+        pending = [item for item in session._LOCAL_CANDIDATE_PENDING if id(item) not in before]
+        assert len(pending) == 1
+        worker, state = pending[0]
+        assert worker.is_alive() and not worker.daemon
+        assert state['abandoned'] and state['cancel_event'].is_set() and state['result'] is None
+        assert out.getvalue() == b''
+    finally:
+        release.set()
+        for worker, state in [item for item in session._LOCAL_CANDIDATE_PENDING if id(item) not in before]:
+            actual_thread.join(worker, 3)
+            if not worker.is_alive():
+                session._LOCAL_CANDIDATE_PENDING.remove((worker, state))
+
+
 def test_selected_prefix_budget_boundary_after_tail_reservation():
     budget = session._SourceReadBudget(1024 ** 3)
     budget.reserve(64 * 1024 ** 2 + 1)

@@ -1689,11 +1689,12 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
         controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')
         prompt = bool(argv and argv[0] == '--mind-local-candidate-prompt')
+        manual = bool(argv and argv[0] == '--mind-manual-candidate-read')
         if prompt:
             names.add('--fleet-sha256')
         if (len(argv) != (13 if prompt else 11)
                 or argv[0] not in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled',
-                                   '--mind-local-candidate-prompt')
+                                   '--mind-local-candidate-prompt', '--mind-manual-candidate-read')
                 or (controlled and control is None) or (not controlled and control is not None)):
             raise ValueError('args')
         pairs = list(zip(argv[1::2], argv[2::2]))
@@ -1707,7 +1708,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         if (not _SHA256.fullmatch(policy_pin) or not _SHA256.fullmatch(approval)
                 or (prompt and not _SHA256.fullmatch(args['--fleet-sha256']))
                 or type(manifest_pin) is not str or not _SHA256.fullmatch(manifest_pin)
-                or re.fullmatch(r'(?:[1-9]|[1-8][0-9]|90)', timeout_text) is None):
+                or re.fullmatch(r'(?:[1-9]|[1-9][0-9]|[12][0-9]{2}|300)' if manual
+                                else r'(?:[1-9]|[1-8][0-9]|90)', timeout_text) is None):
             raise ValueError('args')
         deadline = time.monotonic() + int(timeout_text)
         state = {'result':None, 'reason':None, 'query':None, 'resolver':None, 'abandoned':False,
@@ -1769,9 +1771,14 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                     with state['result_lock']:
                         if state['abandoned'] or time.monotonic() >= deadline:
                             raise ValueError('abandoned')
+                # The manual whole-call budget can be longer, but the existing
+                # selected-row resolver retains its independent 90 s ceiling.
+                resolve_deadline = min(deadline, time.monotonic() + 90) if manual else deadline
                 result = state['resolver'].resolve(ipc_bytes=received.get('candidate_frame'),
-                    expected_nonce=nonce, lane=lane, scope=scope, deadline_monotonic=deadline,
+                    expected_nonce=nonce, lane=lane, scope=scope, deadline_monotonic=resolve_deadline,
                     cancel_event=state['cancel_event'])
+                if manual:
+                    _selected_checkpoint(resolve_deadline, state['cancel_event'])
                 checkpoint()
                 # Recheck the external approved policy after reading source
                 # rows; the bundle descriptor alone does not pin the live file.
@@ -1824,6 +1831,10 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         if output.write(state['result']) != len(state['result']):
             raise ValueError('output_write')
         output.flush()
+        if manual:
+            # Flushed bytes cannot be retracted; consumers must reject nonzero
+            # exits or timeouts even when a complete-looking frame is present.
+            _selected_checkpoint(deadline, state['cancel_event'])
         return 0
     except BaseException as exc:
         if not isinstance(exc, Exception):
@@ -1859,7 +1870,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     if ('--mind-local-candidate-read' in argv or '--mind-local-candidate-read-controlled' in argv
-            or '--mind-local-candidate-prompt' in argv):
+            or '--mind-local-candidate-prompt' in argv or '--mind-manual-candidate-read' in argv):
         pin = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         root = str(Path(__file__).absolute().parents[2])
         controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')

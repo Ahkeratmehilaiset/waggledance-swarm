@@ -22,6 +22,27 @@ from tools import wd_mind_runtime_child as child
 from tools import wd_mind_runtime_process as process_module
 
 
+def _wait_for_explicit_stop(signal, observed, timed_out, timeout):
+    if not signal.wait(timeout):
+        timed_out.set()
+        raise TimeoutError('synthetic explicit STOP not received')
+    observed.set()
+    return b'S'
+
+
+@pytest.mark.parametrize('signalled', [False, True])
+def test_synthetic_input_only_returns_stop_when_signalled(signalled):
+    signal, observed, timed_out = threading.Event(), threading.Event(), threading.Event()
+    if signalled:
+        signal.set()
+        assert _wait_for_explicit_stop(signal, observed, timed_out, 0) == b'S'
+        assert observed.is_set() and not timed_out.is_set()
+    else:
+        with pytest.raises(TimeoutError, match='synthetic explicit STOP not received'):
+            _wait_for_explicit_stop(signal, observed, timed_out, 0)
+        assert timed_out.is_set() and not observed.is_set()
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='reservation uses Windows byte locks')
 @pytest.mark.parametrize('hold_service', [False, True])
 def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeypatch, tmp_path,
@@ -38,7 +59,8 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
     marker = root / child._OWNER_RESERVATION_NAME
     marker.write_bytes(child._OWNER_RESERVATION_MAGIC + b'C')
     monkeypatch.setattr(child, '_AUDIT_ROOT', root)
-    stop, ready, wake = threading.Event(), threading.Event(), threading.Event()
+    stop, service_observed, wake = threading.Event(), threading.Event(), threading.Event()
+    explicit_stop_observed, control_timeout = threading.Event(), threading.Event()
     wake_entered, wake_release = threading.Event(), threading.Event()
     statuses, entries, listeners, services, owners, admissions, marker_states = [], [], [], [], [], [], []
     policy = b'synthetic-policy'
@@ -49,14 +71,13 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
             data = frame.read(size)
             if data:
                 return data
-            stop.wait(5)
-            return b'S'
+            return _wait_for_explicit_stop(stop, explicit_stop_observed, control_timeout, 5)
 
     class Output:
         def write(self, data):
             status = json.loads(bytes(data))
             statuses.append(status['state'])
-            if status['state'] in ('STARTING', 'READY', 'STOPPED'):
+            if status['state'] in ('STARTING', 'STOPPED'):
                 assert len(admissions) == 1
                 with admissions[0]._lock:
                     marker_states.append((status['state'], admissions[0]._guard._read()))
@@ -69,8 +90,6 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
                 assert not factory._admission._worker._keeper.is_alive()
                 assert not any(thread.name == 'mind-local-control' and thread.is_alive()
                                for thread in threading.enumerate())
-            if status['state'] == 'READY':
-                ready.set()
             return len(data)
         def flush(self):
             pass
@@ -112,6 +131,31 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
         services.append(service)
         return service
     monkeypatch.setattr(process_module, 'create_local_candidate_service', create_service)
+    real_service_status = process_module._LocalCandidateService.status
+    running_observations = []
+    observation_errors, ownership_observations = [], []
+    def observed_service_status(service):
+        result = real_service_status(service)
+        if threading.current_thread() is entry and result['state'] == 'RUNNING':
+            running_observations.append(True)
+            if len(running_observations) == 2:
+                # The first RUNNING response has already been consumed by the
+                # real owner loop. This is an internal synthetic observation,
+                # not a public READY status or a proven real pipe connection.
+                try:
+                    if len(admissions) != 1 or len(owners) != 1:
+                        raise AssertionError('synthetic admission or owner count')
+                    with admissions[0]._lock:
+                        marker_states.append(('RUNNING', admissions[0]._guard._read()))
+                    adapter, owner, factory = owners[0]
+                    ownership_observations.append((owner.status(),
+                        factory._admission._worker.status(), process.stdin.closed))
+                except BaseException as error:
+                    observation_errors.append(error)
+                finally:
+                    service_observed.set()
+        return result
+    monkeypatch.setattr(process_module._LocalCandidateService, 'status', observed_service_status)
     original_query_factory = child.create_local_manifest_query
     def create_query(**kwargs):
         admissions.append(kwargs['_admission'])
@@ -166,7 +210,13 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
     entry = threading.Thread(target=run_entry, daemon=True)
     entry.start()
     try:
-        assert ready.wait(5), (statuses, entries)
+        assert service_observed.wait(5), (statuses, entries)
+        assert not observation_errors, observation_errors
+        assert marker_states[-1] == ('RUNNING', child._OWNER_RESERVATION_MAGIC + b'R')
+        assert len(ownership_observations) == 1
+        owner_status, worker_status, stdin_closed = ownership_observations[0]
+        assert owner_status['state'] == 'READY' and owner_status['owned'] is True
+        assert worker_status['owned'] is True and stdin_closed is False
         with pytest.raises(child.LaunchRefused):
             child._reserve_local_owner(root)
         stop.set()
@@ -182,6 +232,7 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
             wake_release.set()
         entry.join(timeout=5)
         assert not entry.is_alive()
+        assert explicit_stop_observed.is_set() and not control_timeout.is_set()
         assert entries == [0]
         assert listeners and listeners[0].closed
         assert type(services[0]) is process_module._LocalCandidateService
@@ -193,9 +244,10 @@ def test_real_service_control_owner_and_worker_teardown(staged_graceful, monkeyp
         assert factory._admission._worker.status()['owned'] is False
         assert not factory._admission._worker._keeper.is_alive()
         assert process.stdin.closed
+        assert process.stdout.closed and process.stderr.closed and process.poll() == 0
         assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
-        assert statuses[0] == 'STARTING' and statuses[-1] == 'STOPPED'
-        assert [state for state, _ in marker_states] == ['STARTING', 'READY', 'STOPPED']
+        assert statuses[0] == 'STARTING' and statuses[-1] == 'STOPPED' and 'READY' not in statuses
+        assert [state for state, _ in marker_states] == ['STARTING', 'RUNNING', 'STOPPED']
     finally:
         stop.set()
         wake_release.set()

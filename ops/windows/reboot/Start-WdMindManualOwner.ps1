@@ -176,7 +176,9 @@ function Update-WdMindManualOwner {
             elseif($Record.OutDone -and $Record.ErrDone) {$Record.State='FAILED'}
             else {$Record.State='HOLD'}
         } elseif($Record.Stopping) {$Record.State='HOLD'}
-        elseif($Record.ReportedState -ceq 'READY') {$Record.State='READY'}
+        # A legacy READY may have been buffered before internal close began.
+        # The status stream alone cannot establish current readiness.
+        elseif($Record.ReportedState -ceq 'READY') {$Record.State='HOLD'}
         elseif($Record.ReportedState -ceq 'HOLD' -or $Record.ReportedState -ceq 'STOPPED') {$Record.State='HOLD'}
         else {$Record.State='STARTING'}
     } catch { $Record.State='HOLD'; $Record.Invalid=$true }

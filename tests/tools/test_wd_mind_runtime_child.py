@@ -314,6 +314,116 @@ def test_closed_local_cli_refuses_before_admission(monkeypatch):
     assert seen == []
 
 
+@pytest.mark.parametrize('diagnostics', ['off', 'startup', 'worker'])
+def test_internal_control_failure_closes_owner_with_blocked_status_output(monkeypatch, diagnostics):
+    from tools import wd_mind_full_runtime as runtime
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    output_blocked, release_output, owner_closed = (threading.Event() for _ in range(3))
+    policy = b'synthetic-policy-only'
+    source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
+    frames, result = [], []
+    class Input:
+        def read(self, size):
+            value = source.read(size)
+            if value: return value
+            assert output_blocked.wait(5)
+            raise OSError('synthetic-internal-control-error')
+    class Output:
+        def write(self, data):
+            row = json.loads(bytes(data))
+            if row.get('state') == 'STARTING':
+                output_blocked.set()
+                assert release_output.wait(5)
+            frames.append(row)
+            return len(data)
+        def flush(self): pass
+    class Owner:
+        _owner = object()
+        def __init__(self): self.closed = False
+        def start(self): return {'state':'STARTING'}
+        def status(self): return {'state':'STOPPED' if self.closed else 'READY', 'owned':not self.closed}
+        def close(self):
+            self.closed = True
+            owner_closed.set()
+            return {'state':'STOPPED', 'owned':False}
+        def start_diagnostic(self): return {'reason':'UNKNOWN', 'exception_type':'UNKNOWN', 'authority':'none'}
+        def worker_exit_diagnostic(self): return ('UNKNOWN', None)
+    owner = Owner()
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **_: owner)
+    thread = threading.Thread(target=lambda: result.append(child._local_candidate_owner_entry(
+        control_stream=Input(), output_stream=Output(), bundle_root='synthetic',
+        expected_manifest_sha256='a'*64, policy_sha256=hashlib.sha256(policy).hexdigest(),
+        approval_reference_sha256='c'*64,
+        include_start_diagnostics=diagnostics == 'startup',
+        include_worker_stage_diagnostics=diagnostics == 'worker')))
+    thread.start()
+    try:
+        assert output_blocked.wait(5)
+        assert owner_closed.wait(5)  # Independent close progresses while output remains blocked.
+        assert thread.is_alive() and not release_output.is_set()
+    finally:
+        release_output.set()
+        thread.join(5)
+    assert not thread.is_alive() and result == [2]
+    assert not any(row.get('state') == 'READY' for row in frames)
+    assert frames[-1].get('state') == 'STOPPED'
+
+
+@pytest.mark.parametrize('diagnostics', ['off', 'startup', 'worker'])
+def test_running_service_never_publishes_ready_and_still_closes(monkeypatch, diagnostics):
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_runtime_process as process
+    monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
+    service_seen, stop_requested, ready_published = (threading.Event() for _ in range(3))
+    policy = b'synthetic-policy-only'
+    source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
+    frames, result = [], []
+    class Input:
+        def read(self, size):
+            value = source.read(size)
+            if value: return value
+            assert stop_requested.wait(5)
+            return b'S'
+    class Output:
+        def write(self, data):
+            row = json.loads(bytes(data))
+            frames.append(row)
+            if row.get('state') == 'READY': ready_published.set()
+            return len(data)
+        def flush(self): pass
+    class Owner:
+        _owner = object()
+        def __init__(self): self.closed = False
+        def start(self): return {'state':'STARTING'}
+        def status(self): return {'state':'STOPPED' if self.closed else 'READY', 'owned':not self.closed}
+        def close(self):
+            self.closed = True
+            return {'state':'STOPPED', 'owned':False}
+    owner = Owner()
+    class Service:
+        def start(self): pass
+        def status(self): service_seen.set(); return {'state':'RUNNING'}
+        def close(self, *, timeout): return {'state':'STOPPED'}
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **_: owner)
+    monkeypatch.setattr(process, 'create_local_candidate_service', lambda **_: Service())
+    thread = threading.Thread(target=lambda: result.append(child._local_candidate_owner_entry(
+        control_stream=Input(), output_stream=Output(), bundle_root='synthetic',
+        expected_manifest_sha256='a'*64, policy_sha256=hashlib.sha256(policy).hexdigest(),
+        approval_reference_sha256='c'*64,
+        include_start_diagnostics=diagnostics == 'startup',
+        include_worker_stage_diagnostics=diagnostics == 'worker')))
+    thread.start()
+    try:
+        assert service_seen.wait(5)
+        assert not ready_published.wait(0.3)
+    finally:
+        stop_requested.set()
+        thread.join(5)
+    assert not thread.is_alive() and result == [0]
+    assert [row['state'] for row in frames] == ['STARTING', 'HOLD', 'STOPPED']
+    assert all(row['authority'] == 'none' for row in frames)
+
+
 @pytest.mark.parametrize('policy_mode', ['frame', 'path'])
 @pytest.mark.parametrize('stop_byte,expected_exit', [(b'S', 0), (b'', 0), (b'X', 2)])
 def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_close(monkeypatch, tmp_path, stop_byte, expected_exit, policy_mode):
@@ -341,7 +451,6 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
         def write(self, data):
             raw = bytes(data)
             statuses.append(json.loads(raw))
-            if statuses[-1]['state'] == 'READY': ready.set()
             return len(raw)
         def flush(self): pass
     class Owner:
@@ -370,7 +479,9 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
                 request = {'schema':'wd.mind-pipe-request.v2', 'query_id':'startup_work_overview',
                            'nonce':'a'*64, 'lane':lane, 'scope':'shared'}
                 assert self.adapter.located_candidates(request)['status'] == 'ABSTAIN'
-        def status(self): return {'state':'RUNNING', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+        def status(self):
+            ready.set()  # Synthetic service has completed its five requests; no public READY frame.
+            return {'state':'RUNNING', 'authority':'none', 'caller_authentication':'UNKNOWN'}
         def close(self, *, timeout):
             self.closes += 1
             return {'state':'HOLD'} if self.closes == 1 else {'state':'STOPPED'}
@@ -399,7 +510,7 @@ def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_clos
         policy_path=str(policy_path) if policy_mode == 'path' else None)
     assert result == expected_exit and starts == ['owner'] and len(requests) == 5
     assert marker.read_bytes() == child._OWNER_RESERVATION_MAGIC + b'C'
-    assert [row['state'] for row in statuses] == ['STARTING','READY','HOLD','STOPPED']
+    assert [row['state'] for row in statuses] == ['STARTING','HOLD','STOPPED']
     assert all(row['authority'] == 'none' and row['caller_authentication'] == 'UNKNOWN'
                and row['source_authentication'] == 'UNKNOWN' and row['index_refresh'] == 'NOT_SCHEDULED'
                for row in statuses)
@@ -554,8 +665,6 @@ def test_blocked_close_diagnostic_does_not_block_cooperative_close(monkeypatch):
     class Output:
         def write(self, data):
             row = json.loads(bytes(data))
-            if row.get('state') == 'READY':
-                ready.set()
             if row.get('schema') == 'wd.mind-local-owner-close-diagnostic.v1':
                 diagnostic_blocked.set()
                 assert release_output.wait(5)
@@ -578,7 +687,9 @@ def test_blocked_close_diagnostic_does_not_block_cooperative_close(monkeypatch):
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
     class Service:
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            ready.set()  # Synchronize on synthetic service observation, not published READY.
+            return {'state': 'RUNNING'}
         def close(self, *, timeout): return {'state': 'STOPPED'}
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     result = []
@@ -618,8 +729,6 @@ def test_close_starts_before_close_diagnostic_thread_start_can_block(monkeypatch
             return b'S'
     class Output:
         def write(self, data):
-            if json.loads(bytes(data)).get('state') == 'READY':
-                ready.set()
             return len(data)
         def flush(self): pass
     class Owner:
@@ -638,7 +747,9 @@ def test_close_starts_before_close_diagnostic_thread_start_can_block(monkeypatch
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
     class Service:
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            ready.set()  # Synchronize on synthetic service observation, not published READY.
+            return {'state': 'RUNNING'}
         def close(self, *, timeout): return {'state': 'STOPPED'}
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     actual_start = threading.Thread.start
@@ -683,7 +794,6 @@ def test_close_frame_can_arrive_while_first_owner_close_is_blocked(monkeypatch):
     class Output:
         def write(self, data):
             row = json.loads(bytes(data))
-            if row.get('state') == 'READY': ready.set()
             if row.get('schema') == 'wd.mind-local-owner-close-diagnostic.v1': diagnostic_seen.set()
             return len(data)
         def flush(self): pass
@@ -702,7 +812,9 @@ def test_close_frame_can_arrive_while_first_owner_close_is_blocked(monkeypatch):
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
     class Service:
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            ready.set()  # Synchronize on synthetic service observation, not published READY.
+            return {'state': 'RUNNING'}
         def close(self, *, timeout): return {'state': 'STOPPED'}
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     result = []
@@ -739,7 +851,6 @@ def test_close_retries_while_diagnostic_start_and_status_output_are_blocked(monk
     class Output:
         def write(self, data):
             row = json.loads(bytes(data))
-            if row.get('state') == 'READY': ready.set()
             if row.get('state') == 'HOLD':
                 status_blocked.set()
                 assert release_output.wait(5)
@@ -762,7 +873,9 @@ def test_close_retries_while_diagnostic_start_and_status_output_are_blocked(monk
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
     class Service:
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            ready.set()  # Synchronize on synthetic service observation, not published READY.
+            return {'state': 'RUNNING'}
         def close(self, *, timeout): return {'state': 'STOPPED'}
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     actual_start = threading.Thread.start
@@ -808,8 +921,6 @@ def test_cleanup_evidence_stays_false_until_held_service_stops(monkeypatch):
             return b'S'
     class Output:
         def write(self, data):
-            if json.loads(bytes(data)).get('state') == 'READY':
-                ready.set()
             return len(data)
         def flush(self): pass
     class Owner:
@@ -827,7 +938,9 @@ def test_cleanup_evidence_stays_false_until_held_service_stops(monkeypatch):
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: adapter)
     class Service:
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            ready.set()  # Synchronize on synthetic service observation, not published READY.
+            return {'state': 'RUNNING'}
         def close(self, *, timeout):
             if not release_service.is_set():
                 service_held.set()
@@ -1522,8 +1635,6 @@ def test_candidate_owner_monitor_keeps_service_alive_during_locked_query(monkeyp
             statuses.append(state)
             if state == 'HOLD' and not queries_done.is_set():
                 held_before_queries_done.append(True)
-            if state == 'READY':
-                ready.set()
             return len(raw)
         def flush(self): pass
 
@@ -1558,7 +1669,9 @@ def test_candidate_owner_monitor_keeps_service_alive_during_locked_query(monkeyp
                     queries_done.set()
             self.worker = threading.Thread(target=query)
             self.worker.start()
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            ready.set()  # Synchronize on synthetic service observation, not published READY.
+            return {'state': 'RUNNING'}
         def close(self, *, timeout):
             self.worker.join(timeout=1)
             return {'state': 'STOPPED' if not self.worker.is_alive() else 'HOLD'}

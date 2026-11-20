@@ -615,7 +615,7 @@ def test_postready_service_failure_is_not_labeled_startup_failure(monkeypatch):
         bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
         approval_reference_sha256='c'*64, include_start_diagnostics=True) == 2
     rows = [json.loads(raw) for raw in output.lines]
-    assert [row['state'] for row in rows] == ['STARTING', 'READY', 'HOLD', 'STOPPED']
+    assert [row['state'] for row in rows] == ['STARTING', 'HOLD', 'STOPPED']
     base = {'schema':'wd.mind-local-owner-status.v1', 'manifest_sha256':'a'*64, 'authority':'none',
             'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'}
     for raw, row in zip(output.lines, rows):
@@ -632,7 +632,7 @@ def test_postready_failure_reports_optin_v2_without_startup_misattribution(monke
         approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == 2
     rows = [json.loads(raw) for raw in output.lines]
     statuses = [row['state'] for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1']
-    assert statuses == ['STARTING', 'READY', 'HOLD', 'STOPPED']
+    assert statuses == ['STARTING', 'HOLD', 'STOPPED']
     diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
     assert len(diagnostics) == 1
     assert diagnostics[0] == {'schema':'wd.mind-local-owner-start-diagnostic.v2', 'authority':'none',
@@ -680,8 +680,6 @@ def test_postready_v2_clean_stop_emits_no_failure_diagnostic(monkeypatch):
     ready = threading.Event()
     def write(data):
         written = original_write(data)
-        if b'"state":"READY"' in bytes(data):
-            ready.set()
         return written
     # The input's frame is consumed before the control thread calls read.
     frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy-never-in-output'))
@@ -689,12 +687,15 @@ def test_postready_v2_clean_stop_emits_no_failure_diagnostic(monkeypatch):
     def read_frame_then_stop(size):
         value = frame.read(size)
         if value: return value
-        ready.wait(2)
+        assert ready.wait(5)
         return b'S'
     control.read, output.write = read_frame_then_stop, write
     class Service:
         def start(self): pass
-        def status(self): return {'state':'RUNNING'}
+        def status(self):
+            self.status_calls = getattr(self, 'status_calls', 0) + 1
+            if self.status_calls == 2: ready.set()  # First RUNNING was already handled internally.
+            return {'state':'RUNNING'}
         def close(self, *, timeout): return {'state':'STOPPED'}
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     evidence = {'clean': False}
@@ -704,8 +705,8 @@ def test_postready_v2_clean_stop_emits_no_failure_diagnostic(monkeypatch):
         _cleanup_evidence=evidence) == 0
     rows = [json.loads(raw) for raw in output.lines]
     states = [row['state'] for row in rows]
-    assert states[:2] == ['STARTING', 'READY'] and states[-1] == 'STOPPED'
-    assert all(state == 'HOLD' for state in states[2:-1])
+    assert states[0] == 'STARTING' and states[-1] == 'STOPPED' and 'READY' not in states
+    assert all(state == 'HOLD' for state in states[1:-1])
     assert evidence['clean'] is True and output.owner.closes == 1
     assert all(row['schema'] == 'wd.mind-local-owner-status.v1' for row in rows)
 
@@ -724,12 +725,11 @@ def test_postready_v2_detects_worker_exit_during_clean_stop_cleanup(monkeypatch,
     def read(size):
         value = frame.read(size)
         if value: return value
-        ready.wait(2)
+        assert ready.wait(5)
         return b'S'
     def write(data):
         written = original_write(data)
         raw = bytes(data)
-        if b'"state":"READY"' in raw: ready.set()
         if b'worker_exit_stage_hint' in raw: diag.set()
         return written
     def close():
@@ -741,7 +741,10 @@ def test_postready_v2_detects_worker_exit_during_clean_stop_cleanup(monkeypatch,
                                                      else ('UNKNOWN', None))
     class Service:
         def start(self): pass
-        def status(self): return {'state':'RUNNING'}
+        def status(self):
+            self.status_calls = getattr(self, 'status_calls', 0) + 1
+            if self.status_calls == 2: ready.set()  # First RUNNING was already handled internally.
+            return {'state':'RUNNING'}
         def close(self, *, timeout): return {'state':'STOPPED'}
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
@@ -749,7 +752,7 @@ def test_postready_v2_detects_worker_exit_during_clean_stop_cleanup(monkeypatch,
         approval_reference_sha256='c'*64, include_worker_stage_diagnostics=True) == (2 if is_failure else 0)
     rows = [json.loads(raw) for raw in output.lines]
     assert [row['state'] for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1'] == [
-        'STARTING', 'READY', 'HOLD', 'STOPPED']
+        'STARTING', 'HOLD', 'STOPPED']
     diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
     assert len(diagnostics) == int(is_failure)
     if is_failure:
@@ -784,8 +787,6 @@ def test_real_adapter_does_not_lose_exit_hint_when_close_worker_finishes_first(m
 
     def write(data):
         result = original_write(data)
-        if b'"state":"READY"' in bytes(data):
-            ready.set()
         return result
 
     frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy-never-in-output'))
@@ -800,7 +801,10 @@ def test_real_adapter_does_not_lose_exit_hint_when_close_worker_finishes_first(m
 
     class Service:
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            self.status_calls = getattr(self, 'status_calls', 0) + 1
+            if self.status_calls == 2: ready.set()  # First RUNNING was already handled internally.
+            return {'state':'RUNNING'}
         def close(self, *, timeout):
             assert closed_twice.wait(5)
             # Joining ensures close_adapter_once has published its completion;
@@ -857,8 +861,6 @@ def test_real_adapter_retains_worker_hint_after_close_exception(monkeypatch, hin
 
     def write(data):
         result = original_write(data)
-        if b'"state":"READY"' in bytes(data):
-            ready.set()
         return result
 
     frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy-never-in-output'))
@@ -874,7 +876,10 @@ def test_real_adapter_retains_worker_hint_after_close_exception(monkeypatch, hin
     class Service:
         timed_out = False
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            self.status_calls = getattr(self, 'status_calls', 0) + 1
+            if self.status_calls == 2: ready.set()  # First RUNNING was already handled internally.
+            return {'state':'RUNNING'}
         def close(self, *, timeout):
             if not close_attempted_twice.wait(5):
                 self.timed_out = True
@@ -904,13 +909,17 @@ def test_real_adapter_retains_worker_hint_after_close_exception(monkeypatch, hin
         assert not diagnostics
 
 
-@pytest.mark.parametrize('ready_write', ['complete', 'raise', 'short', 'partial_then_raise'])
-def test_real_adapter_worker_hint_during_ready_publication(monkeypatch, ready_write):
-    """Exercise READY ordering with a fake owner, not a native rotator."""
+@pytest.mark.parametrize('hold_write', ['complete', 'raise', 'short', 'partial_then_raise'])
+def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_write):
+    """Exercise held HOLD writes after a real synthetic service observation.
+
+    READY is intentionally never published; this is not the old held-READY
+    race test, which remains an independent b4 reproduction.
+    """
     from tools import wd_mind_runtime_process as process
 
     control, output, _ = _cli_fixture(monkeypatch, delayed=True, post_ready=True)
-    publication_entered, second_close = threading.Event(), threading.Event()
+    service_observed, hold_write_entered, second_close = (threading.Event() for _ in range(3))
     evidence, close_threads, observations, timeouts = {'clean': False}, [], [], []
     wire, partial_pending = bytearray(), [False]
     adapter = _local_adapter()
@@ -924,6 +933,8 @@ def test_real_adapter_worker_hint_during_ready_publication(monkeypatch, ready_wr
 
     def close():
         close_threads.append(threading.current_thread())
+        if not hold_write_entered.wait(5):
+            timeouts.append('hold_write')
         result = original_close()
         if output.owner.closes == 2:
             observations.append(('second_close', evidence['clean']))
@@ -942,26 +953,26 @@ def test_real_adapter_worker_hint_during_ready_publication(monkeypatch, ready_wr
         if partial_pending[0]:
             partial_pending[0] = False
             raise OSError('synthetic-ready-write-error')
-        if b'"state":"READY"' not in raw:
+        if b'"state":"HOLD"' not in raw:
             wire.extend(raw)
             return len(raw)
-        if ready_write == 'complete':
+        hold_write_entered.set()
+        if hold_write == 'complete':
             wire.extend(raw)
-        elif ready_write == 'partial_then_raise':
+        elif hold_write == 'partial_then_raise':
             wire.extend(raw[:8])
             partial_pending[0] = True
-        publication_entered.set()
         if not second_close.wait(5):
             timeouts.append('second_close')
         elif close_threads:
             close_threads[0].join(timeout=5)
             if close_threads[0].is_alive():
                 timeouts.append('close_thread')
-        if ready_write == 'raise':
+        if hold_write == 'raise':
             raise OSError('synthetic-ready-write-error')
-        if ready_write == 'short':
+        if hold_write == 'short':
             return 0
-        return 8 if ready_write == 'partial_then_raise' else len(raw)
+        return 8 if hold_write == 'partial_then_raise' else len(raw)
 
     frame = io.BytesIO(b'MCL1' + struct.pack('>I', len(b'synthetic-policy')) + b'synthetic-policy')
 
@@ -969,13 +980,17 @@ def test_real_adapter_worker_hint_during_ready_publication(monkeypatch, ready_wr
         value = frame.read(size)
         if value:
             return value
-        if not publication_entered.wait(5):
-            timeouts.append('ready_publication')
+        if not service_observed.wait(5):
+            timeouts.append('service_observation')
         return b'S'
 
     class Service:
         def start(self): pass
-        def status(self): return {'state': 'RUNNING'}
+        def status(self):
+            self.status_calls = getattr(self, 'status_calls', 0) + 1
+            if self.status_calls == 2:
+                service_observed.set()  # The first RUNNING was already handled internally.
+            return {'state': 'RUNNING'}
         def close(self, *, timeout): return {'state': 'STOPPED'}
 
     output.owner.close = close
@@ -994,30 +1009,50 @@ def test_real_adapter_worker_hint_during_ready_publication(monkeypatch, ready_wr
             malformed.append(raw)
     statuses = [row['state'] for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1']
     diagnostics = [row for row in rows if row['schema'] == 'wd.mind-local-owner-start-diagnostic.v2']
+    assert all(row.get('schema') in ('wd.mind-local-owner-status.v1',
+                                      'wd.mind-local-owner-start-diagnostic.v2') for row in rows)
+    assert len(diagnostics) <= 2
+    for row in diagnostics:
+        assert row == {'schema':'wd.mind-local-owner-start-diagnostic.v2', 'authority':'none',
+                       'reason':'UNKNOWN', 'exception_type':'UNKNOWN',
+                       'worker_exit_stage_hint':row['worker_exit_stage_hint'], 'worker_exit_code':None}
+        assert row['worker_exit_stage_hint'] in ('UNKNOWN', 'serving')
     assert not timeouts and second_close.is_set() and output.owner.closes == 2
     assert len(set(close_threads)) == 1 and ('second_close', False) in observations
     assert any(item[0] == 'hint' and item[1] == 1 and item[2] is close_threads[0]
                for item in observations)
     assert evidence['clean'] is True and result == 2
-    assert statuses[0] == 'STARTING' and statuses[-1] == 'STOPPED'
-    if ready_write == 'complete':
+    assert statuses[0] == 'STARTING'
+    assert 'READY' not in statuses
+    if hold_write == 'complete':
+        assert statuses[-1] == 'STOPPED'
         assert not malformed
-        assert statuses.count('READY') == 1
-        assert any(row['reason'] == row['exception_type'] == 'UNKNOWN'
-                   and row['worker_exit_stage_hint'] == 'serving' for row in diagnostics)
+        assert statuses.count('HOLD') == 1
+        assert diagnostics and diagnostics[-1]['worker_exit_stage_hint'] == 'serving'
     else:
-        if ready_write == 'partial_then_raise':
-            # The stream contains an incomplete READY prefix followed by the
-            # next status; it must not be accepted as a complete READY frame.
-            assert len(malformed) == 1 and malformed[0].startswith(b'{"author')
+        if hold_write == 'partial_then_raise':
+            # The stream contains an incomplete HOLD prefix followed by the
+            # next frame. The child's internal cleanup evidence does not
+            # establish STOPPED at the parent when the wire is malformed.
+            assert malformed and all(raw.startswith(b'{"author') for raw in malformed)
+            if os.name == 'nt':
+                from wd_mind_owned_compat import run_owned
+                shell = shutil.which('powershell.exe')
+                assert shell is not None
+                script = Path(__file__).with_name('test_wd_mind_manual_diagnostic_parser.ps1')
+                payload = json.dumps({'wire':bytes(wire).decode('ascii'), 'optin':True, 'legacyRecord':False})
+                proc = run_owned([shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                                  '-File', str(script), '-HelperPath', str(MANUAL_HELPER)],
+                                 input=payload, text=True, encoding='utf-8', timeout=15,
+                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                assert proc.returncode == 0, proc.stderr
+                parent = json.loads(proc.stdout.lstrip('\ufeff'))
+                assert parent['invalid'] is True and parent['status']['state'] == 'HOLD'
+                assert parent['status']['state'] != 'STOPPED'
         else:
+            assert statuses[-1] == 'STOPPED'
             assert not malformed
-        assert 'READY' not in statuses
-        assert diagnostics and all(row['reason'] == 'OWNER_ENTRY' for row in diagnostics)
-        assert all(row['exception_type'] == ('ValueError' if ready_write == 'short' else 'OSError')
-                   for row in diagnostics)
-        assert all(row['worker_exit_stage_hint'] == 'UNKNOWN' and row['worker_exit_code'] is None
-                   for row in diagnostics)
+            assert diagnostics and diagnostics[-1]['worker_exit_stage_hint'] == 'serving'
     assert b'synthetic-ready-write-error' not in wire
 
 

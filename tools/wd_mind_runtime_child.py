@@ -2564,8 +2564,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     service_error, control_error = [], []
     last_state, failed, start_failure = None, False, None
     last_diagnostic, diagnostic_count = None, 0
-    startup_reported_ready = False
-    ready_publication_started = threading.Event()
+    service_ready_observed = False
+    service_ready_observed_event = threading.Event()
     diagnostic_stop, diagnostic_done, diagnostic_thread = threading.Event(), threading.Event(), None
     worker_exit_snapshot_lock = threading.Lock()
     worker_exit_snapshot = None
@@ -2589,24 +2589,25 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             output_gate.release()
 
     def emit(state):
-        nonlocal last_state, startup_reported_ready
+        nonlocal last_state
+        # The status stream cannot revoke a buffered or blocked READY write
+        # when an internal close begins. Never advertise that state here.
+        if state == 'READY':
+            raise ValueError('ready_status_disabled')
         if state == last_state:
             return
-        if state == 'READY':
-            ready_publication_started.set()
         raw = json.dumps({'schema':'wd.mind-local-owner-status.v1', 'state':state,
             'manifest_sha256':expected_manifest_sha256, 'authority':'none',
             'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
             'index_refresh':'NOT_SCHEDULED'}, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
         write_record(raw)
         last_state = state
-        if state == 'READY': startup_reported_ready = True
 
     def emit_diagnostic():
         nonlocal last_diagnostic, diagnostic_count
         if ((include_start_diagnostics is not True and include_worker_stage_diagnostics is not True)
                 or diagnostic_count >= 2
-                or (startup_reported_ready and include_worker_stage_diagnostics is not True)):
+                or (service_ready_observed and include_worker_stage_diagnostics is not True)):
             return
         value = start_failure
         if adapter is not None:
@@ -2620,16 +2621,16 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             except BaseException:
                 pass
         safe = _validated_start_failure(value)
-        # A post-READY worker exit is not a startup failure; only its fixed,
+        # A worker exit after service readiness is not a startup failure; only its fixed,
         # untrusted worker-exit diagnostic may be reported in v2.
-        if startup_reported_ready:
+        if service_ready_observed:
             safe = {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN'}
         key = (safe['reason'], safe['exception_type'])
         if include_worker_stage_diagnostics is True:
             hint, exit_code = 'UNKNOWN', None
             with worker_exit_snapshot_lock:
                 captured = worker_exit_snapshot
-            if startup_reported_ready and captured is not None:
+            if service_ready_observed and captured is not None:
                 hint, exit_code = captured
             elif adapter is not None:
                 try: hint, exit_code = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
@@ -2678,7 +2679,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
 
     def report_verified_worker_exit_during_hold():
         nonlocal failed
-        if (include_worker_stage_diagnostics is not True or not startup_reported_ready
+        if (include_worker_stage_diagnostics is not True or not service_ready_observed
                 or diagnostic_thread is not None or adapter is None):
             return
         try:
@@ -2714,7 +2715,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
 
     def capture_worker_exit_after_incomplete_close():
         nonlocal worker_exit_snapshot
-        if include_worker_stage_diagnostics is not True or not ready_publication_started.is_set():
+        if include_worker_stage_diagnostics is not True or not service_ready_observed_event.is_set():
             return
         try:
             hint = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
@@ -2940,7 +2941,10 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 if runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is not True:
                     failed = True
                     break
-                emit('READY')
+                # Internal observation is used only for diagnostic phase
+                # tracking; it is not a readiness claim on the status wire.
+                service_ready_observed = True
+                service_ready_observed_event.set()
             stop.wait(0.1)
         # EOF/STOP can arrive before the first status poll. Do not turn a
         # startup failure that is already visible into a successful stop.
@@ -2970,7 +2974,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             try: emit('HOLD')
             except BaseException: pass
             if (include_worker_stage_diagnostics is True or
-                    (include_start_diagnostics is True and not startup_reported_ready)):
+                    (include_start_diagnostics is True and not service_ready_observed)):
                 start_diagnostic_worker()
         if service_thread is not None:
             while not service_done.is_set() or service_thread.is_alive():
@@ -2986,7 +2990,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 try: emit('HOLD')
                 except BaseException: pass
                 if (include_worker_stage_diagnostics is True or
-                        (include_start_diagnostics is True and not startup_reported_ready)):
+                        (include_start_diagnostics is True and not service_ready_observed)):
                     start_diagnostic_worker()
         early_adapter_closed = False
         if service is not None:
@@ -3013,7 +3017,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                         try: emit('HOLD')
                         except BaseException: pass
                         if (include_worker_stage_diagnostics is True or
-                                (include_start_diagnostics is True and not startup_reported_ready)):
+                                (include_start_diagnostics is True and not service_ready_observed)):
                             start_diagnostic_worker()
                         break
                 except BaseException:
@@ -3061,7 +3065,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     try: emit('HOLD')
                     except BaseException: pass
                     if (include_worker_stage_diagnostics is True or
-                            (include_start_diagnostics is True and not startup_reported_ready)):
+                            (include_start_diagnostics is True and not service_ready_observed)):
                         start_diagnostic_worker()
             # Close may finish on the worker before either cleanup loop polls.
             # Consume any fixed exit evidence captured before owner retirement.

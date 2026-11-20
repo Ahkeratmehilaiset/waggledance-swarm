@@ -11,6 +11,95 @@ import sys
 import pytest
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell status consumer')
+@pytest.mark.parametrize('stopping', [False, True])
+def test_buffered_legacy_ready_is_never_advertised(stopping):
+    from wd_mind_owned_compat import run_owned
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    manifest = 'a' * 64
+    wire = json.dumps({'schema':'wd.mind-local-owner-status.v1', 'state':'READY',
+        'manifest_sha256':manifest, 'authority':'none', 'caller_authentication':'UNKNOWN',
+        'source_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'},
+        sort_keys=True, separators=(',', ':')).encode() + b'\n'
+    quoted = str(helper).replace("'", "''")
+    script = f"""
+. '{quoted}'
+$bytes=[Convert]::FromBase64String('{base64.b64encode(wire).decode()}')
+$stream=New-Object System.IO.MemoryStream
+$process=[pscustomobject]@{{StandardOutput=[pscustomobject]@{{BaseStream=$stream}};HasExited=$false}}
+$record=@{{OutRead=[Threading.Tasks.Task]::FromResult($bytes.Length);ErrRead=$null;OutBuffer=$bytes;
+ Line=(New-Object IO.MemoryStream);Manifest='{manifest}';ReportedState='STARTING';Process=$process;
+ Stopping=${str(stopping).lower()};Invalid=$false}}
+Update-WdMindManualOwner $record
+@{{state=$record.State;reported=$record.ReportedState;invalid=$record.Invalid}} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = run_owned([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                     text=True, encoding='utf-8', timeout=15,
+                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.lstrip('\ufeff')) == {'state':'HOLD','reported':'READY','invalid':False}
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell status consumer')
+def test_starting_without_later_status_remains_starting():
+    from wd_mind_owned_compat import run_owned
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    manifest = 'a' * 64
+    wire = json.dumps({'schema':'wd.mind-local-owner-status.v1', 'state':'STARTING',
+        'manifest_sha256':manifest, 'authority':'none', 'caller_authentication':'UNKNOWN',
+        'source_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'},
+        sort_keys=True, separators=(',', ':')).encode() + b'\n'
+    quoted = str(helper).replace("'", "''")
+    script = f"""
+. '{quoted}'
+$bytes=[Convert]::FromBase64String('{base64.b64encode(wire).decode()}')
+$stream=New-Object IO.MemoryStream
+$record=@{{OutRead=[Threading.Tasks.Task]::FromResult($bytes.Length);ErrRead=$null;OutBuffer=$bytes;
+ Line=(New-Object IO.MemoryStream);Manifest='{manifest}';ReportedState='';
+ Process=[pscustomobject]@{{StandardOutput=[pscustomobject]@{{BaseStream=$stream}};HasExited=$false}};
+ Stopping=$false;Invalid=$false}}
+$states=@()
+for($i=0;$i -lt 3;$i++){{Update-WdMindManualOwner $record; $states+=@($record.State)}}
+@{{states=$states;reported=$record.ReportedState;invalid=$record.Invalid}} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = run_owned([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                     text=True, encoding='utf-8', timeout=15,
+                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.lstrip('\ufeff')) == {
+        'states':['STARTING']*3,'reported':'STARTING','invalid':False}
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell status consumer')
+@pytest.mark.parametrize(('out_done','err_done','exit_code','expected'), [
+    (False, True, 0, 'HOLD'), (True, False, 0, 'HOLD'),
+    (True, True, 0, 'STOPPED'), (True, True, 2, 'FAILED'),
+])
+def test_stopped_requires_successful_exit_and_both_eof(out_done, err_done, exit_code, expected):
+    from wd_mind_owned_compat import run_owned
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    quoted = str(helper).replace("'", "''")
+    script = f"""
+. '{quoted}'
+$record=@{{OutRead=$null;ErrRead=$null;Line=(New-Object IO.MemoryStream);ReportedState='STOPPED';
+ Process=[pscustomobject]@{{HasExited=$true;ExitCode={exit_code}}};Stopping=$true;Invalid=$false;
+ OutDone=${str(out_done).lower()};ErrDone=${str(err_done).lower()}}}
+Update-WdMindManualOwner $record
+@{{state=$record.State;invalid=$record.Invalid}} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = run_owned([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                     text=True, encoding='utf-8', timeout=15,
+                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.lstrip('\ufeff')) == {'state':expected,'invalid':False}
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner preflight')
 @pytest.mark.parametrize('stage', ['INPUT', 'MANIFEST', 'POLICY', 'HELPER_OR_PYTHON', 'UNKNOWN', 'REGISTERED'])
 @pytest.mark.parametrize('flag', ['', '-IncludeStartupDiagnostics', '-IncludeWorkerStageDiagnostics'])
@@ -284,10 +373,10 @@ try {
   $result.accepted=$true
   $deadline=[DateTime]::UtcNow.AddSeconds(7)
   do { $s=Get-WdMindManualOwnerStatus $h; $result.states+=@($s.state); Start-Sleep -Milliseconds 30 }
-    while($s.state -notin @('READY','FAILED') -and -not $global:WdMindManualOwnerRecords[$h.Token].Invalid -and [DateTime]::UtcNow -lt $deadline)
+    while($s.state -ne 'FAILED' -and $global:WdMindManualOwnerRecords[$h.Token].ReportedState -cne 'READY' -and -not $global:WdMindManualOwnerRecords[$h.Token].Invalid -and [DateTime]::UtcNow -lt $deadline)
   $result.stage=if([IO.File]::Exists(''' + psquote(marker) + ''')){[IO.File]::ReadAllText(''' + psquote(marker) + ''')}else{'not-started'}
-  if($s.state -eq 'READY') {
-    for($i=0;$i -lt 5;$i++){ $s=Get-WdMindManualOwnerStatus $h; if($s.state -ne 'READY'){throw 'not_ready'} }
+  if($global:WdMindManualOwnerRecords[$h.Token].ReportedState -ceq 'READY' -and $s.state -ceq 'HOLD') {
+    for($i=0;$i -lt 5;$i++){ $s=Get-WdMindManualOwnerStatus $h; if($s.state -ne 'HOLD'){throw 'not_held'} }
     do { $s=Stop-WdMindManualOwner $h; Start-Sleep -Milliseconds 30 }
       while($s.state -notin @('STOPPED','FAILED') -and [DateTime]::UtcNow -lt $deadline)
   } elseif($global:WdMindManualOwnerRecords[$h.Token].Invalid) {
@@ -317,7 +406,7 @@ $result|ConvertTo-Json -Compress -Depth 5
     result = json.loads(stdout.lstrip('\ufeff'))
     if mode in ('normal', 'normal_scriptblock'):
         detail = dict(result['detail'], synthetic_stage=result['stage'])
-        assert result['accepted'] is True and 'READY' in result['states'] and result['final'] == 'STOPPED', json.dumps(detail)
+        assert result['accepted'] is True and 'HOLD' in result['states'] and 'READY' not in result['states'] and result['final'] == 'STOPPED', json.dumps(detail)
     elif mode == 'bad_status':
         assert result['accepted'] is True and result['final'] == 'FAILED', result
     else:

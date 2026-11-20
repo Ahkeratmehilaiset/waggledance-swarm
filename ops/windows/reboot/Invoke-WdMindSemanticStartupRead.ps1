@@ -117,7 +117,7 @@ function Invoke-WdMindSemanticStartupRead {
         if($clock.Elapsed.TotalSeconds -ge $TimeoutSeconds -or
            ($null -ne $Cancellation -and $Cancellation.IsSet)){throw 'timeout'}
         $wrapper=Join-Path $root 'Invoke-WdBridgePython.ps1'
-        $command='$ErrorActionPreference="Stop";$global:LASTEXITCODE=0;$f=[IO.File]::OpenRead('+(Quote-Semantic $wrapper)+');'+
+        $command='$ProgressPreference="SilentlyContinue";$ErrorActionPreference="Stop";$global:LASTEXITCODE=0;$f=[IO.File]::OpenRead('+(Quote-Semantic $wrapper)+');'+
             '$s=[Security.Cryptography.SHA256]::Create();try{$h=[BitConverter]::ToString($s.ComputeHash($f)).Replace("-","").ToLowerInvariant()}'+
             'finally{$f.Dispose();$s.Dispose()};if($h -cne '+(Quote-Semantic $pins['Invoke-WdBridgePython.ps1'])+'){exit 2};& '+(Quote-Semantic $wrapper)+
             ' tools/wd_bridge_mind_session.py -VerifyPackage --mind-local-candidate-prompt --policy-path '+

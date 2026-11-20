@@ -3366,7 +3366,13 @@ try {
     $cliExitCode = 0
   } else {
     $ErrorActionPreference = 'Continue'
-    if ($cliName -ieq 'claude.cmd') {
+    # Preserve the previous Codex launch path unless the final argument still
+    # contains the validated semantic addition after command-line fallback.
+    $semanticPromptWasRetained = $null -ne $mindSemanticRead -and
+      $mindSemanticRead.outcome -ceq 'success' -and
+      $startupPrompt -cne $mindSemanticBasePrompt -and
+      $launchArguments.Count -gt 0 -and [string]$launchArguments[-1] -ceq $startupPrompt
+    if ($cliName -ieq 'claude.cmd' -or $semanticPromptWasRetained) {
       $cliExitCode = Invoke-WdMindNativeInteractiveCli -CliPath $cliPath -Arguments $launchArguments -Worktree $worktree
     } else {
       & $cliPath @launchArguments

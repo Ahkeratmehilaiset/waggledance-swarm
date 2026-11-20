@@ -31,6 +31,10 @@ def _sha(raw):
 
 
 def _bad_scalar(value, variant):
+    if variant == 'object':
+        return value[0]
+    if variant == 'nested':
+        return [value]
     return {'empty': [], 'singleton': [value], 'null': None,
             'string': '1', 'bool': True, 'float': 1.0, 'integer': 1}[variant]
 
@@ -61,6 +65,12 @@ def _bundle(tmp_path, fault='none', *, lane='codex-lead-1', source_agent='codex-
     if fault == 'future':
         frame['results'][0]['event_time_utc_floor'] = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat().replace('+00:00', 'Z')
     if fault == 'rco_source': frame['results'][0]['source_agent'] = 'claude-rco-1'
+    if fault == 'ancient': frame['results'][0]['event_time_utc_floor'] = '1900-01-01T00:00:00Z'
+    if fault == 'bad_date': frame['results'][0]['event_time_utc_floor'] = '2026-02-30T12:00:00Z'
+    if fault == 'age_negative': frame['results'][0]['event_age_seconds_upper_bound'] = -1
+    if fault == 'age_float': frame['results'][0]['event_age_seconds_upper_bound'] = 1.5
+    if fault == 'age_overflow': frame['results'][0]['event_age_seconds_upper_bound'] = 2**63
+    if fault == 'age_int64_max': frame['results'][0]['event_age_seconds_upper_bound'] = 2**63 - 1
     if shape_component in ('output', 'hit'):
         target = frame if shape_component == 'output' else frame['results'][0]
         target[shape_field] = _bad_scalar(target[shape_field], shape_variant)
@@ -111,6 +121,26 @@ def _bundle(tmp_path, fault='none', *, lane='codex-lead-1', source_agent='codex-
         hook = ("        if($result.state -ceq 'SUCCESS'){[IO.File]::WriteAllText("
                 + _literal(cleanup_marker) + ",'success');Start-Sleep -Milliseconds 3500}\n").encode()
         helper_bytes = helper_bytes.replace(needle, hook + needle)
+    if fault == 'age_cleanup_delay':
+        needle = b'        if($null -ne $process){'
+        assert helper_bytes.count(needle) == 1
+        helper_bytes = helper_bytes.replace(needle, b'        Start-Sleep -Milliseconds 2500\n' + needle)
+    if fault == 'age_pin_delay':
+        needle = b'        foreach($name in $pins.Keys){'
+        assert helper_bytes.count(needle) == 1
+        helper_bytes = helper_bytes.replace(needle, b'        Start-Sleep -Milliseconds 2500\n' + needle)
+    if fault in ('clock_forward', 'clock_backward'):
+        initial = event_time + timedelta(seconds=1200)
+        final = initial + timedelta(seconds=60 if fault == 'clock_forward' else -1300)
+        needle = b'function Invoke-WdMindManualRead {'
+        assert helper_bytes.count(needle) == 1 and b'[DateTimeOffset]::UtcNow' in helper_bytes
+        clock = ("$script:WdSyntheticClockCalls=0\nfunction Get-WdSyntheticClock {\n"
+                 "$script:WdSyntheticClockCalls++\n"
+                 "if($script:WdSyntheticClockCalls -eq 1){return [DateTimeOffset]::Parse("
+                 + _literal(initial.isoformat()) + ")}\nreturn [DateTimeOffset]::Parse("
+                 + _literal(final.isoformat()) + ")\n}\n").encode()
+        helper_bytes = helper_bytes.replace(needle, clock + needle)
+        helper_bytes = helper_bytes.replace(b'[DateTimeOffset]::UtcNow', b'$(Get-WdSyntheticClock)')
     files = {'Invoke-WdMindManualRead.ps1': helper_bytes,
              'Invoke-WdBridgePython.ps1': wrapper,
              'tools-bootstrap/tools/wd_bridge_mind_session.py': b'# synthetic pin target; never executed\n',
@@ -147,7 +177,8 @@ def _bundle(tmp_path, fault='none', *, lane='codex-lead-1', source_agent='codex-
     return values
 
 
-def _run(values, *, enabled=True, timeout=5, bundle_override=None, lane='codex-lead-1', strict=False, busy=False):
+def _run(values, *, enabled=True, timeout=5, bundle_override=None, lane='codex-lead-1', strict=False, busy=False,
+         observe_now=False):
     helper = values['bundle'] / 'Invoke-WdMindManualRead.ps1'
     bundle = values['bundle'] if bundle_override is None else bundle_override
     switch = '-Enabled' if enabled else ''
@@ -162,6 +193,7 @@ $result=Invoke-WdMindManualRead {switch} -BundleRoot {_literal(bundle)} `
  -BridgePythonPath {_literal(values['python'])} -BridgePythonSha256 {_literal(values['python_pin'])} `
  -Lane {_literal(lane)} -ExpectedFleetSha256 {_literal(values['fleet_pin'])} -TimeoutSeconds {timeout}
 if ($null -eq $result -or $result -is [array]) {{ throw 'invalid_result_shape' }}
+{'$result | Add-Member NoteProperty test_observed_utc ([DateTimeOffset]::UtcNow.ToString(\'o\'))' if observe_now else ''}
 [Console]::Out.Write((ConvertTo-Json -InputObject $result -Depth 20 -Compress))
 """
     argv = [str(SHELL), '-NoProfile', '-NonInteractive', '-EncodedCommand',
@@ -204,6 +236,56 @@ def test_manual_read_rco_consumer_can_receive_build_lane_content(tmp_path):
 
 
 @WINDOWS
+@pytest.mark.parametrize('fault', ['age_pin_delay', 'age_cleanup_delay'])
+def test_manual_read_age_upper_covers_late_pin_and_cleanup(tmp_path, fault):
+    values = _bundle(tmp_path, fault=fault)
+    result, _ = _run(values, timeout=10, observe_now=True)
+    assert result['state'] == 'SUCCESS'
+    hit = result['data']['results'][0]
+    observed = datetime.fromisoformat(result['test_observed_utc'].replace('Z', '+00:00'))
+    event = datetime.fromisoformat(hit['event_time_utc_floor'].replace('Z', '+00:00'))
+    assert hit['event_age_seconds_upper_bound'] >= (observed - event).total_seconds()
+
+
+@WINDOWS
+@pytest.mark.parametrize(('fault', 'expected'), [('clock_forward', 'SUCCESS'), ('clock_backward', 'REFUSED')])
+def test_manual_read_rechecks_wall_clock_before_return(tmp_path, fault, expected):
+    values = _bundle(tmp_path, fault=fault)
+    result, _ = _run(values, timeout=5)
+    assert result['state'] == expected
+    if expected == 'SUCCESS':
+        assert result['data']['results'][0]['event_age_seconds_upper_bound'] >= 1260
+    else:
+        assert result['data'] is None
+
+
+@WINDOWS
+@pytest.mark.parametrize('fault', ['bad_date', 'age_negative', 'age_float', 'age_overflow'])
+def test_manual_read_refuses_invalid_date_or_age(tmp_path, fault):
+    values = _bundle(tmp_path, fault=fault)
+    result, proc = _run(values)
+    assert result['state'] == 'REFUSED' and result['data'] is None
+    assert TEXT not in proc.stdout + proc.stderr
+
+
+@WINDOWS
+def test_manual_read_preserves_historical_timestamp(tmp_path):
+    values = _bundle(tmp_path, fault='ancient')
+    result, _ = _run(values, timeout=5)
+    assert result['state'] == 'SUCCESS'
+    assert result['data']['results'][0]['event_time_utc_floor'] == '1900-01-01T00:00:00Z'
+    assert result['data']['results'][0]['event_age_seconds_upper_bound'] > 1_000_000
+
+
+@WINDOWS
+def test_manual_read_preserves_int64_max_age_without_overflow(tmp_path):
+    values = _bundle(tmp_path, fault='age_int64_max')
+    result, _ = _run(values, timeout=5)
+    assert result['state'] == 'SUCCESS'
+    assert result['data']['results'][0]['event_age_seconds_upper_bound'] == 2**63 - 1
+
+
+@WINDOWS
 def test_manual_read_invalid_pin_under_strict_mode_fails_closed(tmp_path):
     values = _bundle(tmp_path, fault='manifest_pin')
     result, _ = _run(values, strict=True)
@@ -241,6 +323,24 @@ def test_manual_read_rejects_non_integer_schema_or_non_object_files(tmp_path, fi
     result, proc = _run(values)
     assert result['state'] == 'REFUSED' and result['data'] is None
     assert not values['started'].exists() and TEXT not in proc.stdout + proc.stderr
+
+
+@WINDOWS
+def test_manual_read_rejects_singleton_array_age(tmp_path):
+    values = _bundle(tmp_path, shape_component='hit', shape_field='event_age_seconds_upper_bound',
+                     shape_variant='singleton')
+    result, proc = _run(values)
+    assert result['state'] == 'REFUSED' and result['data'] is None
+    assert TEXT not in proc.stdout + proc.stderr
+
+
+@WINDOWS
+@pytest.mark.parametrize('variant', ['object', 'empty', 'nested'])
+def test_manual_read_rejects_invalid_results_container(tmp_path, variant):
+    values = _bundle(tmp_path, shape_component='output', shape_field='results', shape_variant=variant)
+    result, proc = _run(values)
+    assert result['state'] == 'REFUSED' and result['data'] is None
+    assert TEXT not in proc.stdout + proc.stderr
 
 
 @WINDOWS

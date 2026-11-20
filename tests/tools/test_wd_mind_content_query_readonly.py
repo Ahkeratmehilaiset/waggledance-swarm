@@ -599,7 +599,7 @@ def test_streamed_source_rejects_external_callback_and_fake_policy_before_raw_di
         calls.append((ref, row))
     with pytest.raises(TypeError):
         reader._screened_generationless_rows(context, projector=external)
-    with pytest.raises(ValueError, match='prefix_mismatch'):
+    with pytest.raises(ValueError, match='mind_prefix_snapshot_refused'):
         reader._screened_generationless_rows(context)
     class ExternalPolicy:
         def contains(self, raw):
@@ -622,6 +622,81 @@ def test_streamed_source_charges_and_requires_both_full_hashes(reader, tmp_path)
     with pytest.raises(ValueError):
         reader._projection(context, complete_records=True,
                            source_budget=absent._SourceReadBudget(2 * offset - 1))
+
+
+@pytest.mark.parametrize('bad', [b'{"message":"synthetic-source-secret" invalid}\n',
+                                 b'{"message":"synthetic-source-secret\xff"}\n'], ids=['json', 'utf8'])
+@pytest.mark.parametrize('entry', ['stream', 'projection', 'verified'])
+def test_streamed_source_refusal_drops_raw_exception_chain_and_traceback_locals(reader, tmp_path, bad, entry):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    case = _make_generationless(_all_tasks_case(reader, tmp_path, [_row('synthetic valid baseline')]))
+    valid = reader.rederive_complete_message_projection(**case)
+    source = Path(case['messages']['source_path'])
+    source.write_bytes(bad)
+    old = case['messages']['end_cursor']
+    cursor = BridgeCursor(len(bad), old.file_identity, None)
+    case['messages']['end_cursor'] = cursor
+    _edit_decision(case, source_prefix={'offset': cursor.offset, 'sha256': _sha(bad), 'generation': None})
+    context = reader._inputs(case, complete_source=True)
+    if entry == 'stream':
+        operation = lambda: reader._screened_generationless_rows(context)
+    elif entry == 'projection':
+        operation = lambda: reader._projection(context, complete_records=True)
+    else:
+        snapshot = _snapshot(case, valid)
+        operation = lambda: reader._verified_complete(snapshot)
+    with pytest.raises(ValueError) as caught:
+        operation()
+    error = caught.value
+    assert str(error) == 'mind_prefix_snapshot_refused'
+    assert error.__cause__ is None and error.__context__ is None
+    marker = 'synthetic-source-secret'
+    assert marker not in repr(error.args)
+    chain, seen = [error], set()
+    while chain:
+        current = chain.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        assert marker not in repr(getattr(current, 'doc', None))
+        assert marker not in repr(getattr(current, 'object', None))
+        tb = current.__traceback__
+        while tb is not None:
+            if Path(tb.tb_frame.f_code.co_filename).name in ('wd_mind_content_query_readonly.py',
+                                                              'bridge_log_reader.py'):
+                assert marker not in repr(tb.tb_frame.f_locals)
+            tb = tb.tb_next
+        if current.__context__ is not None:
+            chain.append(current.__context__)
+        if current.__cause__ is not None:
+            chain.append(current.__cause__)
+
+
+@pytest.mark.parametrize('kind', ['memory', 'keyboard', 'cancelled', 'exit', 'generator', 'group'])
+def test_streamed_source_keeps_prior_failure_and_cancellation_semantics(reader, tmp_path, monkeypatch, kind):
+    import asyncio
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+    case = _make_generationless(_all_tasks_case(reader, tmp_path, [_row('synthetic valid source')]))
+    context = reader._inputs(case, complete_source=True)
+    signals = {'memory': MemoryError('synthetic allocation failure'),
+               'keyboard': KeyboardInterrupt(), 'cancelled': asyncio.CancelledError(),
+               'exit': SystemExit(7), 'generator': GeneratorExit(),
+               'group': BaseExceptionGroup('synthetic group', [KeyboardInterrupt(), ValueError('synthetic')])}
+    signal = signals[kind]
+    calls = []
+    def fail(_payload, **_kwargs):
+        calls.append(True)
+        raise signal
+    monkeypatch.setattr(absent.bridge, '_parse_rows', fail)
+    if kind == 'memory':
+        with pytest.raises(absent.PrefixSnapshotRefused, match='^mind_prefix_snapshot_refused$') as caught:
+            reader._screened_generationless_rows(context)
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+    else:
+        with pytest.raises(type(signal)) as caught:
+            reader._screened_generationless_rows(context)
+        assert caught.value is signal
+    assert calls == [True]
 
 
 def test_streamed_source_skips_only_adjacent_identical_canonical_events(reader, tmp_path, monkeypatch):

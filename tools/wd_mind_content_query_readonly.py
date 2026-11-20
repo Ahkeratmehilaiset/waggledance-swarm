@@ -1073,7 +1073,7 @@ def _screen_projection_event(ref, event, context):
     return fields, chunks
 
 
-def _screened_generationless_rows(context, *, source_budget=None):
+def _screened_generationless_rows_impl(context, *, source_budget=None):
     """Screen locally while reading; return nothing before both source fences.
 
     No caller-supplied reducer receives source events. This remains an
@@ -1175,6 +1175,28 @@ def _screened_generationless_rows(context, *, source_budget=None):
             raise ValueError('prefix_changed')
         absent._fence(stream, source_file, sidecar, identity, size)
     return rows
+
+
+def _screened_generationless_rows(context, *, source_budget=None):
+    """Refuse without retaining source-bearing parser errors or scan frames."""
+    output = None
+    try:
+        output = _screened_generationless_rows_impl(context, source_budget=source_budget)
+    except Exception:
+        pass
+    context = source_budget = None
+    if output is None:
+        absent = None
+        try:
+            absent = _pinned_dependency('tools.wd_mind_absent_generation_prefix_readonly',
+                                        'tools/wd_mind_absent_generation_prefix_readonly.py',
+                                        ('read_complete_generationless_prefix_rows',))
+        except Exception:
+            pass
+        if absent is not None:
+            raise absent.PrefixSnapshotRefused('mind_prefix_snapshot_refused') from None
+        raise ValueError('mind_prefix_snapshot_refused') from None
+    return output
 
 
 def _projection(context, *, complete_records=False, source_budget=None):

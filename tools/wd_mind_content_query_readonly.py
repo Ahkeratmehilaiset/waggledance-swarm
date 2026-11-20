@@ -653,7 +653,7 @@ _REQUIRED_CODE = {
     "tools/wd_bridge_mind.py": "8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211",
     "waggledance/core/bridge_log_reader.py": "1949e26526153363d8c19f5051f636a646bb6839758d779c904f1eab72c5f49e",
     "tools/wd_mind_content_prefix_readonly.py": "264696c1c315e0a87304330fd83829f3bf102ca2c538a69656e193aa127a4dd3",
-    "tools/wd_mind_absent_generation_prefix_readonly.py": "638c2ac1468e2d7b6f1b96dec4e0c2ef8fb7306a2a969c02ee857cf8b1c46056",
+    "tools/wd_mind_absent_generation_prefix_readonly.py": "d6c797bc7c38e05d32b688eb30a958108389e713f001dd33821e15acda72cd29",
     "tools/bridge_compact_view.py": "c808da1b1dd8f4e0220f8ffce730963455d0a706c2b4f1dd6387e450d5c84c83",
     "waggledance/__init__.py": "a48c64790f6d239f53960e5011fe87129555d7978197e9f0d0b43ef3b93d5e82",
     "waggledance/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

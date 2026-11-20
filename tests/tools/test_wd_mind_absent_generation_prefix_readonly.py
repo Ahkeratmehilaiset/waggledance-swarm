@@ -67,6 +67,164 @@ def test_full_prefix_cannot_repurpose_bounded_scope(full_fixture):
                               scope='full_prefix_v1', tasks={'synthetic-task-0'})
 
 
+def test_full_prefix_metadata_only_matches_rows_without_retaining_them(full_fixture, monkeypatch):
+    module = importlib.import_module('tools.wd_mind_absent_generation_prefix_readonly')
+    bundle, _, source, pin, rows = full_fixture
+    first_line = source.read_bytes().splitlines(keepends=True)[0]
+    with source.open('ab') as stream:
+        stream.write(first_line)
+    scans, hashes, canonical_calls = [], [], []
+    original_scan, original_hash, original_event_id = module._scan, module._hash_prefix, module.event_id
+    def scan(*args, **kwargs):
+        digest, retained = original_scan(*args, **kwargs)
+        scans.append((kwargs.get('metadata_only', False), digest, len(retained)))
+        return digest, retained
+    def hash_prefix(*args, **kwargs):
+        digest = original_hash(*args, **kwargs)
+        hashes.append(digest)
+        return digest
+    def canonical(row):
+        canonical_calls.append(True)
+        return original_event_id(row)
+    monkeypatch.setattr(module, '_scan', scan)
+    monkeypatch.setattr(module, '_hash_prefix', hash_prefix)
+    monkeypatch.setattr(module, 'event_id', canonical)
+    old = module.observe_prefix(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=pin,
+                                scope='full_prefix_v1')
+    metadata = module.observe_full_prefix_metadata(enabled=True, bundle_root=str(bundle),
+                                                   expected_manifest_sha256=pin)
+    assert type(metadata) is dict and 'rows' not in metadata
+    assert {k: v for k, v in metadata.items() if k != 'observed_utc'} == {
+        k: v for k, v in old.metadata.items() if k != 'observed_utc'}
+    assert scans == [(False, metadata['prefix_sha256'], len(rows)), (True, metadata['prefix_sha256'], 0)]
+    assert hashes == [metadata['prefix_sha256'], metadata['prefix_sha256']]
+    assert len(canonical_calls) == 2 * (len(rows) + 1)
+
+
+def test_metadata_only_releases_private_tail_before_full_scan(full_fixture, monkeypatch):
+    module = importlib.import_module('tools.wd_mind_absent_generation_prefix_readonly')
+    bundle, _, _, pin, _ = full_fixture
+    released, scanned = [], []
+    original_tail, original_scan = module.bridge.read_bridge_log_tail_lines, module._scan
+    class TailProxy:
+        def __init__(self, wrapped): self.wrapped = wrapped
+        def __getattr__(self, name): return getattr(self.wrapped, name)
+        def __del__(self): released.append(True)
+    def tail(*args, **kwargs):
+        return TailProxy(original_tail(*args, **kwargs))
+    def scan(*args, **kwargs):
+        assert released == [True], 'private tail result was retained across full scan'
+        scanned.append(True)
+        return original_scan(*args, **kwargs)
+    monkeypatch.setattr(module.bridge, 'read_bridge_log_tail_lines', tail)
+    monkeypatch.setattr(module, '_scan', scan)
+    metadata = module.observe_full_prefix_metadata(enabled=True, bundle_root=str(bundle),
+                                                   expected_manifest_sha256=pin)
+    assert type(metadata) is dict and scanned == [True] and released == [True]
+
+
+@pytest.mark.parametrize('fault', ['rewrite', 'truncate', 'identity', 'sidecar', 'fleet', 'manifest'])
+def test_metadata_only_observation_refuses_changes_at_existing_fences(full_fixture, monkeypatch, fault):
+    module = importlib.import_module('tools.wd_mind_absent_generation_prefix_readonly')
+    bundle, shared, source, pin, _ = full_fixture
+    original_scan, original_identity = module._scan, module.bridge._file_identity
+    changed = []
+    def identity(stream):
+        return 'synthetic-changed-identity' if changed and fault == 'identity' else original_identity(stream)
+    def scan(*args, **kwargs):
+        result = original_scan(*args, **kwargs)
+        assert kwargs.get('metadata_only') is True
+        if fault == 'rewrite':
+            before = source.read_bytes()
+            after = before.replace(b'synthetic-task-0', b'synthetic-task-Z', 1)
+            assert after != before and len(after) == len(before)
+            source.write_bytes(after)
+        if fault == 'truncate': source.write_bytes(b'')
+        if fault == 'sidecar': (shared / 'events.generation.json').write_bytes(b'{}')
+        if fault == 'fleet': (bundle / 'wd-fleet.json').write_bytes(b'{}')
+        if fault == 'manifest': (bundle / 'deployment-manifest.json').write_bytes(b'{}')
+        changed.append(True)
+        return result
+    monkeypatch.setattr(module.bridge, '_file_identity', identity)
+    monkeypatch.setattr(module, '_scan', scan)
+    with pytest.raises(module.PrefixSnapshotRefused, match='^mind_prefix_snapshot_refused$') as caught:
+        module.observe_full_prefix_metadata(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=pin)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert changed == [True]
+
+
+def test_metadata_only_observation_keeps_original_prefix_when_source_appends(full_fixture, monkeypatch):
+    module = importlib.import_module('tools.wd_mind_absent_generation_prefix_readonly')
+    bundle, _, source, pin, _ = full_fixture
+    before = source.read_bytes()
+    original, called = module._scan, []
+    def scan(*args, **kwargs):
+        result = original(*args, **kwargs)
+        with source.open('ab') as stream:
+            stream.write(b'{"message":"synthetic append"}\n')
+        called.append(True)
+        return result
+    monkeypatch.setattr(module, '_scan', scan)
+    metadata = module.observe_full_prefix_metadata(enabled=True, bundle_root=str(bundle),
+                                                   expected_manifest_sha256=pin)
+    assert called == [True] and metadata['end_offset'] == len(before)
+    assert metadata['prefix_sha256'] == hashlib.sha256(before).hexdigest()
+
+
+def test_metadata_only_observation_preserves_partial_tail_behavior(full_fixture):
+    module = importlib.import_module('tools.wd_mind_absent_generation_prefix_readonly')
+    bundle, _, source, pin, _ = full_fixture
+    complete = source.read_bytes()
+    with source.open('ab') as stream:
+        stream.write(b'{"message":"synthetic incomplete tail')
+    old = module.observe_prefix(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=pin,
+                                scope='full_prefix_v1')
+    metadata = module.observe_full_prefix_metadata(enabled=True, bundle_root=str(bundle),
+                                                   expected_manifest_sha256=pin)
+    assert {k: v for k, v in metadata.items() if k != 'observed_utc'} == {
+        k: v for k, v in old.metadata.items() if k != 'observed_utc'}
+    assert metadata['end_offset'] == len(complete)
+    assert metadata['prefix_sha256'] == hashlib.sha256(complete).hexdigest()
+
+
+@pytest.mark.parametrize('bad', [b'{"message": invalid}\n', b'{"message":"bad-\xff"}\n',
+                                 b'{"message":"\\ud800"}\n', b'{"message":"unterminated"',
+                                 b'{"message":"' + b'x' * (4 * 1024 * 1024) + b'"}\n'],
+                         ids=['invalid-json', 'invalid-utf8', 'invalid-canonical', 'partial-row', 'over-4mib'])
+def test_metadata_only_and_raw_observation_both_refuse_bad_interior_row(full_fixture, bad):
+    module = importlib.import_module('tools.wd_mind_absent_generation_prefix_readonly')
+    bundle, _, source, pin, _ = full_fixture
+    good = b'{"task_id":"synthetic-task","message":"synthetic"}\n'
+    source.write_bytes(good + bad + good)
+    for observe in (lambda: module.observe_prefix(enabled=True, bundle_root=str(bundle),
+                                                  expected_manifest_sha256=pin, scope='full_prefix_v1'),
+                    lambda: module.observe_full_prefix_metadata(enabled=True, bundle_root=str(bundle),
+                                                                expected_manifest_sha256=pin)):
+        with pytest.raises(module.PrefixSnapshotRefused, match='^mind_prefix_snapshot_refused$') as caught:
+            observe()
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize('kind', ['memory', 'keyboard', 'cancelled'])
+def test_metadata_only_preserves_existing_failure_and_cancel_semantics(full_fixture, monkeypatch, kind):
+    import asyncio
+    module = importlib.import_module('tools.wd_mind_absent_generation_prefix_readonly')
+    bundle, _, _, pin, _ = full_fixture
+    signal = {'memory': MemoryError('synthetic'), 'keyboard': KeyboardInterrupt(),
+              'cancelled': asyncio.CancelledError()}[kind]
+    called = []
+    def fail(*_args, **_kwargs):
+        called.append(True)
+        raise signal
+    monkeypatch.setattr(module, '_scan', fail)
+    expected = module.PrefixSnapshotRefused if kind == 'memory' else type(signal)
+    with pytest.raises(expected) as caught:
+        module.observe_full_prefix_metadata(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=pin)
+    if kind != 'memory': assert caught.value is signal
+    else: assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert called == [True]
+
+
 def _anchored_cursor(source):
     from waggledance.core import bridge_log_reader as bridge
     with bridge._open_log(source) as stream:

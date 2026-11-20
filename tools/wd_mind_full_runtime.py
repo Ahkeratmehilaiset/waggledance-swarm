@@ -1039,11 +1039,8 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         reader._load_identifier_policy(identifier, key, tag, allow_empty_v2=True)
         bundle = Path(bundle_root)
         controls = _bundle_inputs(bundle, expected_manifest_sha256)
-        observed = prefix.observe_prefix(enabled=True, bundle_root=bundle_root,
-                                         expected_manifest_sha256=expected_manifest_sha256,
-                                         scope='full_prefix_v1')
-        meta = dict(observed.metadata)
-        observed = None  # Unscreened events are never returned or logged.
+        meta = prefix.observe_full_prefix_metadata(enabled=True, bundle_root=bundle_root,
+                                                   expected_manifest_sha256=expected_manifest_sha256)
         if (meta['manifest_sha256'] != expected_manifest_sha256 or meta['generation'] != 'UNKNOWN'
                 or meta['sidecar_observation'] != 'ABSENT_AT_CHECKS'):
             raise ValueError('observation')

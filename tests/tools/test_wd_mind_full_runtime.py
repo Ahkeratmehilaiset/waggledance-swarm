@@ -738,6 +738,24 @@ def test_runtime_requires_independently_pinned_identifier_policy_before_source_r
             expected_identifier_policy_sha256=pin)
 
 
+def test_runtime_uses_metadata_only_prefix_observation(tmp_path, monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    calls = []
+    policy = b'{}'
+    monkeypatch.setattr(runtime.reader, '_load_identifier_policy', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, '_bundle_inputs', lambda *_args: ('synthetic-controls',))
+    def metadata_only(**kwargs):
+        calls.append(kwargs)
+        raise ValueError('stop after metadata observation')
+    monkeypatch.setattr(runtime.prefix, 'observe_full_prefix_metadata', metadata_only, raising=False)
+    monkeypatch.setattr(runtime.prefix, 'observe_prefix', lambda **_kwargs: pytest.fail('raw row path used'))
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.assemble_full_runtime(enabled=True, bundle_root=str(tmp_path),
+            expected_manifest_sha256='a' * 64, identifier_policy_bytes=policy,
+            expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
+    assert len(calls) == 1 and calls[0]['enabled'] is True
+
+
 @pytest.mark.parametrize('signal', ['error', 'keyboard', 'generator', 'async', 'group'])
 def test_runtime_cancellation_does_not_expose_policy_or_hmac_key_in_traceback(tmp_path, monkeypatch, signal):
     import asyncio
@@ -2976,7 +2994,7 @@ if mode.startswith(('package', 'handler')):
         row.update(agent='fable-5', agent_uuid=fable['agent_uuid'], message='synthetic external note')
         output.write(json.dumps(row, sort_keys=True, separators=(',', ':')).encode() + b'\n')
 if mode in ('rewrite', 'rotation'):
-    observe = prefix.observe_prefix
+    observe = prefix.observe_full_prefix_metadata
     def changed(**kwargs):
         result = observe(**kwargs)
         path = pathlib.Path(sys.argv[3])
@@ -2987,7 +3005,7 @@ if mode in ('rewrite', 'rotation'):
             replacement.write_bytes(data)
             os.replace(replacement, path)
         return result
-    prefix.observe_prefix = changed
+    prefix.observe_full_prefix_metadata = changed
 if mode in ('refresh_real_delivery', 'refresh_real_delivery_error_adapter',
             'refresh_real_delivery_error_adapter_boundary_early',
             'refresh_real_delivery_error_adapter_boundary_late'):

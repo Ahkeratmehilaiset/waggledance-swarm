@@ -283,7 +283,9 @@ def _hash_prefix(stream, end: int, *, source_budget=None) -> str:
     return digest.hexdigest()
 
 
-def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None):
+def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None, metadata_only=False):
+    if type(metadata_only) is not bool or (metadata_only and tasks is not None):
+        raise ValueError('invalid_scope')
     stream.seek(0)
     digest, pending, rows = hashlib.sha256(), bytearray(), {}
     remaining, scanned, first = end, 0, True
@@ -314,7 +316,9 @@ def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None)
                                      separators=(",", ":"), allow_nan=False).encode("utf-8")
                     if len(raw) > MAX_SELECTED_ROW_BYTES or len(rows) >= MAX_SELECTED_ROWS:
                         raise ValueError("selected_row_over_budget")
-                rows[event_id(row)] = row
+                ref = event_id(row)
+                if not metadata_only:
+                    rows[ref] = row
             start = newline + 1
         if start:
             del pending[:start]
@@ -373,21 +377,16 @@ def read_complete_generationless_prefix_rows(source_path, generation_path, end_c
     return result
 
 
-def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, tasks=None,
-                   scope="selected_tasks_v1"):
-    """Observe an LF-complete source prefix; return PRIVATE unscreened rows.
-
-    ``expected_manifest_sha256`` must be anchored independently by the trusted
-    caller; this function does not accept an arbitrary log path. The task set is
-    a narrowing selector, not authorization. A live reader needs a separately
-    approved content policy and must call ``verify_prefix`` after provider work.
-    """
+def _observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, tasks=None,
+                    scope="selected_tasks_v1", metadata_only=False):
     result = None
     try:
         if enabled is not True:
             raise ValueError("invalid_input")
         scoped_tasks = _scope_tasks(scope, tasks)
         selected = None if scoped_tasks is None else frozenset(scoped_tasks)
+        if type(metadata_only) is not bool or (metadata_only and selected is not None):
+            raise ValueError('invalid_scope')
         source, sidecar, fleet_pin = _deployment_source(bundle_root, expected_manifest_sha256)
         _sidecar_absent(sidecar)
         with bridge._open_log(source) as stream:
@@ -401,8 +400,14 @@ def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=
                     or (selected is not None and tail.end_offset > MAX_PREFIX_BYTES)):
                 raise ValueError("tail_invalid")
             end = tail.end_offset
+            if metadata_only:
+                # The tail includes raw line text; it is no longer needed.
+                tail = None
             size = _fence(stream, source, sidecar, identity, max(initial_size, end))
-            first_hash, rows = _scan(stream, end, selected)
+            if metadata_only:
+                first_hash, rows = _scan(stream, end, selected, metadata_only=True)
+            else:
+                first_hash, rows = _scan(stream, end, selected)
             size = _fence(stream, source, sidecar, identity, max(initial_size, size, end))
             second_hash = _hash_prefix(stream, end)
             if not hmac.compare_digest(first_hash, second_hash):
@@ -418,12 +423,32 @@ def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=
                     "file_identity": identity, "end_offset": end, "prefix_sha256": first_hash,
                     "fleet_sha256": fleet_pin, "manifest_sha256": expected_manifest_sha256.lower(),
                     "observed_utc": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")}
-        result = ObservedPrefix(metadata=metadata, rows=rows)
+        result = metadata if metadata_only else ObservedPrefix(metadata=metadata, rows=rows)
     except Exception:
         pass
     if result is None:
         raise PrefixSnapshotRefused("mind_prefix_snapshot_refused") from None
     return result
+
+
+def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, tasks=None,
+                   scope="selected_tasks_v1"):
+    """Observe an LF-complete source prefix; return PRIVATE unscreened rows.
+
+    ``expected_manifest_sha256`` must be anchored independently by the trusted
+    caller; this function does not accept an arbitrary log path. The task set is
+    a narrowing selector, not authorization. A live reader needs a separately
+    approved content policy and must call ``verify_prefix`` after provider work.
+    """
+    return _observe_prefix(enabled=enabled, bundle_root=bundle_root,
+                           expected_manifest_sha256=expected_manifest_sha256, tasks=tasks, scope=scope)
+
+
+def observe_full_prefix_metadata(*, enabled=False, bundle_root=None, expected_manifest_sha256=None):
+    """Validate the complete prefix and return metadata without retaining rows."""
+    return _observe_prefix(enabled=enabled, bundle_root=bundle_root,
+                           expected_manifest_sha256=expected_manifest_sha256,
+                           scope='full_prefix_v1', metadata_only=True)
 
 
 def verify_prefix(snapshot, *, expected_binding, expected_tasks, enabled=False,

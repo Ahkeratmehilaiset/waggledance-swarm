@@ -913,15 +913,16 @@ def test_real_adapter_retains_worker_hint_after_close_exception(monkeypatch, hin
 def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_write):
     """Exercise held HOLD writes after a real synthetic service observation.
 
-    READY is intentionally never published; this is not the old held-READY
-    race test, which remains an independent b4 reproduction.
+    READY is intentionally never published; holding a HOLD write here does
+    not reproduce the former blocked READY write.
     """
     from tools import wd_mind_runtime_process as process
 
     control, output, _ = _cli_fixture(monkeypatch, delayed=True, post_ready=True)
-    service_observed, hold_write_entered, second_close = (threading.Event() for _ in range(3))
+    service_observed, hold_write_entered, second_close, owner_close_entered = (
+        threading.Event() for _ in range(4))
     evidence, close_threads, observations, timeouts = {'clean': False}, [], [], []
-    wire, partial_pending = bytearray(), [False]
+    wire, partial_pending, write_faults = bytearray(), [False], []
     adapter = _local_adapter()
     adapter._owner, adapter._state = output.owner, 'READY'
     adapter._owner_start_committed = True
@@ -933,6 +934,7 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
 
     def close():
         close_threads.append(threading.current_thread())
+        owner_close_entered.set()
         if not hold_write_entered.wait(5):
             timeouts.append('hold_write')
         result = original_close()
@@ -952,7 +954,8 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
         raw = bytes(data)
         if partial_pending[0]:
             partial_pending[0] = False
-            raise OSError('synthetic-ready-write-error')
+            write_faults.append('partial_then_raise')
+            raise OSError('synthetic-hold-write-error')
         if b'"state":"HOLD"' not in raw:
             wire.extend(raw)
             return len(raw)
@@ -969,8 +972,10 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
             if close_threads[0].is_alive():
                 timeouts.append('close_thread')
         if hold_write == 'raise':
-            raise OSError('synthetic-ready-write-error')
+            write_faults.append('raise')
+            raise OSError('synthetic-hold-write-error')
         if hold_write == 'short':
+            write_faults.append('short')
             return 0
         return 8 if hold_write == 'partial_then_raise' else len(raw)
 
@@ -991,7 +996,13 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
             if self.status_calls == 2:
                 service_observed.set()  # The first RUNNING was already handled internally.
             return {'state': 'RUNNING'}
-        def close(self, *, timeout): return {'state': 'STOPPED'}
+        def close(self, *, timeout):
+            # Ensure the independent close worker owns the adapter gate before
+            # the monitor continues to the HOLD write under test. Otherwise
+            # the monitor itself can enter the fake owner's blocking close.
+            if not owner_close_entered.wait(5):
+                timeouts.append('owner_close_entry')
+            return {'state': 'STOPPED'}
 
     output.owner.close = close
     output.owner.worker_exit_diagnostic = worker_diagnostic
@@ -1025,6 +1036,10 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
     assert statuses[0] == 'STARTING'
     assert 'READY' not in statuses
     if hold_write == 'complete':
+        assert not write_faults
+    else:
+        assert write_faults and set(write_faults) == {hold_write}
+    if hold_write == 'complete':
         assert statuses[-1] == 'STOPPED'
         assert not malformed
         assert statuses.count('HOLD') == 1
@@ -1035,6 +1050,11 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
             # next frame. The child's internal cleanup evidence does not
             # establish STOPPED at the parent when the wire is malformed.
             assert malformed and all(raw.startswith(b'{"author') for raw in malformed)
+            assert bytes(wire).endswith(b'"state":"STOPPED"}\n')
+            # Internal cleanup succeeded, but a truncated HOLD prefix may
+            # corrupt the subsequent STOPPED frame on the parent wire.
+            if statuses[-1] != 'STOPPED':
+                assert malformed[-1].endswith(b'"state":"STOPPED"}')
             if os.name == 'nt':
                 from wd_mind_owned_compat import run_owned
                 shell = shutil.which('powershell.exe')
@@ -1053,7 +1073,7 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
             assert statuses[-1] == 'STOPPED'
             assert not malformed
             assert diagnostics and diagnostics[-1]['worker_exit_stage_hint'] == 'serving'
-    assert b'synthetic-ready-write-error' not in wire
+    assert b'synthetic-hold-write-error' not in wire
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual helper is Windows-specific')

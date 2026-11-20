@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 import struct
 import subprocess
+import sys
 import time
 import threading
 from datetime import datetime, timedelta, timezone
@@ -312,6 +313,38 @@ def test_closed_local_cli_refuses_before_admission(monkeypatch):
             '--approval-reference-sha256', 'c'*64, '--lane', 'codex-lead-1']
     assert child._fixed_child_main(args) == 2 and child._fixed_child_main(args[:-1]) == 2
     assert seen == []
+
+
+def test_owner_status_emit_explicitly_refuses_ready_before_writing():
+    """Call the real nested emitter before the owner or service is started."""
+    class ProbeComplete(BaseException):
+        pass
+
+    observed = []
+    output = io.BytesIO()
+    previous_trace = sys.gettrace()
+
+    def probe(frame, event, arg):
+        if (event == 'line' and frame.f_code is child._local_candidate_owner_entry.__code__
+                and 'emit' in frame.f_locals):
+            try:
+                frame.f_locals['emit']('READY')
+            except ValueError as exc:
+                observed.append(str(exc))
+            raise ProbeComplete()
+        return probe
+
+    try:
+        sys.settrace(probe)
+        with pytest.raises(ProbeComplete):
+            child._local_candidate_owner_entry(
+                control_stream=io.BytesIO(), output_stream=output, bundle_root='synthetic',
+                expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
+                approval_reference_sha256='c' * 64)
+    finally:
+        sys.settrace(previous_trace)
+    assert observed == ['ready_status_disabled']
+    assert output.getvalue() == b''
 
 
 @pytest.mark.parametrize('diagnostics', ['off', 'startup', 'worker'])

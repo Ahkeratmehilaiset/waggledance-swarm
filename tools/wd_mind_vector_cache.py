@@ -33,7 +33,9 @@ _FIELDS = frozenset(("source_identity_sha256", "source_generation_sha256", "pref
                      "prefix_sha256", "model_sha256", "policy_sha256", "projection_code_sha256",
                      "projection_sha256"))
 _ROW_SIZE = 64 + 384 * 4
-_MAX_ROWS = 250000
+# Bounded interim capacity: cache rows are loaded eagerly, so this remains a
+# finite allocation limit, not a guarantee that every 10 GiB source will fit.
+_MAX_ROWS = 500000
 _MAX_HEADER = 8192
 _MAGIC = b"WDMVC1\n"
 _CACHE_ROOT = Path(r"C:\wd-mind-private\vector-cache")

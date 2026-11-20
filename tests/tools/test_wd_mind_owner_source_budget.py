@@ -173,10 +173,10 @@ def test_retained_prefix_reserves_before_open_source_read(monkeypatch):
 
 
 def test_startup_owner_preflight_refuses_known_overbudget_without_io():
-    snapshot = {'messages': {'end_cursor': SimpleNamespace(offset=1024 * 1024 * 1024)}}
+    snapshot = {'messages': {'end_cursor': SimpleNamespace(offset=10 * 1024 ** 3 + 1)}}
     with pytest.raises(ValueError, match='source_budget'):
         runtime._startup_owner_source_budget(snapshot)
-    accepted = {'messages': {'end_cursor': SimpleNamespace(offset=1)}}
+    accepted = {'messages': {'end_cursor': SimpleNamespace(offset=10 * 1024 ** 3)}}
     assert type(runtime._startup_owner_source_budget(accepted)) is prefix._SourceReadBudget
 
 
@@ -474,7 +474,7 @@ def test_candidate_request_charges_real_synthetic_source_reads(
     assert result['status'] == 'CANDIDATES' and result['candidates']
     assert len({id(item) for item in budgets}) == 1
     assert sum(size for _, size in actual_reads) > 3 * context['messages']['end_cursor'].offset
-    assert budgets[0]._remaining == 1024 ** 3 - sum(size for _, size in actual_reads)
+    assert budgets[0]._remaining == 3 * (10 * 1024 ** 3) + 6 * (4 * 1024 ** 2 + 1) + 3 - sum(size for _, size in actual_reads)
     assert owner._state == 'READY' and owner._source_budget is None
 
 
@@ -549,9 +549,9 @@ def test_startup_client_and_owner_account_separate_real_source_reads(
     owner_read = sum(size for _kind, size, tag in reads if tag == 'owner')
     client_read = sum(size for _kind, size, tag in reads if tag == 'client')
     assert owner_read and client_read
-    assert owner_read == 1024 ** 3 - owner_budgets[0]._remaining
-    assert client_read <= 1024 ** 3 - clients[0]._source_budget._remaining
-    assert owner_read + client_read <= 2 * 1024 ** 3
+    assert owner_read == runtime._STARTUP_OWNER_SOURCE_READ_LIMIT - owner_budgets[0]._remaining
+    assert client_read <= session._STARTUP_SOURCE_READ_LIMIT - clients[0]._source_budget._remaining
+    assert owner_read + client_read <= runtime._STARTUP_OWNER_SOURCE_READ_LIMIT + session._STARTUP_SOURCE_READ_LIMIT
 
 
 def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatch, capsys):
@@ -650,7 +650,7 @@ def test_located_request_preflight_refusal_preserves_ready(monkeypatch):
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     owner = object.__new__(runtime._SingleManifestOwner)
     owner._lanes = frozenset({'codex-lead-1'})
-    owner._generation = (None, {'messages': {'end_cursor': SimpleNamespace(offset=1024 ** 3)}},
+    owner._generation = (None, {'messages': {'end_cursor': SimpleNamespace(offset=runtime._STARTUP_MAX_SOURCE_PREFIX_BYTES + 1)}},
                          SimpleNamespace(_retained=None))
     owner._state = 'READY'
     owner._lock = threading.Lock()
@@ -746,7 +746,7 @@ def test_owner_prewarm_runs_before_ready_and_uses_separate_budget(tmp_path, monk
     status = owner.start()
     assert len(seen) == 1 and seen[0][0] == 'STARTING'
     assert seen[0][1] is seen[0][2] and type(seen[0][1]) is prefix._SourceReadBudget
-    assert seen[0][1]._remaining == 2 * 1024 ** 3
+    assert seen[0][1]._remaining == 7 * (10 * 1024 ** 3) + 4 * 1024 ** 2 + 1
     if fault:
         assert status['state'] == 'HOLD' and owner._source_budget is seen[0][1]
         if fault == 'budget':
@@ -842,7 +842,7 @@ def test_refresh_prewarm_precedes_ready_and_preserves_worker(tmp_path, monkeypat
         assert owner._source_budget is seen[0][2]
     assert len(seen) == 1 and seen[0][0] == 'STARTING'
     assert seen[0][1] is not old_generation and seen[0][2] is seen[0][3]
-    assert type(seen[0][2]) is prefix._SourceReadBudget and seen[0][2]._remaining == 2 * 1024 ** 3
+    assert type(seen[0][2]) is prefix._SourceReadBudget and seen[0][2]._remaining == 7 * (10 * 1024 ** 3) + 4 * 1024 ** 2 + 1
     assert seen[0][4] is None and seen[0][5] is worker and owner._owner is worker
     if rotating:
         expected = new[1]['projection_sha256'] if fault == 'none' else old[1]['projection_sha256']

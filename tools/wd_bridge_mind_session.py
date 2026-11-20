@@ -525,8 +525,21 @@ def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None,
 
 
 # Startup limits source bytes returned by unbuffered bridge-log reads. This is
-# independent of the result-frame bound and does not bound other file IO.
-_STARTUP_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
+# independent of the result-frame bound and does not bound other file IO. The
+# selected resolver reads the frozen prefix once to capture it, once to check
+# that capture, and twice around the selected-row checks. A 10 GiB prefix needs
+# four complete passes; selecting up to three rows twice also needs room for
+# each row and its preceding boundary byte. The tail reader reserves at most
+# 64 MiB plus its boundary byte; the initial prefix boundary costs one byte.
+_MAX_STARTUP_PREFIX_BYTES = 10 * 1024 ** 3
+_STARTUP_TAIL_READ_ALLOWANCE = 64 * 1024 ** 2 + 1
+_MAX_SELECTED_CANDIDATES = 3
+_MAX_SELECTED_SOURCE_ROW_BYTES = 4 * 1024 ** 2
+_STARTUP_SOURCE_READ_LIMIT = (
+    4 * _MAX_STARTUP_PREFIX_BYTES
+    + _STARTUP_TAIL_READ_ALLOWANCE + 1
+    + 2 * _MAX_SELECTED_CANDIDATES * (_MAX_SELECTED_SOURCE_ROW_BYTES + 1)
+)
 
 
 class _SourceReadBudget:
@@ -553,19 +566,33 @@ class _SourceReadBudget:
             self._remaining -= count
 
 
-def _bounded_source_read(stream, budget, size):
+def _bounded_source_read(stream, budget, size, *, check_cancel=None):
     if type(size) is not int or size < 0:
         raise ValueError('source_budget')
+    if check_cancel is not None:
+        check_cancel()
     if budget is not None:
         budget.reserve(size)
-    return stream.read(size)
+    data = stream.read(size)
+    if check_cancel is not None:
+        check_cancel()
+    return data
 
 
 class _SelectedReadDeadline(Exception):
     pass
 
 
+def _selected_checkpoint(deadline_monotonic, cancel_event):
+    """Cooperate between synchronous operations, retaining in-flight work."""
+    if ((cancel_event is not None and cancel_event.is_set())
+            or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)):
+        raise _SelectedReadDeadline()
+
+
 def _preflight_selected_source_prefix(budget, offset):
+    if type(offset) is not int or not 0 < offset <= _MAX_STARTUP_PREFIX_BYTES:
+        raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget') from None
     try:
         budget.require(1 + 4 * offset)
     except ValueError as exc:
@@ -748,32 +775,46 @@ class _SelectedRowResolver:
                 'policy':reader._message_policy(policy, None), 'roster':reader._roster(roster),
                 'private':self._private}
 
-    def _selected(self, context, candidates, lane, scope, when):
+    def _selected(self, context, candidates, lane, scope, when, *, check_cancel=None):
+        def checkpoint():
+            if check_cancel is not None:
+                check_cancel()
+
+        checkpoint()
         from tools import wd_mind_content_query_readonly as reader
         bridge, absent = reader._narrow_dependencies()
+        checkpoint()
         source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
         policy, cursor = context['policy'], self._cursor
         results = []
+        checkpoint()
         with bridge._open_log(source) as stream:
+            checkpoint()
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            checkpoint()
             for item in candidates:
+                checkpoint()
                 offset, size, index = item['source_offset'], item['source_length'], item['chunk_index']
                 if offset + size > cursor.offset:
                     raise ValueError('row_boundary')
                 if offset > 0:
                     stream.seek(offset - 1)
-                    if _bounded_source_read(stream, self._source_budget, 1) != b'\n':
+                    checkpoint()
+                    if _bounded_source_read(stream, self._source_budget, 1, check_cancel=check_cancel) != b'\n':
                         raise ValueError('row_boundary')
                 stream.seek(offset)
-                line = _bounded_source_read(stream, self._source_budget, size)
+                checkpoint()
+                line = _bounded_source_read(stream, self._source_budget, size, check_cancel=check_cancel)
                 if len(line) != size or not line.endswith(b'\n') or b'\n' in line[:-1]:
                     raise ValueError('row_length')
                 rows = bridge._parse_rows(line, starts_at_zero=(offset == 0))
+                checkpoint()
                 if len(rows) != 1 or not hmac.compare_digest(reader._sha(reader._canonical(rows[0])),
                                                                item['source_event_sha256']):
                     raise ValueError('source_ref')
                 row = rows[0]
                 fields = reader._fields(row, policy, context['roster'])
+                checkpoint()
                 if (type(fields) is not dict or (scope == 'own' and fields['agent'] != lane)
                         or item['source_event_sha256'] in policy['removed_source_refs']
                         or ('approved_source_refs' in policy and
@@ -782,9 +823,11 @@ class _SelectedRowResolver:
                     raise ValueError('source_policy')
                 verdict, screened = reader._classify_with_policy(row.get('message'), policy['max_message_chars'],
                                                                  context['private'])
+                checkpoint()
                 if verdict != 'KEEP':
                     raise ValueError('source_screen')
                 chunks = reader.chunk(screened, policy['max_chunk_chars'])
+                checkpoint()
                 if (not chunks or any(reader._OUTPUT.fullmatch(text) is None or reader._has_marker(text)
                                       for text in chunks) or index >= len(chunks)):
                     raise ValueError('source_chunk')
@@ -795,6 +838,7 @@ class _SelectedRowResolver:
                     raise ValueError('chunk_ref')
                 decoded = reader.decode_text(record['stored_text'])
                 verdict, encoded = reader._classify_with_policy(decoded, reader.MAX_MESSAGE_CHARS, context['private'])
+                checkpoint()
                 if verdict != 'KEEP' or encoded != record['stored_text']:
                     raise ValueError('result_screen')
                 age = (when - reader._utc(record['time_utc'])).total_seconds()
@@ -803,10 +847,14 @@ class _SelectedRowResolver:
                 results.append(({'text':decoded, 'source_event_sha256':item['source_event_sha256'],
                                  'event_time_utc_floor':record['time_utc'], 'source_agent':fields['agent'],
                                  'event_age_seconds_upper_bound':math.ceil(age)}, reader._sha(line)))
+                checkpoint()
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            checkpoint()
+        checkpoint()
         return results
 
-    def resolve(self, *, ipc_bytes=None, expected_nonce=None, lane=None, scope=None, deadline_monotonic=None):
+    def resolve(self, *, ipc_bytes=None, expected_nonce=None, lane=None, scope=None, deadline_monotonic=None,
+                cancel_event=None):
         """Re-read selected local rows. Synchronous I/O requires a retained caller deadline."""
         try:
             if (type(ipc_bytes) is not bytes or not 0 < len(ipc_bytes) <= 4096
@@ -814,6 +862,7 @@ class _SelectedRowResolver:
                     or type(lane) is not str or lane not in {'codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5'}
                     or type(scope) is not str or scope not in ('own','shared')
                     or type(deadline_monotonic) not in (int,float) or not math.isfinite(deadline_monotonic)
+                    or (cancel_event is not None and type(cancel_event) is not threading.Event)
                     or not 0 < deadline_monotonic - time.monotonic() <= 90):
                 raise ValueError('request')
             frame = json.loads(ipc_bytes.decode('utf-8'), object_pairs_hook=_selected_unique_pairs,
@@ -821,7 +870,8 @@ class _SelectedRowResolver:
             if (type(frame) is not dict or set(frame) != {'schema','nonce','lane','scope','status','candidates'}
                     or frame['schema'] != 'wd.mind-pipe-candidates.v2' or frame['nonce'] != expected_nonce
                     or frame['lane'] != lane or frame['scope'] != scope or frame['status'] != 'CANDIDATES'
-                    or type(frame['candidates']) is not list or not 1 <= len(frame['candidates']) <= 3):
+                    or type(frame['candidates']) is not list
+                    or not 1 <= len(frame['candidates']) <= _MAX_SELECTED_CANDIDATES):
                 raise ValueError('frame')
             seen = set()
             for item in frame['candidates']:
@@ -830,7 +880,8 @@ class _SelectedRowResolver:
                         or any(type(item[key]) is not str or _SHA256.fullmatch(item[key]) is None
                                for key in ('ref_sha256','doc_id_sha256','source_event_sha256'))
                         or type(item['source_offset']) is not int or item['source_offset'] < 0
-                        or type(item['source_length']) is not int or not 0 < item['source_length'] <= 4 * 1024 * 1024
+                        or type(item['source_length']) is not int
+                        or not 0 < item['source_length'] <= _MAX_SELECTED_SOURCE_ROW_BYTES
                         or type(item['chunk_index']) is not int or item['chunk_index'] < 0):
                     raise ValueError('candidate')
                 triple = (item['ref_sha256'], item['doc_id_sha256'], item['source_event_sha256'])
@@ -846,26 +897,29 @@ class _SelectedRowResolver:
             if self._closed or self._pid != os.getpid():
                 raise ValueError('closed')
             def deadline():
-                if time.monotonic() >= deadline_monotonic:
-                    raise _SelectedReadDeadline()
-            self._check_controls(); deadline()
+                _selected_checkpoint(deadline_monotonic, cancel_event)
+            deadline(); self._check_controls(); deadline()
             from tools import wd_mind_retained_query as retained
             context = self._context()
             if self._source_budget is not None:
                 self._source_budget.reserve(self._cursor.offset)
-            retained._source_check(context); deadline()
-            first = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
+            retained._source_check(context, check_cancel=deadline); deadline()
+            first = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc),
+                                   check_cancel=deadline); deadline()
             self._check_controls(); deadline()
             if self._source_budget is not None:
                 self._source_budget.reserve(self._cursor.offset)
-            retained._source_check(context); deadline()
+            retained._source_check(context, check_cancel=deadline); deadline()
             self._check_controls(); deadline()
-            final = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
+            final = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc),
+                                   check_cancel=deadline); deadline()
             for (before, before_raw), (after, after_raw) in zip(first, final):
+                deadline()
                 if (before_raw != after_raw or
                         {k:v for k,v in before.items() if k != 'event_age_seconds_upper_bound'} !=
                         {k:v for k,v in after.items() if k != 'event_age_seconds_upper_bound'}):
                     raise ValueError('source_changed')
+            deadline()
             return {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':lane,
                     'fleet_sha256':self._controls[2], 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN',
                     'same_user_aba':'UNKNOWN', 'current_status_freshness':'UNKNOWN',
@@ -883,12 +937,14 @@ class _SelectedRowResolver:
 
 def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                                  identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
-                                 expected_approval_reference_sha256=None, source_read_limit=None):
+                                 expected_approval_reference_sha256=None, source_read_limit=None,
+                                 deadline_monotonic=None, cancel_event=None):
     """Capture a locally pinned LF-complete prefix without deriving a projection or vectors.
 
     All inputs are independent caller-supplied pins. Prefix and selected rows are
     rechecked for every call; sender identity and same-user ABA remain UNKNOWN.
     The caller owns this one-process state and any synchronous I/O deadlines.
+    Cancellation is checked between operations, not during a blocked native read.
     """
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
@@ -896,17 +952,29 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
                 or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
                 or type(expected_identifier_policy_sha256) is not str or not _SHA256.fullmatch(expected_identifier_policy_sha256)
                 or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(), expected_identifier_policy_sha256)
+                or (deadline_monotonic is not None and
+                    (type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)))
+                or (cancel_event is not None and type(cancel_event) is not threading.Event)
                 or type(expected_approval_reference_sha256) is not str or not _SHA256.fullmatch(expected_approval_reference_sha256)):
             raise ValueError('input')
+        def checkpoint():
+            _selected_checkpoint(deadline_monotonic, cancel_event)
+
+        checkpoint()
         source_budget = None if source_read_limit is None else _SourceReadBudget(source_read_limit)
         _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256)
+        checkpoint()
         from tools import wd_mind_content_query_readonly as reader
         from tools import wd_mind_content_snapshot_package as package
         from tools import wd_mind_full_runtime as runtime
         _pin_flat_session(bundle_root, expected_manifest_sha256)
+        checkpoint()
         _pin_selected_resolver_code(bundle_root, expected_manifest_sha256)
+        checkpoint()
         controls = package._consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        checkpoint()
         runtime_controls = runtime._bundle_inputs(Path(bundle_root), expected_manifest_sha256)
+        checkpoint()
         if (type(controls) is not tuple or len(controls) != 5 or type(runtime_controls) is not tuple
                 or len(runtime_controls) != 3 or reader._sha(runtime_controls[0]) != controls[2]
                 or runtime_controls[1] != controls[3] or runtime_controls[2] != controls[4]):
@@ -915,16 +983,20 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
             expected_manifest_sha256=expected_manifest_sha256,
             operator_policy_sha256=expected_identifier_policy_sha256,
             operator_approval_reference_sha256=expected_approval_reference_sha256)
+        checkpoint()
         key = os.urandom(32)
         private = reader._load_identifier_policy(identifier_policy_bytes, key,
             hmac.new(key, identifier_policy_bytes, hashlib.sha256).hexdigest(), allow_empty_v2=True)
+        checkpoint()
         source, sidecar = Path(controls[0]), Path(controls[1])
         bridge, absent = reader._narrow_dependencies()
         # The tail reader may read one extra byte to check the leading boundary.
         if source_budget is not None:
             source_budget.reserve(bridge.MAX_MAX_BYTES + 1)
+        checkpoint()
         tail = bridge.read_bridge_log_tail_lines(source, tail_rows=1, max_bytes=bridge.MAX_MAX_BYTES,
                                                 generation_path=sidecar)
+        checkpoint()
         if (tail.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
                 or type(tail.end_offset) is not int or tail.end_offset <= 0
                 or type(tail.file_identity) is not str or not tail.file_identity):
@@ -936,29 +1008,42 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
             # This single startup query needs one initial and three retained
             # prefix checks; refuse before scanning if they cannot all fit.
             _preflight_selected_source_prefix(source_budget, cursor.offset)
+        checkpoint()
         with bridge._open_log(source) as stream:
+            checkpoint()
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            checkpoint()
             stream.seek(cursor.offset - 1)
-            if _bounded_source_read(stream, source_budget, 1) != b'\n':
+            checkpoint()
+            if _bounded_source_read(stream, source_budget, 1, check_cancel=checkpoint) != b'\n':
                 raise ValueError('source_boundary')
             stream.seek(0)
+            checkpoint()
             digest = hashlib.sha256()
             remaining = cursor.offset
             while remaining:
-                block = _bounded_source_read(stream, source_budget, min(1024 * 1024, remaining))
+                checkpoint()
+                block = _bounded_source_read(stream, source_budget, min(1024 * 1024, remaining),
+                                             check_cancel=checkpoint)
                 if not block:
                     raise ValueError('source_short')
                 digest.update(block)
                 remaining -= len(block)
+            checkpoint()
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            checkpoint()
+        checkpoint()
         result = _SelectedRowResolver(bundle_root, expected_manifest_sha256,
             expected_identifier_policy_sha256, expected_approval_reference_sha256, controls,
             runtime_controls, cursor, digest.hexdigest(), private, source_budget)
         from tools import wd_mind_retained_query as retained
         if source_budget is not None:
             source_budget.reserve(cursor.offset)
-        retained._source_check(result._context())
+        checkpoint()
+        retained._source_check(result._context(), check_cancel=checkpoint)
+        checkpoint()
         result._check_controls()
+        checkpoint()
         return result
     except _SelectedSourcePrefixBudgetRefused:
         raise
@@ -1520,6 +1605,9 @@ def _abandon_local_candidate_state(state):
             with state['result_lock']:
                 state['abandoned'] = True
                 state['result'] = None
+                cancel_event = state.get('cancel_event')
+                if cancel_event is not None:
+                    cancel_event.set()
             return interrupted
         except BaseException as exc:
             if interrupted is None:
@@ -1551,23 +1639,29 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 or re.fullmatch(r'(?:[1-9]|[1-8][0-9]|90)', timeout_text) is None):
             raise ValueError('args')
         deadline = time.monotonic() + int(timeout_text)
-        state = {'result':None, 'reason':None, 'query':None, 'resolver':None, 'abandoned':False, 'result_lock':threading.Lock(), 'worker_done':threading.Event()}
+        state = {'result':None, 'reason':None, 'query':None, 'resolver':None, 'abandoned':False,
+                 'result_lock':threading.Lock(), 'worker_done':threading.Event(), 'cancel_event':threading.Event()}
 
         def work():
             policy = None
             try:
+                def checkpoint():
+                    _selected_checkpoint(deadline, state['cancel_event'])
+
                 # The wrapper does not reliably forward binary stdin. Read the
                 # approved local file in this process, never argv or the pipe.
+                checkpoint()
                 policy = _selected_pin_read(Path(args['--policy-path']), policy_pin, 65536)
+                checkpoint()
                 if not policy:
                     raise ValueError('policy_empty')
                 state['resolver'] = create_selected_row_resolver(enabled=True, bundle_root=bundle_root,
                     expected_manifest_sha256=manifest_pin, identifier_policy_bytes=policy,
                     expected_identifier_policy_sha256=policy_pin,
-                    expected_approval_reference_sha256=approval, source_read_limit=_STARTUP_SOURCE_READ_LIMIT)
+                    expected_approval_reference_sha256=approval, source_read_limit=_STARTUP_SOURCE_READ_LIMIT,
+                    deadline_monotonic=deadline, cancel_event=state['cancel_event'])
                 policy = None
-                if time.monotonic() >= deadline:
-                    raise ValueError('deadline')
+                checkpoint()
                 # The resolver preflight pins and source-loads this module.
                 from tools import wd_mind_runtime_process as runtime_process
                 nonce = secrets.token_hex(32)
@@ -1576,11 +1670,14 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 query = runtime_process.create_local_candidate_query(enabled=True,
                     pipe_name=runtime_process.local_candidate_pipe_name(manifest_sha256=manifest_pin), request=request)
                 state['query'] = query
+                checkpoint()
                 query.start()
+                checkpoint()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ValueError('deadline')
                 received = query.wait(timeout=min(remaining, 90))
+                checkpoint()
                 if (received.get('status') != 'CANDIDATES' or received.get('authority') != 'none'
                         or received.get('sender_authentication') != 'UNKNOWN'
                         or received.get('source_verification') != 'UNVERIFIED'):
@@ -1602,11 +1699,14 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                         if state['abandoned'] or time.monotonic() >= deadline:
                             raise ValueError('abandoned')
                 result = state['resolver'].resolve(ipc_bytes=received.get('candidate_frame'),
-                    expected_nonce=nonce, lane=lane, scope=scope, deadline_monotonic=deadline)
+                    expected_nonce=nonce, lane=lane, scope=scope, deadline_monotonic=deadline,
+                    cancel_event=state['cancel_event'])
+                checkpoint()
                 # Recheck the external approved policy after reading source
                 # rows; the bundle descriptor alone does not pin the live file.
                 if not _selected_pin_read(Path(args['--policy-path']), policy_pin, 65536):
                     raise ValueError('policy_empty')
+                checkpoint()
                 if (type(result) is not dict or result.get('schema') != 'wd.mind-flat-verified-session.v1'
                         or result.get('authority') != 'none' or result.get('sender_authentication') != 'UNKNOWN'
                         or result.get('lane') != lane or type(result.get('results')) is not list
@@ -1616,6 +1716,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                                      allow_nan=False).encode('ascii')
                 if not 0 < len(encoded) <= 16384:
                     raise ValueError('result')
+                checkpoint()
                 _store_local_candidate_result(state, encoded)
             except _SelectedSourcePrefixBudgetRefused as exc:
                 with state['result_lock']:
@@ -1636,6 +1737,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         worker.start()
         worker.join(max(0, deadline - time.monotonic()))
         if worker.is_alive() or time.monotonic() >= deadline:
+            state['cancel_event'].set()
             raise ValueError('refused')
         if state['result'] is None:
             if state['reason'] == 'SOURCE_PREFIX_BUDGET':

@@ -87,25 +87,47 @@ def _snapshot_thaw(frozen):
     return result
 
 
-def _source_check(context):
-    """Verify identity, minimum size, generation and entire pinned prefix."""
+def _source_check(context, *, check_cancel=None):
+    """Verify the entire pinned prefix, cooperatively checking cancellation.
+
+    A synchronous open/read may itself outlast a deadline. The caller retains
+    ownership until this function actually returns; a callback cannot interrupt
+    an in-flight native operation.
+    """
+    if check_cancel is not None and not callable(check_cancel):
+        raise ValueError('check_cancel')
+
+    def checkpoint():
+        if check_cancel is not None:
+            check_cancel()
+
+    checkpoint()
     bridge, absent = r._narrow_dependencies()
+    checkpoint()
     messages = context['messages']
     source, sidecar = Path(messages['source_path']), Path(messages['generation_path'])
     cursor = messages['end_cursor']
     digest = hashlib.sha256()
+    checkpoint()
     with bridge._open_log(source) as stream:
+        checkpoint()
         r._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        checkpoint()
         remaining = cursor.offset
         while remaining:
+            checkpoint()
             block = stream.read(min(1024 * 1024, remaining))
+            checkpoint()
             if not block:
                 raise ValueError('short_prefix')
             digest.update(block)
             remaining -= len(block)
         if not hmac.compare_digest(digest.hexdigest(), context['decision']['source_prefix']['sha256']):
             raise ValueError('prefix_changed')
+        checkpoint()
         r._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        checkpoint()
+    checkpoint()
 
 
 @dataclass(frozen=True, slots=True, repr=False)

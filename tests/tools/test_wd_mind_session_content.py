@@ -830,18 +830,21 @@ def test_selected_row_resolver_review_mentions_and_rco_routes(flat_consumer_case
 def test_selected_row_resolver_refuses_change_after_first_local_read(flat_consumer_case, monkeypatch):
     resolver, frame, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
     original = type(resolver)._selected
-    def mutate_after_first(self, *args):
-        result = original(self, *args)
+    mutations = []
+    def mutate_after_first(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
         path = Path(snapshot['messages']['source_path'])
         raw = path.read_bytes()
         changed = raw.replace(b'"message":', b'"messagE":', 1)
         assert len(changed) == len(raw) and changed != raw
         path.write_bytes(changed)
+        mutations.append(True)
         return result
     monkeypatch.setattr(type(resolver), '_selected', mutate_after_first)
     with pytest.raises(session.MindContentSessionRefused):
         resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
                          lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert mutations == [True]
     assert resolver._closed and resolver._private is None
 
 

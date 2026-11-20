@@ -166,7 +166,7 @@ def test_mismatched_file_size_is_rejected_before_reading_rows(case, monkeypatch)
 def test_worker_environment_and_lifecycle_are_cache_inputs():
     assert 'tools-bootstrap/tools/wd_mind_runtime_child.py' in runtime._CACHE_CONTENT_PATHS
     assert 'tools-bootstrap/tools/wd_mind_e5_lifecycle.py' in runtime._CACHE_CONTENT_PATHS
-    assert cache._MAX_ROWS == 250000
+    assert cache._MAX_ROWS == 500000
 
 
 def test_cache_rows_allow_more_than_65536_screened_vectors():
@@ -175,9 +175,9 @@ def test_cache_rows_allow_more_than_65536_screened_vectors():
     assert cache._rows(rows) is rows
 
 
-def test_cache_rows_reject_more_than_250000_screened_vectors():
+def test_cache_rows_reject_more_than_500000_screened_vectors():
     # Length must be rejected before inspecting or decoding any row.
-    rows = (None,) * 250001
+    rows = (None,) * 500001
     with pytest.raises(cache.CacheRefused, match='rows'):
         cache._rows(rows)
 

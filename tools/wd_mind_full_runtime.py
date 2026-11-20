@@ -1521,7 +1521,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     def verify_old_prefix(offset, expected):
                         return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
                                 and reader._hex(expected)
-                                and hmac.compare_digest(reader._sha(immutable_prefix[:offset]), expected))
+                                and hmac.compare_digest(reader._sha(memoryview(immutable_prefix)[:offset]), expected))
                     cached = vector_cache.load(cache_binding, verify_old_prefix)
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
                     cache_status = 'HIT'
@@ -1884,8 +1884,15 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
     return result
 
 
-_STARTUP_OWNER_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
-_STARTUP_PREWARM_SOURCE_READ_LIMIT = 2 * 1024 * 1024 * 1024
+# Source size and total I/O are separate limits. Each operation still reserves
+# every planned full-prefix pass and selected-row read before touching source.
+_STARTUP_MAX_SOURCE_PREFIX_BYTES = 10 * 1024 * 1024 * 1024
+_STARTUP_OWNER_SOURCE_READ_LIMIT = (
+    3 * _STARTUP_MAX_SOURCE_PREFIX_BYTES + 6 * (4 * 1024 * 1024 + 1) + 3
+)
+_STARTUP_PREWARM_SOURCE_READ_LIMIT = (
+    7 * _STARTUP_MAX_SOURCE_PREFIX_BYTES + 4 * 1024 * 1024 + 1
+)
 _STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
 
 
@@ -1901,6 +1908,8 @@ def _startup_owner_source_budget(snapshot):
     # boundary bytes, and three rotation source-check bytes.
     if type(offset) is not int or offset <= 0:
         raise ValueError('source_budget')
+    if offset > _STARTUP_MAX_SOURCE_PREFIX_BYTES:
+        raise _StartupSourceBudgetRefused('source_budget')
     if 3 * offset + 3 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
         raise _StartupSourceBudgetRefused('source_budget')
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
@@ -1912,6 +1921,8 @@ def _prewarm_source_fits(snapshot, *, extra_prefix_passes=0):
     if (type(offset) is not int or offset <= 0 or type(extra_prefix_passes) is not int
             or extra_prefix_passes not in (0, 2)):
         raise ValueError('source_budget')
+    if offset > _STARTUP_MAX_SOURCE_PREFIX_BYTES:
+        raise _StartupSourceBudgetRefused('source_budget')
     if (5 + extra_prefix_passes) * offset + 4 * 1024 * 1024 + 1 > _STARTUP_PREWARM_SOURCE_READ_LIMIT:
         raise _StartupSourceBudgetRefused('source_budget')
 
@@ -1927,6 +1938,8 @@ def _local_query_source_budget(snapshot):
     offset = snapshot['messages']['end_cursor'].offset
     if type(offset) is not int or offset <= 0:
         raise ValueError('source_budget')
+    if offset > _STARTUP_MAX_SOURCE_PREFIX_BYTES:
+        raise _StartupSourceBudgetRefused('source_budget')
     if 3 * offset + 6 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
         raise _StartupSourceBudgetRefused('source_budget')
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)

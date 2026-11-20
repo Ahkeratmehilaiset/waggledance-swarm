@@ -1399,6 +1399,17 @@ class _PrivateVectorCache:
             raise ValueError('cache_preflight')
         return status
 
+    def check_capacity(self, count):
+        self._verify()
+        try:
+            limit = getattr(self._module, '_MAX_ROWS', None)
+        except Exception:
+            self._verify()
+            raise
+        self._verify()
+        if type(count) is not int or count < 0 or type(limit) is not int or limit <= 0 or count > limit:
+            raise ValueError('cache_capacity')
+
     def write(self, binding, rows):
         self._verify()
         try:
@@ -1499,6 +1510,15 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
         if not held:
             frozen = package._snapshot(snapshot, {'streamed': True})
             projection, context, report = reader._verified_complete(frozen)
+            if vector_cache is not None:
+                if type(vector_cache) is not _PrivateVectorCache:
+                    raise ValueError('cache_provider')
+                records = projection['messages']['records']
+                if type(records) is not list:
+                    raise ValueError('records')
+                # Refuse before capturing another full prefix or encoding if
+                # the cache cannot hold this cold build or refresh.
+                vector_cache.check_capacity(len(records))
             immutable_prefix = package._immutable_prefix(context)
             projection = json.loads(frozen['projection_bytes'].decode('utf-8'),
                                     object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)

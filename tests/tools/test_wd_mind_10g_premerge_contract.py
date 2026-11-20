@@ -81,3 +81,21 @@ def test_new_cache_limit_refuses_before_inspecting_rows(monkeypatch):
     monkeypatch.setattr(cache, "_HEX", NeverInspect())
     with pytest.raises(cache.CacheRefused, match="rows"):
         cache._rows(rows)
+
+
+@pytest.mark.parametrize("offset", [LIMIT - 1, LIMIT, LIMIT + 1])
+def test_session_cap_is_distinct_from_total_read_allowance(monkeypatch, offset):
+    total = 4 * LIMIT + (64 * 1024**2 + 1) + 1 + 6 * (4 * 1024**2 + 1)
+    budget = session._SourceReadBudget(total)
+    budget.reserve(64 * 1024**2 + 1)
+    before = budget._remaining
+    def no_io(*args, **kwargs):
+        raise AssertionError("source I/O during session preflight")
+    with monkeypatch.context() as guard:
+        guard.setattr("builtins.open", no_io)
+        if offset > LIMIT:
+            with pytest.raises(session._SelectedSourcePrefixBudgetRefused):
+                session._preflight_selected_source_prefix(budget, offset)
+        else:
+            session._preflight_selected_source_prefix(budget, offset)
+    assert budget._remaining == before

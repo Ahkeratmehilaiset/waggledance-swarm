@@ -144,6 +144,43 @@ def synthetic(tmp_path, monkeypatch):
     return _synthetic_case(audit_root, monkeypatch)
 
 
+def test_cache_capacity_refuses_before_encoding(synthetic, monkeypatch):
+    original_binding, _ = synthetic.snapshot()
+    old = synthetic.build(original_binding)
+    original_cache = synthetic.cache_path.read_bytes()
+    monkeypatch.setattr(cache, '_MAX_ROWS', 1)
+    binding, _ = synthetic.snapshot()
+    encoded = []
+    def encode(values):
+        encoded.extend(values)
+        return VECTOR * len(values)
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        runtime._build_flat_memory_immutable(
+            binding, encode, old.encoder_binding, fixtures._sha(old.encoder_binding), 5, None,
+            vector_cache=synthetic.adapter)
+    assert encoded == []
+    assert synthetic.cache_path.read_bytes() == original_cache
+
+
+def test_cache_capacity_at_limit_and_build_without_cache(synthetic, monkeypatch):
+    monkeypatch.setattr(cache, '_MAX_ROWS', 2)
+    binding, projection = synthetic.snapshot()
+    assert len(projection['messages']['records']) == 2
+    memory = synthetic.build(binding)
+    assert memory.cache_status == 'MISS_STORED'
+    old_cache = synthetic.cache_path.read_bytes()
+    monkeypatch.setattr(cache, '_MAX_ROWS', 1)
+    binding, _ = synthetic.snapshot()
+    encoded = []
+    def encode(values):
+        encoded.extend(values)
+        return VECTOR * len(values)
+    no_cache = runtime._build_flat_memory_immutable(
+        binding, encode, memory.encoder_binding, fixtures._sha(memory.encoder_binding), 5, None)
+    assert len(no_cache.ids) == 2 and len(encoded) == 2
+    assert synthetic.cache_path.read_bytes() == old_cache
+
+
 def test_cold_warm_and_append_use_only_screened_vectors(synthetic):
     cold_binding, cold_projection = synthetic.snapshot()
     cold = synthetic.build(cold_binding)

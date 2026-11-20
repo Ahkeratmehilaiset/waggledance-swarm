@@ -551,7 +551,8 @@ def test_startup_client_and_owner_account_separate_real_source_reads(
     assert owner_read and client_read
     assert owner_read == runtime._STARTUP_OWNER_SOURCE_READ_LIMIT - owner_budgets[0]._remaining
     assert client_read <= session._STARTUP_SOURCE_READ_LIMIT - clients[0]._source_budget._remaining
-    assert owner_read + client_read <= runtime._STARTUP_OWNER_SOURCE_READ_LIMIT + session._STARTUP_SOURCE_READ_LIMIT
+    assert owner_read + client_read <= (7 * context['messages']['end_cursor'].offset
+                                        + (64 * 1024 ** 2 + 1) + 12 * (4 * 1024 ** 2 + 1) + 4)
 
 
 def test_rotation_callback_charges_its_real_checkpoint_read(tmp_path, monkeypatch, capsys):

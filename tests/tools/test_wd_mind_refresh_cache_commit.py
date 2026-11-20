@@ -107,6 +107,19 @@ def test_refresh_commits_cache_and_reuses_it_without_reembedding(refresh_case):
         assert reloaded.cache_status == 'HIT_STORED' and case.passages == []
 
 
+def test_refresh_cache_capacity_refuses_before_encoding(refresh_case, monkeypatch):
+    case, owner = refresh_case
+    old_cache = case.cache_path.read_bytes()
+    previous = owner._generation
+    append(case, 'synthetic over-capacity passage')
+    monkeypatch.setattr(cache_module, '_MAX_ROWS', 2)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner._refresh_generation(enabled=True)
+    assert case.passages == []
+    assert owner._state == 'HOLD' and owner._generation is previous
+    assert case.cache_path.read_bytes() == old_cache
+
+
 @pytest.mark.parametrize('fault', ['before_replace', 'after_replace', 'postcheck_interrupt'])
 def test_failed_cache_commit_holds_owner_and_does_not_report_ready(refresh_case, monkeypatch, fault):
     case, owner = refresh_case

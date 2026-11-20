@@ -2752,7 +2752,7 @@ function Invoke-WdMindSemanticBounded {
     if($script:WdMindSemanticPending.Count -ne 0){$empty.cleanup='HOLD';return $empty}
     $cancel=New-Object Threading.ManualResetEventSlim($false)
     $worker=[PowerShell]::Create()
-    $record=@{Worker=$worker;Handle=$null;Cancellation=$cancel;StartUncertain=$false}
+    $record=@{Worker=$worker;Handle=$null;Cancellation=$cancel;StartUncertain=$false;Clock=$null;Timeout=$TimeoutSeconds;Abandoned=$false;Consumed=$false}
     [void]$script:WdMindSemanticPending.Add($record)
     $scriptCode=@'
 param($Root,$Pin,$Lane,$PolicyPath,$PolicySha,$ApprovalSha,$Timeout,$Cancel)
@@ -2824,23 +2824,12 @@ try {
 }
 '@
     try {
-        $clock=[Diagnostics.Stopwatch]::StartNew()
+        $record.Clock=[Diagnostics.Stopwatch]::StartNew()
         [void]$worker.AddScript($scriptCode)
         foreach($arg in @($BundleRoot,$ManifestHash,$Lane,$PolicyPath,$PolicySha,$ApprovalSha,$TimeoutSeconds,$cancel)){[void]$worker.AddArgument($arg)}
         $record.StartUncertain=$true
         $handle=$worker.BeginInvoke();$record.Handle=$handle;$record.StartUncertain=$false
-        $remaining=[Math]::Max(0, [int]([Math]::Ceiling($TimeoutSeconds*1000-$clock.ElapsedMilliseconds)))
-        if(-not $handle.AsyncWaitHandle.WaitOne($remaining) -or $clock.ElapsedMilliseconds -ge $TimeoutSeconds*1000){
-            $cancel.Set();$empty.reason='timeout';$empty.cleanup='HOLD';return $empty
-        }
-        $values=$worker.EndInvoke($handle)
-        if($clock.ElapsedMilliseconds -ge $TimeoutSeconds*1000 -or $worker.Streams.Error.Count -ne 0 -or
-           $values.Count -ne 1){throw 'worker'}
-        $value=$values[0]
-        if($value.schema -cne 'wd.mind-semantic-startup.v1' -or $value.authority -cne 'none'){throw 'shape'}
-        [void]$script:WdMindSemanticPending.Remove($record)
-        $worker.Dispose();$cancel.Dispose()
-        return $value
+        return [pscustomobject]@{schema='wd.mind-semantic-startup-ticket.v1';outcome='pending';record=$record}
     } catch {
         if($null -ne $record.Handle -and $record.Handle.IsCompleted){
             try {[void]$worker.EndInvoke($record.Handle)} catch {}
@@ -2850,17 +2839,43 @@ try {
         return $empty
     }
 }
+function Receive-WdMindSemanticBounded {
+    param($Ticket)
+    $empty=[pscustomobject]@{schema='wd.mind-semantic-startup.v1';authority='none';
+        outcome='refused';reason='not_ready';fragment='';cleanup='not_started';receipt=$null}
+    if($null -eq $Ticket -or $Ticket.schema -cne 'wd.mind-semantic-startup-ticket.v1'){return $empty}
+    $record=$Ticket.record;$worker=$record.Worker;$handle=$record.Handle;$cancel=$record.Cancellation
+    if($record.Consumed){$empty.cleanup='completed_discarded';return $empty}
+    if($record.Abandoned){$empty.cleanup='HOLD';return $empty}
+    if($null -eq $handle -or -not $handle.IsCompleted){$record.Abandoned=$true;$cancel.Set();$empty.cleanup='HOLD';return $empty}
+    try {
+        $values=$worker.EndInvoke($handle)
+        if($record.Clock.ElapsedMilliseconds -ge $record.Timeout*1000 -or $worker.Streams.Error.Count -ne 0 -or
+           $values.Count -ne 1){throw 'worker'}
+        $value=$values[0]
+        if($value.schema -cne 'wd.mind-semantic-startup.v1' -or $value.authority -cne 'none'){throw 'shape'}
+        return $value
+    } catch {$empty.cleanup='completed_discarded';return $empty}
+    finally {
+        $record.Consumed=$true
+        [void]$script:WdMindSemanticPending.Remove($record)
+        $worker.Dispose();$cancel.Dispose()
+    }
+}
 function Complete-WdMindSemanticPending {
+    # Called only from launcher cleanup, after its lane invocation has returned.
+    # A worker of uncertain ownership remains in HOLD; never terminate it here.
     if(-not (Test-Path variable:script:WdMindSemanticPending)){return}
     foreach($record in @($script:WdMindSemanticPending)){
         if($null -eq $record.Handle){
             Write-Warning 'Mind semantic worker start is uncertain; retained in HOLD.'
             while($true){[Threading.Thread]::Sleep(1000)}
         }
-        Write-Warning 'Waiting for owned Mind semantic worker to finish without termination.'
+        Write-Warning 'Launcher cleanup HOLD: waiting for owned Mind semantic worker without termination.'
         [void]$record.Handle.AsyncWaitHandle.WaitOne()
         try {[void]$record.Worker.EndInvoke($record.Handle)} catch {}
         $record.Worker.Dispose();$record.Cancellation.Dispose()
+        $record.Consumed=$true
         [void]$script:WdMindSemanticPending.Remove($record)
     }
 }
@@ -2911,6 +2926,14 @@ function Invoke-WdMindNativeInteractiveCli {
         $process.WaitForExit()
         return [int]$process.ExitCode
     } finally { $process.Dispose() }
+}
+$mindSemanticTicket = $null
+if ($launchTurnMode -cne 'managed') {
+  try {
+    $mindSemanticTicket = Invoke-WdMindSemanticBounded -Enabled ([bool]$EnableMindSemantic) -BundleRoot $PSScriptRoot `
+      -ManifestHash $script:LaneManifestAnchor -Lane $Agent -PolicyPath $MindPolicyPath -PolicySha $MindPolicySha256 `
+      -ApprovalSha $MindApprovalReferenceSha256 -TimeoutSeconds $MindSemanticTimeoutSeconds
+  } catch { Write-Warning 'Mind semantic read refused; continuing without content.' }
 }
 Remove-Item Env:WD_MIND_STARTUP_VIEW, Env:WD_MIND_STARTUP_VIEW_SHA256 -ErrorAction SilentlyContinue
 # Optional direct status projection, after DryRun and identity/bootstrap completion.
@@ -3311,9 +3334,7 @@ if ($cliName -ieq 'claude.cmd') {
 $mindSemanticBasePrompt = $startupPrompt
 $mindSemanticRead = $null
 try {
-  $mindSemanticRead = Invoke-WdMindSemanticBounded -Enabled ([bool]$EnableMindSemantic) -BundleRoot $PSScriptRoot `
-    -ManifestHash $script:LaneManifestAnchor -Lane $Agent -PolicyPath $MindPolicyPath -PolicySha $MindPolicySha256 `
-    -ApprovalSha $MindApprovalReferenceSha256 -TimeoutSeconds $MindSemanticTimeoutSeconds
+  $mindSemanticRead = Receive-WdMindSemanticBounded -Ticket $mindSemanticTicket
 } catch { Write-Warning 'Mind semantic read refused; continuing without content.' }
 if ($EnableMindSemantic -and $null -ne $mindSemanticRead -and $mindSemanticRead.outcome -ceq 'success') {
   try { Write-Host ('Mind semantic receipt: ' + (ConvertTo-Json -InputObject $mindSemanticRead.receipt -Depth 6 -Compress)) } catch {}

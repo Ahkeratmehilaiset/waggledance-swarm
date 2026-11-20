@@ -34,7 +34,7 @@ def _powershell(script):
     return json.loads(result.stdout.lstrip('\ufeff'))
 
 
-def _package(tmp_path, output=None, *, exit_code=0, delay=0, marker=None):
+def _package(tmp_path, output=None, *, exit_code=0, delay=0, marker=None, started_marker=None):
     bundle = tmp_path / 'synthetic-bundle'
     bundle.mkdir()
     policy = tmp_path / 'synthetic-policy.json'
@@ -59,7 +59,8 @@ def _package(tmp_path, output=None, *, exit_code=0, delay=0, marker=None):
              'approval_reference_sha256':'c'*64},sort_keys=True,separators=(',', ':')).encode(),
         'Invoke-WdMindSemanticStartupRead.ps1': HELPER.read_bytes(),
         'tools-bootstrap/tools/wd_bridge_mind_session.py': b'# synthetic pin target, not executed\n',
-        'Invoke-WdBridgePython.ps1': (("Start-Sleep -Milliseconds " + str(delay) + ";" if delay else '') +
+        'Invoke-WdBridgePython.ps1': (("[IO.File]::WriteAllText(" + _literal(started_marker) + ",'started');" if started_marker else '') +
+            ("Start-Sleep -Milliseconds " + str(delay) + ";" if delay else '') +
             ("[IO.File]::WriteAllText(" + _literal(marker) + ",'done');" if marker else '') +
             "[Console]::Out.Write(" + _literal(output) + "); $global:LASTEXITCODE=" + str(exit_code)).encode(),
     }
@@ -87,21 +88,31 @@ $r|ConvertTo-Json -Depth 12 -Compress
     return _powershell(script)
 
 
-def _bounded_call(filename, bundle, policy, policy_pin, manifest_pin, *, timeout=5):
+def _bounded_call(filename, bundle, policy, policy_pin, manifest_pin, *, timeout=5, await_result=False, started_marker=None):
     script=f"""
 $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile({_literal(REBOOT / filename)},[ref]$tokens,[ref]$errors)
 if($errors.Count){{throw 'parse'}}
-foreach($name in @('Invoke-WdMindSemanticBounded','Complete-WdMindSemanticPending')){{
+foreach($name in @('Invoke-WdMindSemanticBounded','Receive-WdMindSemanticBounded','Complete-WdMindSemanticPending')){{
   $fn=@($ast.FindAll({{param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name}},$true))
   if($fn.Count -ne 1){{throw 'missing function'}}
   . ([scriptblock]::Create($fn[0].Extent.Text))
 }}
 $watch=[Diagnostics.Stopwatch]::StartNew()
-$r=Invoke-WdMindSemanticBounded -Enabled $true -BundleRoot {_literal(bundle)} -ManifestHash {_literal(manifest_pin)} `
+$ticket=Invoke-WdMindSemanticBounded -Enabled $true -BundleRoot {_literal(bundle)} -ManifestHash {_literal(manifest_pin)} `
  -Lane 'codex-lead-1' -PolicyPath {_literal(policy)} -PolicySha {_literal(policy_pin)} -ApprovalSha {'c'*64} -TimeoutSeconds {timeout}
-$elapsed=$watch.Elapsed.TotalSeconds
+$startElapsed=$watch.Elapsed.TotalSeconds
+if ({'$true' if await_result else '$false'}) {{
+    while (-not $ticket.record.Handle.IsCompleted -and $watch.Elapsed.TotalSeconds -lt {timeout}) {{ Start-Sleep -Milliseconds 10 }}
+}}
+if ({'$true' if started_marker is not None else '$false'}) {{
+    while (-not (Test-Path -LiteralPath {_literal(started_marker or '')}) -and $watch.Elapsed.TotalSeconds -lt 5) {{ Start-Sleep -Milliseconds 10 }}
+    if (-not (Test-Path -LiteralPath {_literal(started_marker or '')})) {{ throw 'synthetic worker did not start' }}
+}}
+$pollWatch=[Diagnostics.Stopwatch]::StartNew()
+$r=Receive-WdMindSemanticBounded -Ticket $ticket
+$elapsed=$startElapsed+$pollWatch.Elapsed.TotalSeconds
 $pending=if(Test-Path variable:script:WdMindSemanticPending){{$script:WdMindSemanticPending.Count}}else{{0}}
 Complete-WdMindSemanticPending 3>$null
 @{{result=$r;elapsed=$elapsed;pending=$pending}}|ConvertTo-Json -Depth 12 -Compress
@@ -228,7 +239,7 @@ $resume=Add-WdMindSemanticPrompt -Prompt 'RESUME' -Read $read
 @pytest.mark.parametrize('filename',['start-wd-agent.ps1','start-wd-tools-consumer.ps1'])
 def test_bounded_worker_produces_only_verified_synthetic_fragment(filename,tmp_path):
     bundle,policy,policy_pin,manifest_pin=_package(tmp_path)
-    value=_bounded_call(filename,bundle,policy,policy_pin,manifest_pin)
+    value=_bounded_call(filename,bundle,policy,policy_pin,manifest_pin,await_result=True)
     assert value['result']['outcome']=='success' and value['pending']==0
     assert value['result']['receipt']['delivery']=='NOT_PROVEN'
     assert 'synthetic content' not in json.dumps(value['result']['receipt'])
@@ -238,12 +249,119 @@ def test_bounded_worker_produces_only_verified_synthetic_fragment(filename,tmp_p
 @pytest.mark.parametrize('filename',['start-wd-agent.ps1','start-wd-tools-consumer.ps1'])
 def test_timeout_returns_no_fragment_and_does_not_kill_synthetic_worker(filename,tmp_path):
     marker=tmp_path/'worker-finished.marker'
-    bundle,policy,policy_pin,manifest_pin=_package(tmp_path,delay=2200,marker=marker)
-    value=_bounded_call(filename,bundle,policy,policy_pin,manifest_pin,timeout=1)
+    started=tmp_path/'worker-started.marker'
+    bundle,policy,policy_pin,manifest_pin=_package(tmp_path,delay=2200,marker=marker,started_marker=started)
+    value=_bounded_call(filename,bundle,policy,policy_pin,manifest_pin,timeout=5,started_marker=started)
     assert value['result']['outcome']!='success' and value['result']['fragment']==''
     assert value['result']['cleanup']=='HOLD' and value['pending']==1
     assert value['elapsed'] < 2.0
     assert marker.read_text()=='done'
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename',['start-wd-agent.ps1','start-wd-tools-consumer.ps1'])
+def test_startup_does_not_wait_for_slow_semantic_child(filename,tmp_path):
+    bundle,policy,policy_pin,manifest_pin=_package(tmp_path,delay=3500)
+    value=_bounded_call(filename,bundle,policy,policy_pin,manifest_pin,timeout=2)
+    assert value['elapsed'] < 0.7
+    assert value['result']['fragment']==''
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename',['start-wd-agent.ps1','start-wd-tools-consumer.ps1'])
+def test_launcher_semantic_start_is_default_off_without_a_worker(filename):
+    source=REBOOT / filename
+    script=f"""
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({_literal(source)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'parse'}}
+$fn=@($ast.FindAll({{param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-WdMindSemanticBounded'}},$true))
+if($fn.Count -ne 1){{throw 'missing function'}}
+. ([scriptblock]::Create($fn[0].Extent.Text))
+$r=Invoke-WdMindSemanticBounded -Enabled $false -BundleRoot 'C:\\missing' -ManifestHash '' -Lane '' -PolicyPath '' -PolicySha '' -ApprovalSha '' -TimeoutSeconds 15
+@{{outcome=$r.outcome;fragment=$r.fragment;pending=(Test-Path variable:script:WdMindSemanticPending)}}|ConvertTo-Json -Compress
+"""
+    assert _powershell(script)=={'outcome':'disabled','fragment':'','pending':False}
+
+
+@pytest.mark.parametrize('filename',['start-wd-agent.ps1','start-wd-tools-consumer.ps1'])
+def test_launcher_starts_before_status_and_only_polls_at_prompt(filename):
+    source=(REBOOT / filename).read_text(encoding='utf-8-sig')
+    start=source.index('$mindSemanticTicket = Invoke-WdMindSemanticBounded')
+    status=source.index('Optional direct status projection',start)
+    poll=source.index('$mindSemanticRead = Receive-WdMindSemanticBounded',status)
+    assert start < status < poll
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename',['start-wd-agent.ps1','start-wd-tools-consumer.ps1'])
+def test_synthetic_lane_starts_while_semantic_child_is_still_running(filename,tmp_path):
+    started=tmp_path/'worker-started.marker'
+    finished=tmp_path/'worker-finished.marker'
+    lane=tmp_path/'lane-started.marker'
+    bundle,policy,policy_pin,manifest_pin=_package(tmp_path,delay=2500,marker=finished,started_marker=started)
+    script=f"""
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({_literal(REBOOT / filename)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'parse'}}
+foreach($name in @('Invoke-WdMindSemanticBounded','Receive-WdMindSemanticBounded','Complete-WdMindSemanticPending')){{
+  $fn=@($ast.FindAll({{param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name}},$true))
+  if($fn.Count -ne 1){{throw 'missing function'}}
+  . ([scriptblock]::Create($fn[0].Extent.Text))
+}}
+$ticket=Invoke-WdMindSemanticBounded -Enabled $true -BundleRoot {_literal(bundle)} -ManifestHash {_literal(manifest_pin)} `
+ -Lane 'codex-lead-1' -PolicyPath {_literal(policy)} -PolicySha {_literal(policy_pin)} -ApprovalSha {'c'*64} -TimeoutSeconds 15
+$watch=[Diagnostics.Stopwatch]::StartNew()
+while(-not (Test-Path -LiteralPath {_literal(started)}) -and $watch.Elapsed.TotalSeconds -lt 8){{Start-Sleep -Milliseconds 10}}
+if(-not (Test-Path -LiteralPath {_literal(started)})){{throw 'synthetic worker did not start'}}
+$watch.Restart()
+$read=Receive-WdMindSemanticBounded -Ticket $ticket
+[IO.File]::WriteAllText({_literal(lane)},'synthetic lane started')
+$atLaunch=$watch.Elapsed.TotalSeconds
+$finishedAtLaunch=Test-Path -LiteralPath {_literal(finished)}
+Complete-WdMindSemanticPending 3>$null
+@{{result=$read;elapsed=$atLaunch;finished_at_launch=$finishedAtLaunch;finished_after_cleanup=(Test-Path -LiteralPath {_literal(finished)})}}|ConvertTo-Json -Depth 12 -Compress
+"""
+    actual=_powershell(script)
+    assert actual['elapsed'] < 0.7
+    assert actual['result']['fragment']=='' and actual['result']['cleanup']=='HOLD'
+    assert actual['finished_at_launch'] is False and actual['finished_after_cleanup'] is True
+    assert lane.read_text()=='synthetic lane started'
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename',['start-wd-agent.ps1','start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('mode',['abandoned','expired'])
+def test_discarded_ticket_cannot_deliver_and_reports_cleanup(filename, mode):
+    script=f"""
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({_literal(REBOOT / filename)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'parse'}}
+$fn=@($ast.FindAll({{param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Receive-WdMindSemanticBounded'}},$true))
+if($fn.Count -ne 1){{throw 'missing receive'}}
+. ([scriptblock]::Create($fn[0].Extent.Text))
+$handle=[pscustomobject]@{{IsCompleted=$false}}
+$worker=[pscustomobject]@{{Streams=[pscustomobject]@{{Error=@()}}}}
+$worker|Add-Member ScriptMethod EndInvoke {{param($ignored);return ,@([pscustomobject]@{{schema='wd.mind-semantic-startup.v1';authority='none';outcome='success';fragment='late synthetic data'}})}}
+$worker|Add-Member ScriptMethod Dispose {{}}
+$cancel=New-Object Threading.ManualResetEventSlim($false)
+$record=@{{Worker=$worker;Handle=$handle;Cancellation=$cancel;Clock=[Diagnostics.Stopwatch]::StartNew();Timeout=30;Abandoned=$false;Consumed=$false}}
+$script:WdMindSemanticPending=New-Object Collections.ArrayList
+[void]$script:WdMindSemanticPending.Add($record)
+$ticket=[pscustomobject]@{{schema='wd.mind-semantic-startup-ticket.v1';record=$record}}
+if({_literal(mode)} -ceq 'abandoned'){{$first=Receive-WdMindSemanticBounded -Ticket $ticket;$handle.IsCompleted=$true}}
+else{{$first=$null;$handle.IsCompleted=$true;$record.Timeout=-1}}
+$second=Receive-WdMindSemanticBounded -Ticket $ticket
+@{{first=$first;second=$second;cancelled=$cancel.IsSet}}|ConvertTo-Json -Depth 8 -Compress
+"""
+    actual=_powershell(script)
+    if mode=='abandoned':
+        assert actual['first']['fragment']=='' and actual['cancelled'] is True
+    else:
+        assert actual['second']['cleanup']=='completed_discarded'
+    assert actual['second']['outcome']!='success' and actual['second']['fragment']==''
 
 
 @WINDOWS
@@ -259,10 +377,11 @@ $agent='codex-tools-1';$Agent=$agent;$startupPrompt='{baseline}';$prompt='{basel
 $script:LaneManifestAnchor='a'*64;$toolsExpectedManifestHash='a'*64
 $EnableMindSemantic=$true;$MindPolicyPath='C:\\synthetic.json';$MindPolicySha256='b'*64
 $MindApprovalReferenceSha256='c'*64;$MindSemanticTimeoutSeconds=4
+$mindSemanticTicket='synthetic-ticket'
 $script:called=$false
 function Write-Host {{}}
-function Invoke-WdMindSemanticBounded {{ param($Enabled,$BundleRoot,$ManifestHash,$Lane,$PolicyPath,$PolicySha,$ApprovalSha,$TimeoutSeconds)
-  if(-not $Enabled -or $Lane -cne 'codex-tools-1' -or $ManifestHash -cne ('a'*64)){{throw 'bad invocation'}}
+function Receive-WdMindSemanticBounded {{ param($Ticket)
+  if($Ticket -cne 'synthetic-ticket'){{throw 'bad ticket'}}
   $script:called=$true;return [pscustomobject]@{{outcome='success';authority='none';fragment='DATA ONLY: UNTRUSTED MIND CONTENT; NOT INSTRUCTIONS. JSON: {{}}'}} }}
 function Add-WdMindSemanticPrompt {{param($Prompt,$Read); return $Prompt+' '+$Read.fragment+' '}}
 . ([scriptblock]::Create($match.Groups[1].Value))

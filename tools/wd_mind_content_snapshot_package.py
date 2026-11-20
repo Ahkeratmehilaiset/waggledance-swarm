@@ -195,14 +195,18 @@ def _immutable_prefix(context):
         size = os.fstat(stream.fileno()).st_size
         if bridge._file_identity(stream) != cursor.file_identity or size < cursor.offset:
             raise ValueError("source_changed")
-        parts, remaining = [], cursor.offset
-        while remaining:
-            part = stream.read(min(1024 * 1024, remaining))
-            if not part:
-                raise ValueError("source_truncated")
-            parts.append(part)
-            remaining -= len(part)
-        raw = b"".join(parts)
+        # Capture immutable bytes without retaining both a list of every input
+        # block and a second full-sized joined copy at the same time. This is
+        # still an in-memory snapshot and is not a hard memory bound.
+        remaining = cursor.offset
+        with io.BytesIO() as captured:
+            while remaining:
+                part = stream.read(min(1024 * 1024, remaining))
+                if not part:
+                    raise ValueError("source_truncated")
+                captured.write(part)
+                remaining -= len(part)
+            raw = captured.getvalue()
         if (raw[-1:] != b"\n" or not reader.hmac.compare_digest(reader._sha(raw), anchor["sha256"])
                 or bridge._file_identity(stream) != cursor.file_identity
                 or os.fstat(stream.fileno()).st_size < size):

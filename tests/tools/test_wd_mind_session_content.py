@@ -920,6 +920,55 @@ def test_selected_row_resolver_refuses_mutation_after_final_reread(flat_consumer
     assert len(calls) == 2 and resolver._closed and resolver._private is None
 
 
+def test_selected_row_resolver_refuses_unselected_mutation_after_final_reread(flat_consumer_case, monkeypatch):
+    """The end hash, not a selected-row reread, catches this distinct edit."""
+    from tools import wd_mind_retained_query as retained
+    resolver, frame, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    frame['candidates'] = frame['candidates'][:1]
+    item = frame['candidates'][0]
+    source = Path(snapshot['messages']['source_path'])
+    before = source.read_bytes()
+    selected_start = item['source_offset']
+    selected_end = selected_start + item['source_length']
+    marker = b'"message":'
+    offsets = [i for i in range(len(before)) if before.startswith(marker, i)
+               and not selected_start <= i < selected_end]
+    assert offsets, 'synthetic fixture requires an unselected row'
+    byte_offset = offsets[0] + len(marker) - 3
+    selected = type(resolver)._selected
+    source_check = retained._source_check
+    state = {'selected': 0, 'hashes': 0, 'final_hash_entered': False}
+
+    def mutate_after_final(self, *args):
+        result = selected(self, *args)
+        state['selected'] += 1
+        if state['selected'] == 2:
+            assert state['hashes'] == 1
+            with source.open('r+b') as stream:
+                stream.seek(byte_offset)
+                assert stream.read(1) == b'e'
+                stream.seek(byte_offset)
+                stream.write(b'E')
+        return result
+
+    def count_hash(context):
+        state['hashes'] += 1
+        if state['hashes'] == 2:
+            state['final_hash_entered'] = True
+        return source_check(context)
+
+    monkeypatch.setattr(type(resolver), '_selected', mutate_after_final)
+    monkeypatch.setattr(retained, '_source_check', count_hash)
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    after = source.read_bytes()
+    assert state == {'selected': 2, 'hashes': 2, 'final_hash_entered': True}
+    assert len(before) == len(after) and before != after
+    assert before[selected_start:selected_end] == after[selected_start:selected_end]
+    assert resolver._closed and resolver._private is None
+
+
 def test_selected_row_resolver_refuses_deadline_during_final_hash(flat_consumer_case, monkeypatch):
     from tools import wd_mind_retained_query as retained
     resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
@@ -972,6 +1021,56 @@ def test_selected_row_age_includes_final_prefix_elapsed(flat_consumer_case, monk
     for item in result['results']:
         observed = (clock.value - content._utc(item['event_time_utc_floor'])).total_seconds()
         assert item['event_age_seconds_upper_bound'] >= observed
+
+
+def test_selected_row_age_upper_bound_includes_exact_remaining_budget(flat_consumer_case, monkeypatch):
+    import math
+    resolver, frame, _, clock = _located_candidates(flat_consumer_case, monkeypatch)
+    frame['candidates'] = frame['candidates'][:1]
+    monotonic_now, deadline = 10.25, 20.75
+    monkeypatch.setattr(session, 'time', SimpleNamespace(monotonic=lambda: monotonic_now))
+    result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                              lane='codex-lead-1', scope='shared', deadline_monotonic=deadline)
+    item = result['results'][0]
+    elapsed = (clock.value - content._utc(item['event_time_utc_floor'])).total_seconds()
+    assert item['event_age_seconds_upper_bound'] == math.ceil(elapsed + (deadline - monotonic_now)) + 1
+    assert item['event_age_seconds_upper_bound'] > math.ceil(elapsed)
+
+
+def test_selected_row_refuses_remaining_budget_expiring_after_last_deadline_check(flat_consumer_case, monkeypatch):
+    from tools import wd_mind_retained_query as retained
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    frame['candidates'] = frame['candidates'][:1]
+    controls = type(resolver)._check_controls
+    source_check = retained._source_check
+    state = {'controls': 0, 'hashes': 0, 'after_last_control': 0}
+
+    def count_controls(self):
+        result = controls(self)
+        state['controls'] += 1
+        return result
+
+    def count_hash(context):
+        result = source_check(context)
+        state['hashes'] += 1
+        return result
+
+    def monotonic():
+        if state['controls'] == 5:
+            state['after_last_control'] += 1
+            # The previous deadline() passes; the next call computes remaining.
+            return 60.0 if state['after_last_control'] >= 2 else 59.0
+        return 0.0
+
+    monkeypatch.setattr(type(resolver), '_check_controls', count_controls)
+    monkeypatch.setattr(retained, '_source_check', count_hash)
+    monkeypatch.setattr(session, 'time', SimpleNamespace(monotonic=monotonic))
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=60.0)
+    assert state == {'controls': 5, 'hashes': 2, 'after_last_control': 2}
+    # A caller timeout alone does not invalidate the retained, source-pinned state.
+    assert not resolver._closed and resolver._private is not None
 
 
 def test_selected_row_resolver_rechecks_controls_after_final_hash(flat_consumer_case, monkeypatch):

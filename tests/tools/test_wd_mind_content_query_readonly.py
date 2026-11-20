@@ -570,17 +570,116 @@ def test_generationless_streamed_projection_matches_generationful_bytes(reader, 
     decision['source_prefix']['generation'] = None
     case['decision_bytes'] = _raw(decision)
     case['decision_sha256'] = _sha(case['decision_bytes'])
-    scans = []
-    original = absent._scan
-    def observe(*args, **kwargs):
-        result = original(*args, **kwargs)
-        scans.append((kwargs.get('projector') is not None,
-                      all(value is None or type(value) in (str, tuple) for value in result[1].values())))
-        return result
-    monkeypatch.setattr(absent, '_scan', observe)
+    def raw_reader_not_used(*_args, **_kwargs):
+        raise AssertionError('raw rows were materialized')
+    monkeypatch.setattr(absent, 'read_complete_generationless_prefix_rows', raw_reader_not_used)
     actual = reader._serialized(reader.rederive_complete_message_projection(**case))
     assert actual == baseline and _sha(actual) == _sha(baseline)
-    assert scans == [(True, True)]
+
+
+def _make_generationless(case):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    cursor = case['messages']['end_cursor']
+    case['messages']['end_cursor'] = BridgeCursor(cursor.offset, cursor.file_identity, None)
+    Path(case['messages']['generation_path']).unlink()
+    case['messages']['generation_path'] = str(Path(case['messages']['source_path']).with_name('events.generation.json'))
+    decision = json.loads(case['decision_bytes'])
+    decision['source_prefix']['generation'] = None
+    case['decision_bytes'] = _raw(decision)
+    case['decision_sha256'] = _sha(case['decision_bytes'])
+    return case
+
+
+def test_streamed_source_rejects_external_callback_and_fake_policy_before_raw_disclosure(reader, tmp_path):
+    case = _make_generationless(_all_tasks_case(reader, tmp_path, [_row('synthetic raw fixture')]))
+    context = reader._inputs(case, complete_source=True)
+    context['decision']['source_prefix']['sha256'] = '0' * 64
+    calls = []
+    def external(ref, row):
+        calls.append((ref, row))
+    with pytest.raises(TypeError):
+        reader._screened_generationless_rows(context, projector=external)
+    with pytest.raises(ValueError, match='prefix_mismatch'):
+        reader._screened_generationless_rows(context)
+    class ExternalPolicy:
+        def contains(self, raw):
+            calls.append(raw)
+            return False
+    context['private'] = ExternalPolicy()
+    with pytest.raises(ValueError):
+        reader._screened_generationless_rows(context)
+    assert calls == []
+
+
+def test_streamed_source_charges_and_requires_both_full_hashes(reader, tmp_path):
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+    case = _make_generationless(_all_tasks_case(reader, tmp_path, [_row('synthetic two hash checks')]))
+    context = reader._inputs(case, complete_source=True)
+    offset = case['messages']['end_cursor'].offset
+    budget = absent._SourceReadBudget(2 * offset)
+    projection = reader._projection(context, complete_records=True, source_budget=budget)
+    assert projection['messages']['accepted'] == 1 and budget._remaining == 0
+    with pytest.raises(ValueError):
+        reader._projection(context, complete_records=True,
+                           source_budget=absent._SourceReadBudget(2 * offset - 1))
+
+
+def test_streamed_source_skips_only_adjacent_identical_canonical_events(reader, tmp_path, monkeypatch):
+    duplicate = _row('synthetic repeated build')
+    another = _row('synthetic distinct build', task_id='synthetic-second')
+    case = _make_generationless(_all_tasks_case(reader, tmp_path, [duplicate, duplicate, another, duplicate]))
+    original, calls = reader.chunk, []
+    def counted(encoded, *args):
+        calls.append(encoded)
+        return original(encoded, *args)
+    monkeypatch.setattr(reader, 'chunk', counted)
+    projection = reader.rederive_complete_message_projection(**case)
+    assert len(projection['messages']['records']) == 2
+    # Consecutive identical bytes are screened once; a non-adjacent repeated
+    # reference is still recomputed, preserving last-reference-wins semantics.
+    assert len(calls) == 3
+
+
+def test_streamed_source_nonidentical_hash_collision_keeps_last_screened_event(reader, tmp_path, monkeypatch):
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+    first = _row('synthetic collision first')
+    last = _row('synthetic collision last', task_id='synthetic-collision-last')
+    case = _make_generationless(_all_tasks_case(reader, tmp_path, [first, last, last]))
+    context = reader._inputs(case, complete_source=True)
+    original_sha = reader._sha
+    colliding = {_raw(first), _raw(last)}
+    def synthetic_sha(data):
+        return 'a' * 64 if data in colliding else original_sha(data)
+    monkeypatch.setattr(reader, '_sha', synthetic_sha)
+    monkeypatch.setattr(absent, 'event_id', lambda _row: 'a' * 64)
+    expected = reader._screen_projection_event('a' * 64, last, context)
+    reduced = reader._screened_generationless_rows(context)
+    assert reduced == {'a' * 64: expected}
+    assert reader.decode_text(reduced['a' * 64][1][0]) == 'synthetic collision last'
+
+
+@pytest.mark.parametrize('fault', ['rewrite', 'truncate', 'sidecar'])
+def test_streamed_source_fence_detects_changes_during_scan(reader, tmp_path, monkeypatch, fault):
+    case = _make_generationless(_all_tasks_case(reader, tmp_path, [_row('synthetic original record')]))
+    source, sidecar = Path(case['messages']['source_path']), Path(case['messages']['generation_path'])
+    original, changed = reader._screen_projection_event, []
+    def mutate(ref, row, context):
+        result = original(ref, row, context)
+        if not changed:
+            if fault == 'rewrite':
+                before = source.read_bytes()
+                replacement = before.replace(b'synthetic original record', b'synthetic modified record', 1)
+                assert len(replacement) == len(before) and replacement != before
+                source.write_bytes(replacement)
+            elif fault == 'truncate':
+                source.write_bytes(b'')
+            else:
+                sidecar.write_bytes(b'{}')
+            changed.append(True)
+        return result
+    monkeypatch.setattr(reader, '_screen_projection_event', mutate)
+    _refused(reader, lambda: reader.rederive_complete_message_projection(**case))
+    assert changed == [True]
 
 
 @pytest.mark.parametrize('generationless', [False, True])

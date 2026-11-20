@@ -751,6 +751,7 @@ def test_close_starts_before_close_diagnostic_thread_start_can_block(monkeypatch
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     ready, diagnostic_start_blocked, release_start, owner_close_called, release_owner = (
         threading.Event() for _ in range(5))
+    diagnostic_start_resumed = threading.Event()
     policy = b'synthetic-policy'
     source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
     class Input:
@@ -789,7 +790,10 @@ def test_close_starts_before_close_diagnostic_thread_start_can_block(monkeypatch
     def start_with_stall(thread):
         if thread.name == 'mind-owner-close-diagnostic':
             diagnostic_start_blocked.set()
-            assert release_start.wait(5)
+            try:
+                assert release_start.wait(5)
+            finally:
+                diagnostic_start_resumed.set()
         return actual_start(thread)
     monkeypatch.setattr(threading.Thread, 'start', start_with_stall)
     result = []
@@ -801,7 +805,9 @@ def test_close_starts_before_close_diagnostic_thread_start_can_block(monkeypatch
     try:
         assert diagnostic_start_blocked.wait(5)
         assert adapter._cancel.is_set()
-        assert owner_close_called.is_set()
+        # Close entry precedes diagnostics; owner.close runs on an independent thread.
+        assert owner_close_called.wait(5)
+        assert not diagnostic_start_resumed.is_set()
     finally:
         release_owner.set()
         release_start.set()

@@ -1098,6 +1098,152 @@ def _validated_start_failure(value):
     return {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN'}
 
 
+class _OwnedStatusWriter:
+    """One bounded FIFO and retained writer; never owns or kills its stream.
+
+    A blocked synchronous write/flush cannot be cancelled safely here. It stays
+    owned and HOLD until it returns; no hard process-exit deadline is claimed.
+    This opt-in worker is not a peer or stream authentication boundary.
+    """
+    _KINDS = frozenset(('STARTING', 'READY', 'HOLD', 'STOPPED', 'DIAGNOSTIC', 'CAPACITY'))
+
+    def __init__(self, stream, max_frames=8, max_bytes=8192):
+        if (stream is None or type(max_frames) is not int or not 1 <= max_frames <= 32
+                or type(max_bytes) is not int or not 1024 <= max_bytes <= 32768):
+            raise ValueError('status_writer')
+        self._stream, self._max_frames, self._max_bytes = stream, max_frames, max_bytes
+        self._condition = threading.Condition()
+        self._queue, self._inflight, self._buffered_bytes = [], None, 0
+        self._stop = self._finishing = self._failed = self._terminal_queued = False
+        self._terminal_written = self._start_attempted = self._start_confirmed = False
+        self._done, self._ready_written = threading.Event(), threading.Event()
+        self._thread = None
+
+    def start(self):
+        with self._condition:
+            if self._start_attempted:
+                return 'HOLD'
+            self._start_attempted = True
+            try:
+                self._thread = threading.Thread(target=self._run, name='mind-owner-status-writer', daemon=False)
+                self._thread.start()
+                self._start_confirmed = True
+                return 'STARTED'
+            except BaseException:
+                # start() can fail after scheduling a native thread. Keep the
+                # reference and never infer that it did not start.
+                self._failed = self._finishing = True
+                self._condition.notify_all()
+                return 'HOLD'
+
+    def submit(self, raw, kind):
+        with self._condition:
+            if (not self._start_confirmed or self._failed or self._finishing or self._terminal_queued
+                    or kind not in self._KINDS or type(raw) is not bytes or not 0 < len(raw) <= 1024
+                    or not raw.endswith(b'\n')):
+                self._failed = True
+                self._condition.notify_all()
+                return 'HOLD'
+            if self._stop and kind == 'CAPACITY':
+                return 'DROPPED'
+            if (self._stop and kind in ('STARTING', 'READY')) or (not self._stop and kind == 'STOPPED'):
+                self._failed = True
+                self._condition.notify_all()
+                return 'HOLD'
+            count = len(self._queue) + (1 if self._inflight is not None else 0)
+            if count >= self._max_frames or self._buffered_bytes + len(raw) > self._max_bytes:
+                if kind == 'CAPACITY':
+                    return 'DROPPED'
+                self._failed = True
+                self._condition.notify_all()
+                return 'HOLD'
+            self._queue.append((kind, raw))
+            self._buffered_bytes += len(raw)
+            if kind == 'STOPPED':
+                self._terminal_queued = True
+            self._condition.notify_all()
+            return 'QUEUED'
+
+    def request_stop(self):
+        with self._condition:
+            self._stop = True
+            # A READY already inside the native write may still be delivered.
+            # It cannot be retracted: retain HOLD rather than claim clean exit.
+            if self._inflight is not None and self._inflight[0] == 'READY':
+                self._failed = True
+            kept = []
+            for item in self._queue:
+                if item[0] in ('READY', 'CAPACITY'):
+                    self._buffered_bytes -= len(item[1])
+                else:
+                    kept.append(item)
+            self._queue = kept
+            self._condition.notify_all()
+
+    def failed(self):
+        with self._condition:
+            return self._failed
+
+    def ready_written(self):
+        return self._ready_written.is_set()
+
+    def _run(self):
+        try:
+            while True:
+                with self._condition:
+                    while not self._queue and not self._finishing and not self._failed:
+                        self._condition.wait()
+                    if self._failed:
+                        return
+                    if not self._queue:
+                        return
+                    item = self._queue.pop(0)
+                    self._inflight = item
+                kind, raw = item
+                offset = 0
+                while offset < len(raw):
+                    with self._condition:
+                        if self._failed or (self._stop and offset and kind in ('READY', 'CAPACITY')):
+                            self._failed = True
+                            return
+                    count = self._stream.write(memoryview(raw)[offset:])
+                    if type(count) is not int or not 0 < count <= len(raw) - offset:
+                        raise ValueError('status_write')
+                    offset += count
+                self._stream.flush()
+                with self._condition:
+                    self._buffered_bytes -= len(raw)
+                    self._inflight = None
+                    if self._failed:
+                        return
+                    if kind == 'READY':
+                        self._ready_written.set()
+                    if kind == 'STOPPED':
+                        self._terminal_written = True
+                    self._condition.notify_all()
+        except BaseException:
+            with self._condition:
+                self._failed = True
+                self._condition.notify_all()
+        finally:
+            self._done.set()
+
+    def finish(self, timeout):
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout <= 5:
+            raise ValueError('status_writer_timeout')
+        with self._condition:
+            self._finishing = True
+            self._condition.notify_all()
+        if self._thread is not None and self._start_confirmed:
+            self._thread.join(timeout=float(timeout))
+        active = (None if self._thread is not None and not self._start_confirmed and not self._done.is_set()
+                  else bool(self._thread is not None and self._thread.is_alive()))
+        with self._condition:
+            clean = (self._start_confirmed and self._done.is_set() and not active and not self._failed
+                     and self._terminal_written and self._inflight is None and not self._queue)
+        return {'state':'STOPPED' if clean else 'HOLD', 'worker_active':active}
+
+
 def _capacity_diagnostic_frame(manifest, observation):
     """Encode only an as-of-pinned-prefix scalar observation, or UNKNOWN."""
     if type(manifest) is not str or not _HEX.fullmatch(manifest):
@@ -2597,6 +2743,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     """
     from tools import wd_mind_runtime_process as process
     policy = adapter = service = service_thread = control_thread = close_worker_thread = None
+    status_writer = None
     stop, service_done, control_done = threading.Event(), threading.Event(), threading.Event()
     close_worker_done = threading.Event()
     service_gate, adapter_close_gate = threading.Lock(), threading.Lock()
@@ -2620,7 +2767,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     class _HostStopBeforeStart(Exception):
         pass
 
-    def write_record(raw, *, best_effort=False):
+    def write_record(raw, *, best_effort=False, kind='DIAGNOSTIC'):
+        if status_writer is not None:
+            outcome = status_writer.submit(raw, kind)
+            if outcome == 'QUEUED':
+                return True
+            if outcome == 'DROPPED' and kind == 'CAPACITY':
+                return False
+            raise ValueError('status_write')
         if not output_gate.acquire(blocking=not best_effort):
             return False
         try:
@@ -2635,6 +2789,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         finally:
             output_gate.release()
 
+    def ready_reported():
+        return (startup_reported_ready if status_writer is None else status_writer.ready_written())
+
     def emit(state):
         nonlocal last_state, startup_reported_ready
         if state == last_state:
@@ -2645,9 +2802,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             'manifest_sha256':expected_manifest_sha256, 'authority':'none',
             'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
             'index_refresh':'NOT_SCHEDULED'}, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
-        write_record(raw)
+        write_record(raw, kind=state)
         last_state = state
-        if state == 'READY': startup_reported_ready = True
+        if state == 'READY' and status_writer is None: startup_reported_ready = True
 
     def emit_capacity():
         nonlocal capacity_state
@@ -2665,14 +2822,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         raw = json.dumps(frame, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii') + b'\n'
         if len(raw) > 1024:
             raise ValueError('capacity_diagnostic_size')
-        write_record(raw)
-        capacity_state = frame['state']
+        if write_record(raw, kind='CAPACITY'):
+            capacity_state = frame['state']
 
     def emit_diagnostic():
         nonlocal last_diagnostic, diagnostic_count
         if ((include_start_diagnostics is not True and include_worker_stage_diagnostics is not True)
                 or diagnostic_count >= 2
-                or (startup_reported_ready and include_worker_stage_diagnostics is not True)):
+                or (ready_reported() and include_worker_stage_diagnostics is not True)):
             return
         value = start_failure
         if adapter is not None:
@@ -2688,14 +2845,14 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         safe = _validated_start_failure(value)
         # A post-READY worker exit is not a startup failure; only its fixed,
         # untrusted worker-exit diagnostic may be reported in v2.
-        if startup_reported_ready:
+        if ready_reported():
             safe = {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN'}
         key = (safe['reason'], safe['exception_type'])
         if include_worker_stage_diagnostics is True:
             hint, exit_code = 'UNKNOWN', None
             with worker_exit_snapshot_lock:
                 captured = worker_exit_snapshot
-            if startup_reported_ready and captured is not None:
+            if ready_reported() and captured is not None:
                 hint, exit_code = captured
             elif adapter is not None:
                 try: hint, exit_code = _safe_worker_diagnostic(adapter.worker_exit_diagnostic())
@@ -2744,7 +2901,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
 
     def report_verified_worker_exit_during_hold():
         nonlocal failed
-        if (include_worker_stage_diagnostics is not True or not startup_reported_ready
+        if (include_worker_stage_diagnostics is not True or not ready_reported()
                 or diagnostic_thread is not None or adapter is None):
             return
         try:
@@ -2849,6 +3006,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
 
     def accept_stop():
         """Fence both entry shutdown paths against a later owner commitment."""
+        if status_writer is not None:
+            status_writer.request_stop()
         with service_gate:
             if type(adapter) is _LocalManifestQuery:
                 try:
@@ -2923,6 +3082,10 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             control_done.set()
 
     try:
+        if include_capacity_diagnostics is True:
+            status_writer = _OwnedStatusWriter(output_stream)
+            if status_writer.start() != 'STARTED':
+                raise ValueError('status_writer_start')
         # A running pipe cannot answer any candidate request while this gate
         # is disabled. Refuse before starting an owner or advertising READY.
         from tools import wd_mind_full_runtime as runtime
@@ -2971,6 +3134,9 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             raise ValueError('owner_start')
         emit('STARTING')
         while not stop.is_set():
+            if status_writer is not None and status_writer.failed():
+                failed = True
+                break
             if control_error:
                 raise ValueError('control_reader_failed')
             owner_status = adapter.status()
@@ -3040,7 +3206,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             try: emit('HOLD')
             except BaseException: pass
             if (include_worker_stage_diagnostics is True or
-                    (include_start_diagnostics is True and not startup_reported_ready)):
+                    (include_start_diagnostics is True and not ready_reported())):
                 start_diagnostic_worker()
         # This is the final nonblocking observation attempt before cleanup.
         # A contended lock can leave capacity UNKNOWN even if it later clears;
@@ -3067,7 +3233,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 try: emit('HOLD')
                 except BaseException: pass
                 if (include_worker_stage_diagnostics is True or
-                        (include_start_diagnostics is True and not startup_reported_ready)):
+                        (include_start_diagnostics is True and not ready_reported())):
                     start_diagnostic_worker()
         early_adapter_closed = False
         if service is not None:
@@ -3094,7 +3260,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                         try: emit('HOLD')
                         except BaseException: pass
                         if (include_worker_stage_diagnostics is True or
-                                (include_start_diagnostics is True and not startup_reported_ready)):
+                                (include_start_diagnostics is True and not ready_reported())):
                             start_diagnostic_worker()
                         break
                 except BaseException:
@@ -3142,7 +3308,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     try: emit('HOLD')
                     except BaseException: pass
                     if (include_worker_stage_diagnostics is True or
-                            (include_start_diagnostics is True and not startup_reported_ready)):
+                            (include_start_diagnostics is True and not ready_reported())):
                         start_diagnostic_worker()
             # Close may finish on the worker before either cleanup loop polls.
             # Consume any fixed exit evidence captured before owner retirement.
@@ -3178,10 +3344,20 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                 except BaseException: pass  # Retain the writer and remain HOLD until it exits.
         if stop_fence_uncertain.is_set():
             failed = True
-        if _cleanup_evidence is not None and not stop_fence_uncertain.is_set():
-            _cleanup_evidence['clean'] = True
-        try: emit('STOPPED')
-        except BaseException: failed = True
+        if status_writer is None:
+            # Preserve the legacy opt-out wire and cleanup sequence.
+            if _cleanup_evidence is not None and not stop_fence_uncertain.is_set():
+                _cleanup_evidence['clean'] = True
+            try: emit('STOPPED')
+            except BaseException: failed = True
+        else:
+            try: emit('STOPPED')
+            except BaseException: failed = True
+            writer_end = status_writer.finish(0.25)
+            if writer_end['state'] != 'STOPPED':
+                failed = True
+            elif _cleanup_evidence is not None and not stop_fence_uncertain.is_set():
+                _cleanup_evidence['clean'] = True
     return 2 if failed or control_error else 0
 
 
@@ -3243,7 +3419,7 @@ def _parent_control_entry(*, control_stream, output_stream, bundle_root, expecte
             _PARENT_ACTIVE = None
 
 
-def _emit_preowner_diagnostic(out, manifest, reason, exception_type, v2):
+def _emit_preowner_diagnostic(out, manifest, reason, exception_type, v2, *, writer=None):
     """Emit only fixed non-sensitive status/diagnostic records."""
     status = {'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
         'manifest_sha256':manifest, 'authority':'none',
@@ -3256,6 +3432,11 @@ def _emit_preowner_diagnostic(out, manifest, reason, exception_type, v2):
         diagnostic.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
     for record in (status, diagnostic):
         data = json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+        if writer is not None:
+            kind = 'HOLD' if record is status else 'DIAGNOSTIC'
+            if writer.submit(data, kind) != 'QUEUED':
+                raise ValueError('diagnostic_write')
+            continue
         offset = 0
         while offset < len(data):
             count = out.write(memoryview(data)[offset:])
@@ -3265,7 +3446,7 @@ def _emit_preowner_diagnostic(out, manifest, reason, exception_type, v2):
         out.flush()
 
 
-def _emit_preowner_capacity(out, manifest, *, include_status):
+def _emit_preowner_capacity(out, manifest, *, include_status, writer=None):
     records = []
     if include_status:
         records.append({'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
@@ -3274,6 +3455,12 @@ def _emit_preowner_capacity(out, manifest, *, include_status):
     records.append(_capacity_diagnostic_frame(manifest, None))
     for record in records:
         data = json.dumps(record, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii') + b'\n'
+        if writer is not None:
+            kind = 'HOLD' if record.get('state') == 'HOLD' else 'CAPACITY'
+            outcome = writer.submit(data, kind)
+            if outcome != 'QUEUED' and not (kind == 'CAPACITY' and outcome == 'DROPPED'):
+                raise ValueError('diagnostic_write')
+            continue
         offset = 0
         while offset < len(data):
             count = out.write(memoryview(data)[offset:])
@@ -3310,16 +3497,27 @@ def _guarded_local_entry(entry, **kwargs):
         manifest = kwargs.get('expected_manifest_sha256')
         if (entry is _local_candidate_owner_entry and (v1 or v2 or capacity)
                 and type(manifest) is str and _HEX.fullmatch(manifest)):
+            writer = None
             try:
+                if capacity:
+                    writer = _OwnedStatusWriter(kwargs['output_stream'])
+                    if writer.start() != 'STARTED':
+                        raise ValueError('status_writer_start')
                 reason = {'owner_reservation_missing':'ADMISSION_MISSING',
                           'owner_reservation_reserved':'ADMISSION_RESERVED',
                           'owner_reservation_lock_unavailable':'ADMISSION_LOCK_UNAVAILABLE'}.get(str(exc), 'ADMISSION')
                 if v1 or v2:
-                    _emit_preowner_diagnostic(kwargs['output_stream'], manifest, reason, 'LaunchRefused', v2)
+                    if writer is None:
+                        _emit_preowner_diagnostic(kwargs['output_stream'], manifest, reason, 'LaunchRefused', v2)
+                    else:
+                        _emit_preowner_diagnostic(kwargs['output_stream'], manifest, reason, 'LaunchRefused', v2, writer=writer)
                 if capacity:
-                    _emit_preowner_capacity(kwargs['output_stream'], manifest, include_status=not (v1 or v2))
+                    _emit_preowner_capacity(kwargs['output_stream'], manifest, include_status=not (v1 or v2), writer=writer)
             except Exception:
                 pass  # Output uncertainty remains a refusal, never READY.
+            finally:
+                if writer is not None:
+                    writer.finish(0.25)  # No STOPPED or admission claim for a pre-owner refusal.
         return 2
     cleanup_evidence = {'clean': False}
     admission = _LocalAdmission(guard, cleanup_evidence)
@@ -3424,6 +3622,10 @@ def _load_pinned_canonical_child(bundle, expected_manifest_sha256):
 
 def _fixed_child_main(argv):
     """Route fixed parent and owner flags; other inputs refuse."""
+    # The capability is disabled even when its token is supplied as an option
+    # value: reject before environment, admission, process creation or I/O.
+    if '--include-capacity-diagnostics' in argv:
+        return 2
     if argv and argv[0] == '--mind-local-query':
         return 2  # Before manifest loading, admission, or other side effects.
     flags = []
@@ -3436,6 +3638,12 @@ def _fixed_child_main(argv):
     diagnostic_optin = '--start-diagnostics' in flags
     worker_diagnostic_optin = '--start-diagnostics-v2' in flags
     capacity_optin = '--include-capacity-diagnostics' in flags
+    # The experimental owner writer cannot yet fence a READY frame already in
+    # a synchronous pipe write against an internal STOP/failure. Keep capacity
+    # closed before environment, admission, I/O, or process creation; internal
+    # synthetic hooks remain available for review.
+    if capacity_optin:
+        return 2
     if diagnostic_optin and worker_diagnostic_optin: return 2
     if flags and (not argv or argv[0] != '--mind-local-candidate-owner'): return 2
     local_owner = (len(argv) == 5 and argv[0] == '--mind-local-candidate-owner'

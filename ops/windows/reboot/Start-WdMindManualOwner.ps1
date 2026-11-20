@@ -236,6 +236,9 @@ function Start-WdMindManualOwner {
           [Parameter(Mandatory)][string] $BridgePythonPath,
           [Parameter(Mandatory)][string] $BridgePythonSha256, [switch] $IncludeStartupDiagnostics,
           [switch] $IncludeWorkerStageDiagnostics, [switch] $IncludeCapacityDiagnostics)
+    # The experimental writer cannot yet fence an already in-flight READY.
+    # Refuse before any pin read, record registration, or child creation.
+    if ($IncludeCapacityDiagnostics) { throw 'mind_manual_capacity_unavailable' }
     if (-not $Enabled) { throw 'mind_manual_owner_disabled' }
     if ($IncludeStartupDiagnostics -and $IncludeWorkerStageDiagnostics) { throw 'mind_manual_diagnostics_option' }
     $policy=$null; $record=$null; $handle=$null; $registered=$false; $preflightStage='INPUT'

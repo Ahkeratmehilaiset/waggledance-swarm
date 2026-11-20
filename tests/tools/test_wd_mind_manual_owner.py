@@ -11,6 +11,68 @@ import sys
 import pytest
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual owner guard')
+@pytest.mark.parametrize('shell', [
+    str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(shutil.which('pwsh') is None,
+                                                               reason='PowerShell 7 unavailable')),
+], ids=['powershell51', 'pwsh7'])
+def test_capacity_optin_refuses_before_reads_registration_or_child(shell):
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
+    path = str(helper).replace("'", "''")
+    script = f"""
+$ErrorActionPreference='Stop'
+. '{path}'
+$global:SyntheticPinReads=0
+$global:SyntheticObjects=0
+function Read-WdMindManualPinnedBytes {{ $global:SyntheticPinReads++; throw 'synthetic-pin-read' }}
+function New-Object {{ $global:SyntheticObjects++; throw 'synthetic-object-create' }}
+$results=@()
+foreach($registryMode in @('absent','existing')) {{
+  if($registryMode -ceq 'absent') {{ Remove-Variable WdMindManualOwnerRecords -Scope Global -ErrorAction SilentlyContinue }}
+  else {{ $global:WdMindManualOwnerRecords=@{{sentinel='retained'}} }}
+  $original=if($registryMode -ceq 'existing') {{$global:WdMindManualOwnerRecords}} else {{$null}}
+  foreach($enabled in @($false,$true)) {{
+    foreach($legacy in @('none','startup','worker','both')) {{
+      $invokeArgs=@{{Enabled=$enabled;IncludeCapacityDiagnostics=$true;BundleRoot='C:\\synthetic-none';
+        ExpectedManifestHash=('a'*64);OperatorPolicyPath='C:\\synthetic-policy';OperatorPolicySha256=('b'*64);
+        OperatorApprovalReferenceSha256=('c'*64);BridgePythonPath='C:\\synthetic-python';BridgePythonSha256=('d'*64)}}
+      if($legacy -in @('startup','both')){{$invokeArgs.IncludeStartupDiagnostics=$true}}
+      if($legacy -in @('worker','both')){{$invokeArgs.IncludeWorkerStageDiagnostics=$true}}
+      $message='unexpected-success'
+      try {{ Start-WdMindManualOwner @invokeArgs | Out-Null }} catch {{ $message=$_.Exception.Message }}
+      $untouched=if($registryMode -ceq 'existing') {{
+        [object]::ReferenceEquals($original,$global:WdMindManualOwnerRecords) -and
+        $global:WdMindManualOwnerRecords.Count -eq 1 -and $global:WdMindManualOwnerRecords.sentinel -ceq 'retained'
+      }} else {{ -not (Test-Path variable:global:WdMindManualOwnerRecords) }}
+      $results+=@([pscustomobject]@{{message=$message;untouched=$untouched;reads=$global:SyntheticPinReads;
+        objects=$global:SyntheticObjects}})
+    }}
+  }}
+}}
+$baseline=@{{Enabled=$false;BundleRoot='C:\\synthetic-none';ExpectedManifestHash=('a'*64);
+  OperatorPolicyPath='C:\\synthetic-policy';OperatorPolicySha256=('b'*64);
+  OperatorApprovalReferenceSha256=('c'*64);BridgePythonPath='C:\\synthetic-python';BridgePythonSha256=('d'*64)}}
+$disabled='unexpected-success'
+try {{ Start-WdMindManualOwner @baseline | Out-Null }} catch {{ $disabled=$_.Exception.Message }}
+$baseline.Enabled=$true
+$enabled='unexpected-success'
+try {{ Start-WdMindManualOwner @baseline | Out-Null }} catch {{ $enabled=$_.Exception.Message }}
+[pscustomobject]@{{results=$results;disabled=$disabled;enabled=$enabled;baseline_reads=$global:SyntheticPinReads;
+  baseline_objects=$global:SyntheticObjects}} | ConvertTo-Json -Depth 5 -Compress
+"""
+    encoded = base64.b64encode(script.encode('utf-16le')).decode()
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, text=True, timeout=20, check=True)
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    assert len(result['results']) == 16
+    assert all(row == {'message':'mind_manual_capacity_unavailable', 'untouched':True,
+                       'reads':0, 'objects':0} for row in result['results'])
+    assert result['disabled'] == 'mind_manual_owner_disabled'
+    assert result['enabled'] == 'mind_manual_owner_refused'
+    assert result['baseline_reads'] == 1 and result['baseline_objects'] == 0
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell capacity diagnostic parser')
 @pytest.mark.parametrize('shell', [
     str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),

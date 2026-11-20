@@ -24,6 +24,265 @@ def _v1_wire(state):
             b'"source_authentication":"UNKNOWN","state":"' + state.encode('ascii') + b'"}\n')
 
 
+class _SyntheticOwnedWriterStream:
+    """Synthetic output with cooperative release; never contains live source data."""
+    def __init__(self, *, block=None, max_chunk=None):
+        self.block = block
+        self.max_chunk = max_chunk
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.condition = threading.Condition()
+        self.data = bytearray()
+        self.flush_count = 0
+        self.closed = False
+
+    def write(self, raw):
+        if self.block == 'write':
+            self.entered.set()
+            if not self.release.wait(5):
+                raise TimeoutError('synthetic-write-deadline')
+        raw = bytes(raw)
+        count = min(len(raw), self.max_chunk or len(raw))
+        with self.condition:
+            self.data.extend(raw[:count])
+            self.condition.notify_all()
+        return count
+
+    def flush(self):
+        if self.block == 'flush':
+            self.entered.set()
+            if not self.release.wait(5):
+                raise TimeoutError('synthetic-flush-deadline')
+        with self.condition:
+            self.flush_count += 1
+            self.condition.notify_all()
+
+    def wait_flushes(self, count):
+        with self.condition:
+            return self.condition.wait_for(lambda: self.flush_count >= count, timeout=3)
+
+    def close(self):
+        self.closed = True
+
+
+def _synthetic_capacity_wire():
+    return (b'{"accepted_chunks":2,"authority":"none","capacity_chunks":500000,'
+            b'"diagnostic_generated_utc":"2020-01-01T00:00:00Z","freshness":"UNKNOWN",'
+            b'"manifest_sha256":"' + b'a' * 64 + b'","same_user_aba":"UNKNOWN",'
+            b'"schema":"wd.mind-local-owner-capacity.v1","scope":"PINNED_PREFIX",'
+            b'"source_authentication":"UNKNOWN","source_offset":1,'
+            b'"source_prefix_sha256":"' + b'b' * 64 + b'","state":"OBSERVED"}\n')
+
+
+def test_owned_status_writer_fifo_partial_and_legacy_bytes():
+    stream = _SyntheticOwnedWriterStream(max_chunk=5)
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    frames = [('STARTING', _v1_wire('STARTING')), ('CAPACITY', _synthetic_capacity_wire()),
+              ('READY', _v1_wire('READY'))]
+    try:
+        for kind, raw in frames:
+            assert writer.submit(raw, kind) == 'QUEUED'
+        assert stream.wait_flushes(3)
+        writer.request_stop()
+        assert writer.submit(_v1_wire('STOPPED'), 'STOPPED') == 'QUEUED'
+        done = writer.finish(3)
+        assert done['state'] == 'STOPPED' and done['worker_active'] is False
+        assert bytes(stream.data) == b''.join(raw for _, raw in frames) + _v1_wire('STOPPED')
+        assert not stream.closed
+    finally:
+        stream.release.set()
+        writer.request_stop()
+        writer.finish(3)
+
+
+@pytest.mark.parametrize('blocked', ['write', 'flush'])
+def test_owned_status_writer_stalled_io_is_retained_without_false_stopped(blocked):
+    stream = _SyntheticOwnedWriterStream(block=blocked)
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('STARTING'), 'STARTING') == 'QUEUED'
+        assert stream.entered.wait(2)
+        writer.request_stop()
+        assert writer.submit(_synthetic_capacity_wire(), 'CAPACITY') == 'DROPPED'
+        assert writer.submit(_v1_wire('STOPPED'), 'STOPPED') == 'QUEUED'
+        pending = writer.finish(0.05)
+        assert pending['state'] == 'HOLD'
+        assert _v1_wire('STOPPED') not in bytes(stream.data)
+        assert not stream.closed
+    finally:
+        stream.release.set()
+        finished = writer.finish(3)
+    assert finished['state'] == 'STOPPED' and finished['worker_active'] is False
+    assert bytes(stream.data) == _v1_wire('STARTING') + _v1_wire('STOPPED')
+
+
+def test_owned_status_writer_queue_and_byte_limits_reject_before_output():
+    stream = _SyntheticOwnedWriterStream(block='write')
+    writer = child._OwnedStatusWriter(stream, max_frames=2, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('STARTING'), 'STARTING') == 'QUEUED'
+        assert stream.entered.wait(2)
+        assert writer.submit(_synthetic_capacity_wire(), 'CAPACITY') == 'QUEUED'
+        assert writer.submit(_synthetic_capacity_wire(), 'CAPACITY') == 'DROPPED'
+        assert writer.submit(_v1_wire('READY'), 'READY') == 'HOLD'
+        writer.request_stop()
+        assert writer.submit(_v1_wire('STOPPED'), 'STOPPED') == 'HOLD'
+        assert writer.finish(0.05)['state'] == 'HOLD'
+    finally:
+        stream.release.set()
+        writer.finish(3)
+    assert _synthetic_capacity_wire() not in bytes(stream.data)
+    assert _v1_wire('READY') not in bytes(stream.data)
+
+
+def test_owned_writer_queued_ready_is_not_reported_as_delivered():
+    stream = _SyntheticOwnedWriterStream(block='write')
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('STARTING'), 'STARTING') == 'QUEUED'
+        assert stream.entered.wait(2)
+        assert writer.submit(_v1_wire('READY'), 'READY') == 'QUEUED'
+        assert not writer.ready_written() and _v1_wire('READY') not in bytes(stream.data)
+        writer.request_stop()
+        assert writer.submit(_v1_wire('STOPPED'), 'STOPPED') == 'QUEUED'
+        assert writer.finish(0.05)['state'] == 'HOLD'
+    finally:
+        stream.release.set()
+        result = writer.finish(3)
+    assert result['state'] == 'STOPPED' and result['worker_active'] is False
+    assert not writer.ready_written() and _v1_wire('READY') not in bytes(stream.data)
+    assert bytes(stream.data) == _v1_wire('STARTING') + _v1_wire('STOPPED')
+
+
+def test_owned_status_writer_partial_ready_at_stop_stays_hold():
+    class PartialReadyStream(_SyntheticOwnedWriterStream):
+        def __init__(self):
+            super().__init__()
+            self.partial_ready = False
+        def write(self, raw):
+            raw = bytes(raw)
+            if b'"state":"READY"' in raw:
+                self.partial_ready = True
+                return super().write(raw[:5])
+            if self.partial_ready:
+                self.entered.set()
+                if not self.release.wait(5):
+                    raise TimeoutError('synthetic-partial-deadline')
+            return super().write(raw)
+    stream = PartialReadyStream()
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('STARTING'), 'STARTING') == 'QUEUED'
+        assert stream.wait_flushes(1)
+        assert writer.submit(_v1_wire('READY'), 'READY') == 'QUEUED'
+        assert stream.entered.wait(2)
+        writer.request_stop()
+        assert writer.submit(_synthetic_capacity_wire(), 'CAPACITY') == 'HOLD'
+        assert writer.submit(_v1_wire('READY'), 'READY') == 'HOLD'
+        assert writer.finish(0.05)['state'] == 'HOLD'
+    finally:
+        stream.release.set()
+        finished = writer.finish(3)
+    assert finished['state'] == 'HOLD'
+    assert _v1_wire('STOPPED') not in bytes(stream.data)
+
+
+def test_owned_status_writer_byte_limit_drops_capacity_not_status():
+    stream = _SyntheticOwnedWriterStream(block='write')
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=1024)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('STARTING'), 'STARTING') == 'QUEUED'
+        assert stream.entered.wait(2)
+        larger_capacity = b'{"synthetic":"' + b'x' * 960 + b'"}\n'
+        assert writer.submit(larger_capacity, 'CAPACITY') == 'DROPPED'
+        stream.release.set()
+        assert stream.wait_flushes(1)
+        writer.request_stop()
+        assert writer.submit(_v1_wire('STOPPED'), 'STOPPED') == 'QUEUED'
+        result = writer.finish(3)
+        assert result['state'] == 'STOPPED' and result['worker_active'] is False
+        assert bytes(stream.data) == _v1_wire('STARTING') + _v1_wire('STOPPED')
+    finally:
+        stream.release.set()
+        writer.request_stop()
+        writer.finish(3)
+
+
+def test_owned_status_writer_late_ready_after_stop_is_terminal_hold():
+    stream = _SyntheticOwnedWriterStream()
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('STARTING'), 'STARTING') == 'QUEUED'
+        assert stream.wait_flushes(1)
+        writer.request_stop()
+        assert writer.submit(_v1_wire('READY'), 'READY') == 'HOLD'
+        assert writer.submit(_v1_wire('STOPPED'), 'STOPPED') == 'HOLD'
+        assert writer.finish(3)['state'] == 'HOLD'
+        assert _v1_wire('READY') not in bytes(stream.data)
+        assert _v1_wire('STOPPED') not in bytes(stream.data)
+    finally:
+        stream.release.set()
+        writer.finish(3)
+
+
+def test_owned_writer_started_ready_can_arrive_after_internal_stop(capsys):
+    """Wire-only reproduction: no parent Stopping fence or actual lane."""
+    stream = _SyntheticOwnedWriterStream(block='write')
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('READY'), 'READY') == 'QUEUED'
+        assert stream.entered.wait(2)
+        writer.request_stop()
+        assert writer.finish(0.05)['state'] == 'HOLD'
+        assert bytes(stream.data) == b''
+    finally:
+        stream.release.set()
+        finished = writer.finish(3)
+    assert finished['state'] == 'HOLD' and finished['worker_active'] is False
+    assert bytes(stream.data) == _v1_wire('READY')
+    assert 'synthetic-private' not in capsys.readouterr().out
+
+
+def test_owned_status_writer_partial_io_error_fails_hold_without_exception_text(capsys):
+    class PartialErrorStream(_SyntheticOwnedWriterStream):
+        def __init__(self):
+            super().__init__()
+            self.partial_done = False
+            self.failed = threading.Event()
+        def write(self, raw):
+            if not self.partial_done:
+                self.partial_done = True
+                return super().write(bytes(raw)[:5])
+            self.failed.set()
+            raise OSError('synthetic-private-writer-exception')
+    stream = PartialErrorStream()
+    writer = child._OwnedStatusWriter(stream, max_frames=8, max_bytes=8192)
+    assert writer.start() == 'STARTED'
+    try:
+        assert writer.submit(_v1_wire('STARTING'), 'STARTING') == 'QUEUED'
+        assert stream.failed.wait(2)
+        assert writer._done.wait(2)
+        writer.request_stop()
+        assert writer.submit(_v1_wire('STOPPED'), 'STOPPED') == 'HOLD'
+        result = writer.finish(3)
+        assert result['state'] == 'HOLD' and result['worker_active'] is False
+        assert bytes(stream.data) == _v1_wire('STARTING')[:5]
+        assert _v1_wire('STOPPED') not in bytes(stream.data)
+        captured = capsys.readouterr()
+        assert 'synthetic-private-writer-exception' not in captured.out + captured.err
+    finally:
+        stream.release.set()
+        writer.finish(3)
+
+
 def _owner(monkeypatch, tmp_path, *, vector_cache_enabled=False):
     # These diagnostics fixtures have no real source snapshot; separate tests
     # exercise the enabled gate and prewarm path.
@@ -236,7 +495,7 @@ def test_fixed_cli_routes_only_explicit_owner_diagnostics(monkeypatch):
     assert len(calls) == 2
 
 
-def test_capacity_cli_flag_is_explicit_and_composes_with_existing_flags(monkeypatch):
+def test_capacity_cli_flag_is_refused_while_legacy_routes_stay_unchanged(monkeypatch):
     monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a' * 64)
     monkeypatch.setattr(child.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO()))
     monkeypatch.setattr(child.sys, 'stdout', SimpleNamespace(buffer=io.BytesIO()))
@@ -249,11 +508,55 @@ def test_capacity_cli_flag_is_explicit_and_composes_with_existing_flags(monkeypa
     for flags in (['--include-capacity-diagnostics'],
                   ['--start-diagnostics', '--include-capacity-diagnostics'],
                   ['--include-capacity-diagnostics', '--start-diagnostics-v2']):
-        assert child._fixed_child_main(argv + flags) == 73
-        assert calls[-1]['include_capacity_diagnostics'] is True
+        assert child._fixed_child_main(argv + flags) == 2
+        assert len(calls) == 1
     assert child._fixed_child_main(argv + ['--include-capacity-diagnostics'] * 2) == 2
     assert child._fixed_child_main(argv + ['--start-diagnostics', '--start-diagnostics-v2']) == 2
     assert child._fixed_child_main(['--parent-control', '--include-capacity-diagnostics']) == 2
+
+
+@pytest.mark.parametrize('flags', [
+    ['--include-capacity-diagnostics'],
+    ['--start-diagnostics', '--include-capacity-diagnostics'],
+    ['--start-diagnostics-v2', '--include-capacity-diagnostics'],
+])
+def test_capacity_cli_refuses_before_bootstrap_reservation_or_output(monkeypatch, flags):
+    output, errors = io.BytesIO(), io.BytesIO()
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a' * 64)
+    monkeypatch.setattr(child, '__name__', '__main__')
+    monkeypatch.setattr(child.sys, 'stdout', SimpleNamespace(buffer=output))
+    monkeypatch.setattr(child.sys, 'stderr', SimpleNamespace(buffer=errors))
+    monkeypatch.setattr(child, '_load_pinned_canonical_child', lambda *_: pytest.fail('bootstrap must not run'))
+    monkeypatch.setattr(child, '_reserve_local_owner', lambda *_: pytest.fail('reservation must not run'))
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda *_a, **_kw: pytest.fail('entry must not run'))
+    argv = ['--mind-local-candidate-owner', '--policy-path', 'synthetic-private-path',
+            '--policy-sha256', 'b' * 64, '--approval-reference-sha256', 'c' * 64]
+    assert child._fixed_child_main(argv + flags) == 2
+    assert output.getvalue() == errors.getvalue() == b''
+
+
+@pytest.mark.parametrize('where', ['policy_value', 'suffix', 'policy_value_and_suffix', 'duplicate_suffix'])
+def test_capacity_token_anywhere_refused_before_environment_or_side_effects(monkeypatch, where):
+    class ForbiddenEnvironment:
+        def get(self, *_args, **_kwargs):
+            pytest.fail('environment must not be read')
+    stdout, stderr = io.BytesIO(), io.BytesIO()
+    monkeypatch.setattr(child, 'os', SimpleNamespace(environ=ForbiddenEnvironment()))
+    monkeypatch.setattr(child, 'sys', SimpleNamespace(stdin=SimpleNamespace(buffer=io.BytesIO()),
+        stdout=SimpleNamespace(buffer=stdout), stderr=SimpleNamespace(buffer=stderr)))
+    monkeypatch.setattr(child, '__name__', '__main__')
+    monkeypatch.setattr(child, '_load_pinned_canonical_child', lambda *_: pytest.fail('bootstrap must not run'))
+    monkeypatch.setattr(child, '_reserve_local_owner', lambda *_: pytest.fail('reservation must not run'))
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda *_a, **_kw: pytest.fail('entry must not run'))
+    value = '--include-capacity-diagnostics' if where in ('policy_value', 'policy_value_and_suffix') else 'synthetic-policy'
+    argv = ['--mind-local-candidate-owner', '--policy-path', value,
+            '--policy-sha256', 'b' * 64, '--approval-reference-sha256', 'c' * 64]
+    if where in ('suffix', 'policy_value_and_suffix', 'duplicate_suffix'):
+        argv.append('--include-capacity-diagnostics')
+    if where == 'duplicate_suffix':
+        argv.append('--include-capacity-diagnostics')
+    assert child._fixed_child_main(argv) == 2
+    assert stdout.getvalue() == stderr.getvalue() == b''
 
 
 @pytest.mark.parametrize('bad', [None, (True, 5, 'a' * 64, 1, '2026-01-01T00:00:00Z'),
@@ -292,6 +595,26 @@ def test_capacity_preowner_reservation_refusal_preserves_hold(monkeypatch, legac
     if legacy != 'none':
         assert rows[1]['schema'] == 'wd.mind-local-owner-start-diagnostic.' + legacy
     assert all(row.get('state') != 'READY' for row in rows)
+
+
+@pytest.mark.parametrize('legacy', ['none', 'v1', 'v2'])
+def test_owned_writer_preowner_refusal_default_off_preserves_exact_legacy_wire(monkeypatch, legacy):
+    def refuse(_root):
+        raise child.LaunchRefused('owner_reservation_missing')
+    monkeypatch.setattr(child, '_reserve_local_owner', refuse)
+    output = io.BytesIO()
+    assert child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
+        expected_manifest_sha256='a' * 64, include_start_diagnostics=legacy == 'v1',
+        include_worker_stage_diagnostics=legacy == 'v2') == 2
+    if legacy == 'none':
+        assert output.getvalue() == b''
+        return
+    diagnostic = {'schema': 'wd.mind-local-owner-start-diagnostic.' + legacy,
+                  'reason': 'ADMISSION_MISSING', 'exception_type': 'LaunchRefused', 'authority': 'none'}
+    if legacy == 'v2':
+        diagnostic.update(worker_exit_stage_hint='UNKNOWN', worker_exit_code=None)
+    expected = _v1_wire('HOLD') + json.dumps(diagnostic, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+    assert output.getvalue() == expected
 
 
 @pytest.mark.parametrize('manifest', [None, 'synthetic-invalid'])
@@ -483,6 +806,15 @@ def test_capacity_diagnostic_default_off_even_when_adapter_has_data(monkeypatch)
         bundle_root='synthetic', expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
         approval_reference_sha256='c' * 64) == 2
     assert all(json.loads(raw)['schema'] != 'wd.mind-local-owner-capacity.v1' for raw in output.lines)
+
+
+def test_owned_writer_default_off_preserves_exact_v1_owner_wire(monkeypatch):
+    control, output, private = _cli_fixture(monkeypatch, delayed=False)
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
+        approval_reference_sha256='c' * 64) == 2
+    assert output.lines == [_v1_wire('STARTING'), _v1_wire('HOLD'), _v1_wire('STOPPED')]
+    assert all(private not in line for line in output.lines)
 
 
 def test_capacity_diagnostic_unknown_then_observed_when_owner_lock_releases(monkeypatch):

@@ -897,6 +897,48 @@ def test_selected_row_resolver_accepts_append_before_final_prefix_check(flat_con
     assert len(calls) == 2 and result['results'] and not resolver._closed
 
 
+def test_selected_row_resolver_refuses_mutation_after_final_reread(flat_consumer_case, monkeypatch):
+    resolver, frame, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    frame['candidates'] = frame['candidates'][:1]
+    item = frame['candidates'][0]
+    source = Path(snapshot['messages']['source_path'])
+    selected, calls = type(resolver)._selected, []
+    def mutate_after_final(self, *args):
+        result = selected(self, *args)
+        calls.append(True)
+        if len(calls) == 2:
+            with source.open('r+b') as stream:
+                stream.seek(item['source_offset'])
+                first = stream.read(1)
+                stream.seek(item['source_offset'])
+                stream.write(b'X' if first != b'X' else b'Y')
+        return result
+    monkeypatch.setattr(type(resolver), '_selected', mutate_after_final)
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert len(calls) == 2 and resolver._closed and resolver._private is None
+
+
+def test_selected_row_resolver_refuses_deadline_during_final_hash(flat_consumer_case, monkeypatch):
+    from tools import wd_mind_retained_query as retained
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    state = {'hashes': 0, 'elapsed': 0.0}
+    source_check = retained._source_check
+    def delay_final(context):
+        result = source_check(context)
+        state['hashes'] += 1
+        if state['hashes'] == 2:
+            state['elapsed'] = 61.0
+        return result
+    monkeypatch.setattr(retained, '_source_check', delay_final)
+    monkeypatch.setattr(session, 'time', SimpleNamespace(monotonic=lambda: state['elapsed']))
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=60.0)
+    assert state['hashes'] == 2
+
+
 def test_selected_row_resolver_refuses_changed_controls_before_final_prefix(flat_consumer_case, monkeypatch):
     resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
     original, calls = type(resolver)._check_controls, []

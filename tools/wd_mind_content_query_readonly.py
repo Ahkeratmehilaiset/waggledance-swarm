@@ -1041,19 +1041,172 @@ def _record(source_ref, fields, chunks, index):
                            "tier": {"source_type": "bridge_event"}, "available_utc": fields["available"]}}
 
 
+_DEFERRED_PROJECTION_FAILURE = object()
+
+
+def _screen_projection_event(ref, event, context):
+    """Return only a screened event's fields and chunks, a refusal or None."""
+    policy = context['policy']
+    if not _hex(ref) or type(event) is not dict or not hmac.compare_digest(_sha(_canonical(event)), ref):
+        raise ValueError('source_record_mismatch')
+    if 'approved_source_refs' in policy and ref not in policy['approved_source_refs']:
+        return None
+    fields = _fields(event, policy, context['roster'])
+    if fields is None:
+        return None
+    token = fields if type(fields) is str else None
+    if token is None and ref in policy['removed_source_refs']:
+        token = 'removed'
+    if token is None:
+        message = event.get('message')
+        if message is None or message == '':
+            token = 'no_message'
+        else:
+            verdict, value = _classify_with_policy(message, policy['max_message_chars'], context['private'])
+            if verdict != 'KEEP':
+                token = value
+    if token is not None:
+        return token
+    chunks = chunk(value, policy['max_chunk_chars'])
+    if not chunks or any(_OUTPUT.fullmatch(text) is None or _has_marker(text) for text in chunks):
+        return 'encoding'
+    return fields, chunks
+
+
+def _screened_generationless_rows_impl(context, *, source_budget=None):
+    """Screen locally while reading; return nothing before both source fences.
+
+    No caller-supplied reducer receives source events. This remains an
+    in-process boundary, not protection from a hostile Python interpreter or
+    same-user changes during the documented ABA window.
+    """
+    if type(context) is not dict:
+        raise ValueError('invalid_context')
+    source, policy, roster, private = (context.get('messages'), context.get('policy'),
+                                       context.get('roster'), context.get('private'))
+    if (type(source) is not dict or type(policy) is not dict or type(roster) is not dict
+            or type(private) is not IdentifierPolicy or policy.get('task_scope') != 'all_tasks'
+            or type(policy.get('max_message_chars')) is not int or type(policy.get('max_chunk_chars')) is not int
+            or any(type(policy.get(name)) is not frozenset for name in ('lanes', 'types', 'removed_source_refs'))
+            or ('approved_source_refs' in policy and type(policy['approved_source_refs']) is not frozenset)
+            or any(type(value) is not str for name in ('lanes', 'types', 'removed_source_refs')
+                   for value in policy[name])
+            or ('approved_source_refs' in policy and any(type(value) is not str for value in policy['approved_source_refs']))
+            or any(type(key) is not str or type(value) is not str for key, value in roster.items())):
+        raise ValueError('invalid_context')
+    identifiers = private._IdentifierPolicy__values
+    if type(identifiers) is not tuple or any(type(value) is not str for value in identifiers):
+        raise ValueError('invalid_context')
+    absent = _pinned_dependency('tools.wd_mind_absent_generation_prefix_readonly',
+                                'tools/wd_mind_absent_generation_prefix_readonly.py',
+                                ('_plain', '_sidecar_absent', '_fence', '_budgeted_read', '_hash_prefix'))
+    bridge = absent.bridge
+    cursor = source.get('end_cursor')
+    decision = context.get('decision')
+    if type(decision) is not dict or type(decision.get('source_prefix')) is not dict:
+        raise ValueError('invalid_anchor')
+    anchored = decision['source_prefix']
+    expected = anchored.get('sha256')
+    source_path, generation_path = source.get('source_path'), source.get('generation_path')
+    if (type(source_path) is not str or type(generation_path) is not str
+            or type(cursor) is not bridge.BridgeCursor or bridge._validate_cursor(cursor)
+            or cursor.generation is not None or cursor.offset <= 0
+            or anchored.get('offset') != cursor.offset or anchored.get('generation') is not None
+            or type(expected) is not str or absent._HEX.fullmatch(expected) is None):
+        raise ValueError('invalid_anchor')
+    source_file, sidecar = Path(source_path), Path(generation_path)
+    if not source_file.is_absolute() or not sidecar.is_absolute() or sidecar != source_file.with_name('events.generation.json'):
+        raise ValueError('invalid_sidecar')
+    absent._plain(source_file, directory=False)
+    absent._sidecar_absent(sidecar)
+    with bridge._open_log(source_file) as stream:
+        identity = bridge._file_identity(stream)
+        if identity != cursor.file_identity:
+            raise ValueError('identity_mismatch')
+        size = absent._fence(stream, source_file, sidecar, identity, cursor.offset)
+        stream.seek(0)
+        digest, pending, rows = hashlib.sha256(), bytearray(), {}
+        remaining, first, previous = cursor.offset, True, None
+        while remaining:
+            data = absent._budgeted_read(stream, min(absent.CHUNK_BYTES, remaining), source_budget)
+            if not data:
+                raise ValueError('short_read')
+            remaining -= len(data)
+            digest.update(data)
+            pending.extend(data)
+            start = 0
+            while True:
+                newline = pending.find(b'\n', start)
+                if newline < 0:
+                    break
+                if newline + 1 - start > absent.MAX_ROW_BYTES:
+                    raise ValueError('row_over_budget')
+                line = bytes(pending[start:newline + 1])
+                parsed = bridge._parse_rows(line, starts_at_zero=first)
+                first = False
+                if len(parsed) != 1:
+                    raise ValueError('row_count')
+                row = parsed[0]
+                canonical = _canonical(row)
+                ref = absent.event_id(row)
+                if canonical != previous:
+                    try:
+                        rows[ref] = _screen_projection_event(ref, row, context)
+                    except MemoryError:
+                        raise
+                    except Exception:
+                        rows[ref] = _DEFERRED_PROJECTION_FAILURE
+                # Adjacent duplicate canonical bytes cannot change the last
+                # reduction; nonidentical bytes always replace a matching ref.
+                previous = canonical
+                start = newline + 1
+            if start:
+                del pending[:start]
+            if len(pending) >= absent.MAX_ROW_BYTES:
+                raise ValueError('row_over_budget')
+        if pending or first:
+            raise ValueError('incomplete_prefix')
+        first_hash = digest.hexdigest()
+        if not hmac.compare_digest(first_hash, expected.lower()):
+            raise ValueError('prefix_mismatch')
+        size = absent._fence(stream, source_file, sidecar, identity, size)
+        final_hash = absent._hash_prefix(stream, cursor.offset, source_budget=source_budget)
+        if not hmac.compare_digest(final_hash, first_hash):
+            raise ValueError('prefix_changed')
+        absent._fence(stream, source_file, sidecar, identity, size)
+    return rows
+
+
+def _screened_generationless_rows(context, *, source_budget=None):
+    """Refuse without retaining source-bearing parser errors or scan frames."""
+    output = None
+    try:
+        output = _screened_generationless_rows_impl(context, source_budget=source_budget)
+    except Exception:
+        pass
+    context = source_budget = None
+    if output is None:
+        absent = None
+        try:
+            absent = _pinned_dependency('tools.wd_mind_absent_generation_prefix_readonly',
+                                        'tools/wd_mind_absent_generation_prefix_readonly.py',
+                                        ('read_complete_generationless_prefix_rows',))
+        except Exception:
+            pass
+        if absent is not None:
+            raise absent.PrefixSnapshotRefused('mind_prefix_snapshot_refused') from None
+        raise ValueError('mind_prefix_snapshot_refused') from None
+    return output
+
+
 def _projection(context, *, complete_records=False, source_budget=None):
     prefix = _pinned_dependency("tools.wd_mind_content_prefix_readonly", "tools/wd_mind_content_prefix_readonly.py",
                                 ("read_prefix_rows", "read_complete_prefix_rows"))
     source, policy = context["messages"], context["policy"]
     all_tasks = policy.get("task_scope") == "all_tasks"
-    if all_tasks and complete_records and source["end_cursor"].generation is None:
-        absent = _pinned_dependency("tools.wd_mind_absent_generation_prefix_readonly",
-                                    "tools/wd_mind_absent_generation_prefix_readonly.py",
-                                    ("read_complete_generationless_prefix_rows",))
-        args = (source["source_path"], source["generation_path"], source["end_cursor"],
-                context["decision"]["source_prefix"]["sha256"])
-        rows = (absent.read_complete_generationless_prefix_rows(*args) if source_budget is None else
-                absent.read_complete_generationless_prefix_rows(*args, source_budget=source_budget))
+    streamed = all_tasks and complete_records and source["end_cursor"].generation is None
+    if streamed:
+        rows = _screened_generationless_rows(context, source_budget=source_budget)
     elif all_tasks:
         if source_budget is not None:
             raise ValueError('source_budget_unsupported')
@@ -1066,32 +1219,15 @@ def _projection(context, *, complete_records=False, source_budget=None):
                                       context["decision"]["source_prefix"]["sha256"], set(policy["approved_tasks"]))
     records, refused, record_bytes = [], {}, 0
     for ref in sorted(rows):
-        event = rows[ref]
-        if not _hex(ref) or type(event) is not dict or not hmac.compare_digest(_sha(_canonical(event)), ref):
-            raise ValueError("source_record_mismatch")
-        if "approved_source_refs" in policy and ref not in policy["approved_source_refs"]:
+        screened = rows[ref] if streamed else _screen_projection_event(ref, rows[ref], context)
+        if screened is _DEFERRED_PROJECTION_FAILURE:
+            raise ValueError('source_record_mismatch')
+        if screened is None:
             continue
-        fields = _fields(event, policy, context["roster"])
-        if fields is None:
+        if type(screened) is str:
+            refused[screened] = refused.get(screened, 0) + 1
             continue
-        token = fields if type(fields) is str else None
-        if token is None and ref in policy["removed_source_refs"]:
-            token = "removed"
-        if token is None:
-            message = event.get("message")
-            if message is None or message == "":
-                token = "no_message"
-            else:
-                verdict, value = _classify_with_policy(message, policy["max_message_chars"], context["private"])
-                if verdict != "KEEP":
-                    token = value
-        if token is not None:
-            refused[token] = refused.get(token, 0) + 1
-            continue
-        chunks = chunk(value, policy["max_chunk_chars"])
-        if not chunks or any(_OUTPUT.fullmatch(text) is None or _has_marker(text) for text in chunks):
-            refused["encoding"] = refused.get("encoding", 0) + 1
-            continue
+        fields, chunks = screened
         for index in range(len(chunks)):
             record = _record(ref, fields, chunks, index)
             if all_tasks and not complete_records:

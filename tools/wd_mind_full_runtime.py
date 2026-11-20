@@ -1516,6 +1516,10 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 # Refuse before another full prefix check or encoding if
                 # the cache cannot hold this cold build or refresh.
                 vector_cache.check_capacity(len(records))
+                del records
+            # A new projection is parsed below; do not keep the verified tree
+            # and its record list alive during that allocation.
+            del projection
             verified_prefix_sha256 = package._immutable_prefix(context)
             projection = json.loads(frozen['projection_bytes'].decode('utf-8'),
                                     object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)

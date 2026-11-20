@@ -839,6 +839,70 @@ def test_immutable_build_profile_is_explicit_and_verifies_initial_and_final_sour
     assert len(calls) == 2
 
 
+def _watch_verified_record_lifetime(monkeypatch, projection_bytes):
+    """Observe one synthetic record without retaining its old projection."""
+    import weakref
+    class TrackedRecord(dict):
+        pass
+    refs, reparses = [], []
+    verify, loads = reader._verified_complete, json.loads
+    expected_text = projection_bytes.decode('utf-8')
+    def tracked_verify(*args, **kwargs):
+        projection, context, report = verify(*args, **kwargs)
+        if not refs:
+            records = projection['messages']['records']
+            assert records
+            tracked = TrackedRecord(records[0])
+            records[0] = tracked
+            refs.append(weakref.ref(tracked))
+        return projection, context, report
+    def tracked_loads(raw, *args, **kwargs):
+        if refs and not reparses and type(raw) is str and raw == expected_text:
+            reparses.append(refs[0]() is None)
+        return loads(raw, *args, **kwargs)
+    monkeypatch.setattr(reader, '_verified_complete', tracked_verify)
+    monkeypatch.setattr(json, 'loads', tracked_loads)
+    return refs, reparses
+
+
+def test_immutable_package_releases_verified_projection_before_reparse(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    args = _arguments(case, Codec(fixtures), FULL_PREFIX_PROFILE)
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 60)
+    baseline = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    refs, reparses = _watch_verified_record_lifetime(monkeypatch, args['snapshot']['projection_bytes'])
+    actual = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    assert refs and reparses == [True]
+    assert actual == baseline
+    assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+
+
+@pytest.mark.parametrize('use_cache', [False, True])
+def test_immutable_flat_builder_releases_verified_projection_before_reparse(tmp_path, monkeypatch, use_cache):
+    import test_wd_mind_cache_builder_integration as harness
+    from tools import wd_mind_full_runtime as runtime
+    audit_root = tmp_path / '.codex-audit'
+    audit_root.mkdir()
+    synthetic = harness._synthetic_case(audit_root, monkeypatch)
+    first_binding, _ = synthetic.snapshot()
+    baseline = synthetic.build(first_binding)
+    synthetic.passages.clear()
+    binding, _ = synthetic.snapshot()
+    refs, reparses = _watch_verified_record_lifetime(monkeypatch, binding._PrivateBinding__snapshot['projection_bytes'])
+    def encode(values):
+        synthetic.passages.extend(values)
+        return harness.VECTOR * len(values)
+    actual = runtime._build_flat_memory_immutable(binding, encode, baseline.encoder_binding,
+        hashlib.sha256(baseline.encoder_binding).hexdigest(), 5, None,
+        vector_cache=synthetic.adapter if use_cache else None)
+    assert refs and reparses == [True]
+    assert actual.ids == baseline.ids and actual.vectors == baseline.vectors
+    if use_cache:
+        assert actual.cache_status == 'HIT_STORED' and synthetic.passages == []
+    else:
+        assert len(synthetic.passages) == len(baseline.ids)
+
+
 def test_immutable_source_anchor_hashes_in_bounded_blocks_without_retaining_raw_prefix(
         package, fixtures, tmp_path, monkeypatch):
     """Synthetic source only: immutable digest, not an immutable raw-byte copy."""

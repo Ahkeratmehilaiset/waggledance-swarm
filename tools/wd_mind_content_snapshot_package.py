@@ -509,6 +509,9 @@ def _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, e
         raise ValueError("invalid_callback")
     projection, context, report = (reader._verified_complete(frozen) if full else reader._verified(frozen))
     if watcher is not None:
+        # The verified projection is re-parsed below. Release it first so both
+        # complete record trees do not coexist during that parse.
+        del projection
         # The screened immutable projection is bound to the streamed raw-prefix
         # digest and cursor. Raw source bytes are not retained after this check.
         verified_prefix_sha256 = _immutable_prefix(context)

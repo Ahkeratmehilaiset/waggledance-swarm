@@ -38,6 +38,10 @@ It still materializes the projection and artifacts in memory and derives its
 full-only decoder limits from the verified snapshot. It refuses when validation
 or resources fail. This is not a disk-streaming implementation. Its batch
 helper does not authenticate callbacks, models, sources or publish anything.
+The legacy verified_immutable_snapshot_v1 option retains the verified screened
+projection as immutable bytes; it checks the raw prefix in bounded blocks and
+retains its digest, not an immutable copy of the raw prefix. Endpoint and watcher
+source verification still apply; same-user source ABA remains unproven.
 """
 from __future__ import annotations
 
@@ -169,10 +173,19 @@ def _unchanged(original, frozen, report, *, complete=False):
         raise ValueError("source_changed")
 
 
-def _immutable_prefix(context):
-    """Capture bytes from the same identity and SHA anchor as complete verification."""
+def _immutable_prefix(context, *, prefix_offset=None):
+    """Return the verified raw-prefix digest without retaining raw source bytes.
+
+    The historical name is retained for internal callers. The immutable data
+    retained during provider calls is the screened projection, not the raw log.
+    When requested, return the full and shorter prefix digests from the same
+    fenced scan. The shorter digest is not accepted unless the full digest is
+    independently bound to the approved snapshot.
+    """
     messages, anchor = context["messages"], context["decision"]["source_prefix"]
     cursor = messages["end_cursor"]
+    if prefix_offset is not None and (type(prefix_offset) is not int or not 0 <= prefix_offset <= cursor.offset):
+        raise ValueError("source_offset")
     source, sidecar = Path(messages["source_path"]), Path(messages["generation_path"])
     bridge = reader._pinned_dependency("waggledance.core.bridge_log_reader",
         "waggledance/core/bridge_log_reader.py", ("_open_log", "_file_identity", "_read_generation"))
@@ -195,19 +208,25 @@ def _immutable_prefix(context):
         size = os.fstat(stream.fileno()).st_size
         if bridge._file_identity(stream) != cursor.file_identity or size < cursor.offset:
             raise ValueError("source_changed")
-        # Capture immutable bytes without retaining both a list of every input
-        # block and a second full-sized joined copy at the same time. This is
-        # still an in-memory snapshot and is not a hard memory bound.
+        # Hash the anchored prefix in bounded blocks. The screened immutable
+        # projection, rather than a second copy of the raw log, is retained.
         remaining = cursor.offset
-        with io.BytesIO() as captured:
-            while remaining:
-                part = stream.read(min(1024 * 1024, remaining))
-                if not part:
-                    raise ValueError("source_truncated")
-                captured.write(part)
-                remaining -= len(part)
-            raw = captured.getvalue()
-        if (raw[-1:] != b"\n" or not reader.hmac.compare_digest(reader._sha(raw), anchor["sha256"])
+        digest, last = hashlib.sha256(), b""
+        shorter = hashlib.sha256() if prefix_offset is not None else None
+        shorter_remaining = prefix_offset
+        while remaining:
+            part = stream.read(min(1024 * 1024, remaining))
+            if not part:
+                raise ValueError("source_truncated")
+            digest.update(part)
+            if shorter is not None and shorter_remaining:
+                included = min(shorter_remaining, len(part))
+                shorter.update(memoryview(part)[:included])
+                shorter_remaining -= included
+            last = part[-1:]
+            remaining -= len(part)
+        prefix_sha256 = digest.hexdigest()
+        if (last != b"\n" or not reader.hmac.compare_digest(prefix_sha256, anchor["sha256"])
                 or bridge._file_identity(stream) != cursor.file_identity
                 or os.fstat(stream.fileno()).st_size < size):
             raise ValueError("source_changed")
@@ -216,7 +235,11 @@ def _immutable_prefix(context):
             if bridge._file_identity(current) != cursor.file_identity or os.fstat(current.fileno()).st_size < size:
                 raise ValueError("source_replaced")
         fence()
-    return raw
+    if shorter is not None:
+        if shorter_remaining:
+            raise ValueError("source_truncated")
+        return prefix_sha256, shorter.hexdigest()
+    return prefix_sha256
 
 
 class _SourceWatcher:
@@ -486,10 +509,9 @@ def _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, e
         raise ValueError("invalid_callback")
     projection, context, report = (reader._verified_complete(frozen) if full else reader._verified(frozen))
     if watcher is not None:
-        # The immutable raw prefix and the reader-derived projection are linked
-        # by the same pinned SHA-256 and cursor. Only screened projection bytes
-        # are parsed and provided to the callbacks; raw source never leaves here.
-        immutable_prefix = _immutable_prefix(context)
+        # The screened immutable projection is bound to the streamed raw-prefix
+        # digest and cursor. Raw source bytes are not retained after this check.
+        verified_prefix_sha256 = _immutable_prefix(context)
         projection = json.loads(frozen["projection_bytes"].decode("utf-8"),
                                 object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
         if reader._serialized(projection) != frozen["projection_bytes"]:
@@ -618,7 +640,7 @@ def _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, e
         # verifying concurrently would leave a gap before publication.
         watcher.stop(watcher_join_timeout_seconds)
         _unchanged(snapshot, frozen, report, complete=True)
-        if (reader._sha(immutable_prefix) != report["source_prefix"]["sha256"]
+        if (verified_prefix_sha256 != report["source_prefix"]["sha256"]
                 or reader._serialized(projection) != frozen["projection_bytes"]):
             raise ValueError("immutable_snapshot_changed")
     return output

@@ -839,6 +839,157 @@ def test_immutable_build_profile_is_explicit_and_verifies_initial_and_final_sour
     assert len(calls) == 2
 
 
+def test_immutable_source_anchor_hashes_in_bounded_blocks_without_retaining_raw_prefix(
+        package, fixtures, tmp_path, monkeypatch):
+    """Synthetic source only: immutable digest, not an immutable raw-byte copy."""
+    import tracemalloc
+    from types import SimpleNamespace
+    from waggledance.core import bridge_log_reader as bridge
+
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    messages = dict(case['messages'])
+    decision = json.loads(case['decision_bytes'])
+    source = Path(messages['source_path'])
+    block = b'x' * (1024 * 1024)
+    digest = hashlib.sha256()
+    with source.open('wb') as output:
+        for _ in range(16):
+            output.write(block)
+            digest.update(block)
+        output.write(b'\n')
+        digest.update(b'\n')
+    original_cursor = messages['end_cursor']
+    messages['end_cursor'] = type(original_cursor)(16 * len(block) + 1,
+        original_cursor.file_identity, original_cursor.generation)
+    decision['source_prefix']['sha256'] = digest.hexdigest()
+    context = {'messages': messages, 'decision': decision}
+
+    original_open = bridge._open_log
+    requests = []
+    class ObservedStream:
+        def __init__(self, stream): self.stream = stream
+        def __enter__(self): return self
+        def __exit__(self, *args): return self.stream.__exit__(*args)
+        def __getattr__(self, name): return getattr(self.stream, name)
+        def read(self, size):
+            requests.append(size)
+            return self.stream.read(size)
+    pinned_dependency = reader._pinned_dependency
+    def pinned(name, relative, entrypoints):
+        module = pinned_dependency(name, relative, entrypoints)
+        if name == 'waggledance.core.bridge_log_reader':
+            return SimpleNamespace(_open_log=lambda path: ObservedStream(original_open(path)),
+                                   _file_identity=module._file_identity, _read_generation=module._read_generation)
+        return module
+    monkeypatch.setattr(reader, '_pinned_dependency', pinned)
+
+    tracemalloc.start()
+    try:
+        result = package._immutable_prefix(context)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert requests and max(requests) <= 1024 * 1024
+    assert sum(requests) == messages['end_cursor'].offset
+    assert result == digest.hexdigest() and type(result) is str
+    assert peak < 8 * 1024 * 1024
+
+
+@pytest.mark.parametrize('fault', ['wrong_digest', 'incomplete_lf', 'short_read'])
+def test_immutable_source_anchor_refuses_wrong_or_incomplete_prefix(
+        package, fixtures, tmp_path, monkeypatch, fault):
+    from types import SimpleNamespace
+    from waggledance.core import bridge_log_reader as bridge
+
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    context = {'messages': dict(case['messages']), 'decision': json.loads(case['decision_bytes'])}
+    source = Path(context['messages']['source_path'])
+    if fault == 'wrong_digest':
+        context['decision']['source_prefix']['sha256'] = '0' * 64
+    elif fault == 'incomplete_lf':
+        raw = source.read_bytes()
+        assert raw.endswith(b'\n')
+        changed = raw[:-1] + b'X'
+        source.write_bytes(changed)
+        context['decision']['source_prefix']['sha256'] = hashlib.sha256(changed).hexdigest()
+    else:
+        original_open = bridge._open_log
+        read_attempts = []
+        class ShortStream:
+            def __init__(self, stream): self.stream = stream
+            def __enter__(self): return self
+            def __exit__(self, *args): return self.stream.__exit__(*args)
+            def __getattr__(self, name): return getattr(self.stream, name)
+            def read(self, size):
+                read_attempts.append(size)
+                return b''
+        pinned_dependency = reader._pinned_dependency
+        def pinned(name, relative, entrypoints):
+            module = pinned_dependency(name, relative, entrypoints)
+            if name == 'waggledance.core.bridge_log_reader':
+                return SimpleNamespace(_open_log=lambda path: ShortStream(original_open(path)),
+                                       _file_identity=module._file_identity, _read_generation=module._read_generation)
+            return module
+        monkeypatch.setattr(reader, '_pinned_dependency', pinned)
+    with pytest.raises(ValueError):
+        package._immutable_prefix(context)
+    if fault == 'short_read':
+        assert read_attempts
+
+
+@pytest.mark.parametrize('offset', [0, 1, 1024 * 1024 - 1, 1024 * 1024,
+                                    1024 * 1024 + 1, 2 * 1024 * 1024 + 3])
+def test_streamed_source_anchor_verifies_old_and_current_offsets(package, fixtures, tmp_path, offset):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    context = {'messages': dict(case['messages']), 'decision': json.loads(case['decision_bytes'])}
+    source = Path(context['messages']['source_path'])
+    raw = b'A' * (1024 * 1024) + b'B' * (1024 * 1024) + b'xy\n'
+    source.write_bytes(raw)
+    cursor = context['messages']['end_cursor']
+    context['messages']['end_cursor'] = type(cursor)(len(raw), cursor.file_identity, cursor.generation)
+    context['decision']['source_prefix']['sha256'] = hashlib.sha256(raw).hexdigest()
+    full_digest, old_digest = package._immutable_prefix(context, prefix_offset=offset)
+    assert full_digest == hashlib.sha256(raw).hexdigest()
+    assert old_digest == hashlib.sha256(raw[:offset]).hexdigest()
+
+
+@pytest.mark.parametrize('offset', [True, -1, 1.0, '1'])
+def test_streamed_source_anchor_refuses_invalid_offset(package, fixtures, tmp_path, offset):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    context = {'messages': dict(case['messages']), 'decision': json.loads(case['decision_bytes'])}
+    with pytest.raises(ValueError, match='source_offset'):
+        package._immutable_prefix(context, prefix_offset=offset)
+
+
+def test_streamed_source_anchor_refuses_overrun_and_detects_changed_suffix(package, fixtures, tmp_path):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    context = {'messages': dict(case['messages']), 'decision': json.loads(case['decision_bytes'])}
+    source = Path(context['messages']['source_path'])
+    raw = source.read_bytes()
+    offset = len(raw) // 2
+    with pytest.raises(ValueError, match='source_offset'):
+        package._immutable_prefix(context, prefix_offset=len(raw) + 1)
+    full_digest, old_digest = package._immutable_prefix(context, prefix_offset=offset)
+    assert full_digest == hashlib.sha256(raw).hexdigest()
+    assert old_digest == hashlib.sha256(raw[:offset]).hexdigest()
+    source.write_bytes(raw[:-2] + b'X\n')
+    with pytest.raises(ValueError, match='source_changed'):
+        package._immutable_prefix(context, prefix_offset=offset)
+
+
+def test_streamed_source_anchor_accepts_append_after_frozen_offset(package, fixtures, tmp_path):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    context = {'messages': dict(case['messages']), 'decision': json.loads(case['decision_bytes'])}
+    source = Path(context['messages']['source_path'])
+    raw = source.read_bytes()
+    with source.open('ab') as output:
+        output.write(b'{"message":"synthetic appended row"}\n')
+    offset = len(raw) // 2
+    full_digest, old_digest = package._immutable_prefix(context, prefix_offset=offset)
+    assert full_digest == hashlib.sha256(raw).hexdigest()
+    assert old_digest == hashlib.sha256(raw[:offset]).hexdigest()
+
+
 @pytest.mark.parametrize('succeeds', [True, False])
 def test_immutable_build_waits_for_running_long_verification(package, fixtures, tmp_path, monkeypatch, succeeds):
     import time

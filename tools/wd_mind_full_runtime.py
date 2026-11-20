@@ -1485,10 +1485,10 @@ def _load_pinned_vector_cache(binding):
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
                                  prior_memory=None, vector_cache=None):
-    """Use the pinned immutable snapshot helper and retain watcher ownership on HOLD.
+    """Use the pinned immutable projection and retain watcher ownership on HOLD.
 
-    This captures the full prefix as immutable bytes and can use substantial RAM;
-    neither its size nor process memory is bounded by an IPC transfer limit.
+    The raw source prefix is checked as a stream, not retained as bytes; the
+    screened projection and vectors remain in memory and can use substantial RAM.
     """
     if watcher_join_timeout_seconds is not None and (
             type(watcher_join_timeout_seconds) not in (int, float)
@@ -1513,10 +1513,10 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 records = projection['messages']['records']
                 if type(records) is not list:
                     raise ValueError('records')
-                # Refuse before capturing another full prefix or encoding if
+                # Refuse before another full prefix check or encoding if
                 # the cache cannot hold this cold build or refresh.
                 vector_cache.check_capacity(len(records))
-            immutable_prefix = package._immutable_prefix(context)
+            verified_prefix_sha256 = package._immutable_prefix(context)
             projection = json.loads(frozen['projection_bytes'].decode('utf-8'),
                                     object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
             if reader._serialized(projection) != frozen['projection_bytes']:
@@ -1536,9 +1536,16 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                                                         encoder_binding_bytes, encoder_binding_sha256)
                 try:
                     def verify_old_prefix(offset, expected):
-                        return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
-                                and reader._hex(expected)
-                                and hmac.compare_digest(reader._sha(memoryview(immutable_prefix)[:offset]), expected))
+                        current_offset = context['messages']['end_cursor'].offset
+                        if (type(offset) is not int or not 0 <= offset <= current_offset
+                                or not reader._hex(expected)):
+                            return False
+                        if offset == current_offset:
+                            return hmac.compare_digest(verified_prefix_sha256, expected)
+                        full_sha256, old_sha256 = package._immutable_prefix(context, prefix_offset=offset)
+                        if not hmac.compare_digest(full_sha256, verified_prefix_sha256):
+                            raise ValueError('source_changed')
+                        return hmac.compare_digest(old_sha256, expected)
                     cached = vector_cache.load(cache_binding, verify_old_prefix)
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
                     cache_status = 'HIT'
@@ -1598,7 +1605,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             watcher.stop(watcher_join_timeout_seconds)
             package._unchanged(snapshot, frozen, report, complete=True)
             _flat_snapshot(binding, frozen)
-            if (reader._sha(immutable_prefix) != report['source_prefix']['sha256']
+            if (verified_prefix_sha256 != report['source_prefix']['sha256']
                     or reader._serialized(projection) != frozen['projection_bytes']):
                 raise ValueError('immutable_snapshot_changed')
             output = _PrivateFlatMemory(binding, frozen, reader._canonical(manifest), ids, vectors,

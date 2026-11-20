@@ -11,9 +11,17 @@ import sys
 import pytest
 
 
+windows_shells = pytest.mark.parametrize('shell', [
+    str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(shutil.which('pwsh') is None,
+                                                                reason='PowerShell 7 unavailable')),
+], ids=['powershell51', 'pwsh7'])
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell status consumer')
 @pytest.mark.parametrize('stopping', [False, True])
-def test_buffered_legacy_ready_is_never_advertised(stopping):
+@windows_shells
+def test_buffered_legacy_ready_is_never_advertised(stopping, shell):
     from wd_mind_owned_compat import run_owned
     helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
     manifest = 'a' * 64
@@ -34,7 +42,6 @@ Update-WdMindManualOwner $record
 @{{state=$record.State;reported=$record.ReportedState;invalid=$record.Invalid}} | ConvertTo-Json -Compress
 """
     encoded = base64.b64encode(script.encode('utf-16le')).decode()
-    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
     proc = run_owned([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
                      text=True, encoding='utf-8', timeout=15,
                      creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -43,7 +50,8 @@ Update-WdMindManualOwner $record
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell status consumer')
-def test_starting_without_later_status_remains_starting():
+@windows_shells
+def test_starting_without_later_status_remains_starting(shell):
     from wd_mind_owned_compat import run_owned
     helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
     manifest = 'a' * 64
@@ -65,7 +73,6 @@ for($i=0;$i -lt 3;$i++){{Update-WdMindManualOwner $record; $states+=@($record.St
 @{{states=$states;reported=$record.ReportedState;invalid=$record.Invalid}} | ConvertTo-Json -Compress
 """
     encoded = base64.b64encode(script.encode('utf-16le')).decode()
-    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
     proc = run_owned([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
                      text=True, encoding='utf-8', timeout=15,
                      creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -79,7 +86,8 @@ for($i=0;$i -lt 3;$i++){{Update-WdMindManualOwner $record; $states+=@($record.St
     (False, True, 0, 'HOLD'), (True, False, 0, 'HOLD'),
     (True, True, 0, 'STOPPED'), (True, True, 2, 'FAILED'),
 ])
-def test_stopped_requires_successful_exit_and_both_eof(out_done, err_done, exit_code, expected):
+@windows_shells
+def test_stopped_requires_successful_exit_and_both_eof(out_done, err_done, exit_code, expected, shell):
     from wd_mind_owned_compat import run_owned
     helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
     quoted = str(helper).replace("'", "''")
@@ -92,7 +100,6 @@ Update-WdMindManualOwner $record
 @{{state=$record.State;invalid=$record.Invalid}} | ConvertTo-Json -Compress
 """
     encoded = base64.b64encode(script.encode('utf-16le')).decode()
-    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
     proc = run_owned([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
                      text=True, encoding='utf-8', timeout=15,
                      creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -203,11 +210,7 @@ $result=if ($record.Invalid) {{$null}} else {{Get-WdMindManualOwnerCloseDiagnost
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell owner diagnostic parser')
-@pytest.mark.parametrize('shell', [
-    str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-    pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(shutil.which('pwsh') is None,
-                                                                reason='PowerShell 7 unavailable')),
-], ids=['powershell51', 'pwsh7'])
+@windows_shells
 @pytest.mark.parametrize('mode', ['v1', 'v2', 'off', 'extra', 'after_status', 'duplicate', 'split', 'forged_hash'])
 def test_preanchor_diagnostic_is_optin_and_never_allows_ready(mode, shell):
     helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Start-WdMindManualOwner.ps1'
@@ -291,11 +294,7 @@ Update-WdMindManualOwner $record
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows process and inherited pipe integration')
-@pytest.mark.parametrize('shell', [
-    str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-    pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(shutil.which('pwsh') is None,
-                                                                reason='PowerShell 7 unavailable')),
-], ids=['powershell51', 'pwsh7'])
+@windows_shells
 @pytest.mark.parametrize('mode', ['normal', 'normal_scriptblock', 'bad_status', 'bad_scriptblock', 'bad_policy', 'bad_wrapper',
                                   'missing_python_pin', 'wrong_python_pin', 'missing_python_path', 'disabled',
                                   'bad_manifest', 'bad_descriptor', 'bad_child', 'bad_approval'])

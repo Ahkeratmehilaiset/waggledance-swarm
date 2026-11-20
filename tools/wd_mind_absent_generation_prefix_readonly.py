@@ -283,7 +283,7 @@ def _hash_prefix(stream, end: int, *, source_budget=None) -> str:
     return digest.hexdigest()
 
 
-def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None):
+def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None, projector=None):
     stream.seek(0)
     digest, pending, rows = hashlib.sha256(), bytearray(), {}
     remaining, scanned, first = end, 0, True
@@ -314,7 +314,8 @@ def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None)
                                      separators=(",", ":"), allow_nan=False).encode("utf-8")
                     if len(raw) > MAX_SELECTED_ROW_BYTES or len(rows) >= MAX_SELECTED_ROWS:
                         raise ValueError("selected_row_over_budget")
-                rows[event_id(row)] = row
+                ref = event_id(row)
+                rows[ref] = row if projector is None else projector(ref, row)
             start = newline + 1
         if start:
             del pending[:start]
@@ -325,16 +326,18 @@ def _scan(stream, end: int, tasks: frozenset[str] | None, *, source_budget=None)
     return digest.hexdigest(), rows
 
 
-def read_complete_generationless_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_sha256,
-                                             *, source_budget=None):
-    """Read every canonical event in one caller-anchored LF-complete prefix.
+def _read_complete_generationless_prefix(source_path, generation_path, end_cursor, expected_prefix_sha256,
+                                         *, source_budget=None, projector=None):
+    """Fence a complete prefix and return private rows or private reductions.
 
     The caller must independently bind the exact source, sidecar, cursor and
     digest to its approved manifest and policy. Absence at observed checks and
     equality to a caller hash authenticate neither source nor senders. No
     generation or continuity is asserted. Identical canonical events share a
-    reference; rows are private, unfiltered, and materialized in memory. The
-    two hash passes fence observed changes but cannot rule out same-user ABA.
+    reference. If supplied, the internal projector must never disclose a row
+    or its result before this function returns; both remain unverified until
+    both hashes and the identity/sidecar fences have completed. The two hash
+    passes fence observed changes but cannot rule out same-user ABA.
     """
     result = None
     try:
@@ -353,10 +356,15 @@ def read_complete_generationless_prefix_rows(source_path, generation_path, end_c
             if identity != end_cursor.file_identity:
                 raise ValueError("identity_mismatch")
             size = _fence(stream, source, sidecar, identity, end_cursor.offset)
-            if source_budget is None:
+            if source_budget is None and projector is None:
                 first_hash, rows = _scan(stream, end_cursor.offset, None)
             else:
-                first_hash, rows = _scan(stream, end_cursor.offset, None, source_budget=source_budget)
+                options = {}
+                if source_budget is not None:
+                    options['source_budget'] = source_budget
+                if projector is not None:
+                    options['projector'] = projector
+                first_hash, rows = _scan(stream, end_cursor.offset, None, **options)
             if not hmac.compare_digest(first_hash, expected_prefix_sha256.lower()):
                 raise ValueError("prefix_mismatch")
             size = _fence(stream, source, sidecar, identity, size)
@@ -371,6 +379,29 @@ def read_complete_generationless_prefix_rows(source_path, generation_path, end_c
     if result is None:
         raise PrefixSnapshotRefused("mind_prefix_snapshot_refused") from None
     return result
+
+
+def read_complete_generationless_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_sha256,
+                                             *, source_budget=None):
+    """Return private, unscreened canonical rows after complete prefix fences."""
+    return _read_complete_generationless_prefix(source_path, generation_path, end_cursor,
+                                                 expected_prefix_sha256, source_budget=source_budget)
+
+
+def _read_complete_generationless_prefix_projected(source_path, generation_path, end_cursor, expected_prefix_sha256,
+                                                   *, projector, source_budget=None):
+    """Reduce private rows in memory and publish only after complete prefix fences.
+
+    The trusted caller must use a pure private projector: it must not send,
+    write or otherwise disclose source rows or interim results. Duplicate
+    canonical event references keep the last reduction, as the raw reader
+    keeps the last row. The returned reductions still require caller screening.
+    """
+    if not callable(projector):
+        raise PrefixSnapshotRefused("mind_prefix_snapshot_refused") from None
+    return _read_complete_generationless_prefix(source_path, generation_path, end_cursor,
+                                                 expected_prefix_sha256, source_budget=source_budget,
+                                                 projector=projector)
 
 
 def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, tasks=None,

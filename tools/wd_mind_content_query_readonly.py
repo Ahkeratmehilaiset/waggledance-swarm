@@ -653,7 +653,7 @@ _REQUIRED_CODE = {
     "tools/wd_bridge_mind.py": "8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211",
     "waggledance/core/bridge_log_reader.py": "1949e26526153363d8c19f5051f636a646bb6839758d779c904f1eab72c5f49e",
     "tools/wd_mind_content_prefix_readonly.py": "264696c1c315e0a87304330fd83829f3bf102ca2c538a69656e193aa127a4dd3",
-    "tools/wd_mind_absent_generation_prefix_readonly.py": "638c2ac1468e2d7b6f1b96dec4e0c2ef8fb7306a2a969c02ee857cf8b1c46056",
+    "tools/wd_mind_absent_generation_prefix_readonly.py": "11ce1884ebe03959c4f9833cb32929bd64306a310287917c15fde3109210a87b",
     "tools/bridge_compact_view.py": "c808da1b1dd8f4e0220f8ffce730963455d0a706c2b4f1dd6387e450d5c84c83",
     "waggledance/__init__.py": "a48c64790f6d239f53960e5011fe87129555d7978197e9f0d0b43ef3b93d5e82",
     "waggledance/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -1041,19 +1041,63 @@ def _record(source_ref, fields, chunks, index):
                            "tier": {"source_type": "bridge_event"}, "available_utc": fields["available"]}}
 
 
+_DEFERRED_PROJECTION_FAILURE = object()
+
+
+def _screen_projection_event(ref, event, context):
+    """Return only a screened event's fields and chunks, a refusal or None."""
+    policy = context['policy']
+    if not _hex(ref) or type(event) is not dict or not hmac.compare_digest(_sha(_canonical(event)), ref):
+        raise ValueError('source_record_mismatch')
+    if 'approved_source_refs' in policy and ref not in policy['approved_source_refs']:
+        return None
+    fields = _fields(event, policy, context['roster'])
+    if fields is None:
+        return None
+    token = fields if type(fields) is str else None
+    if token is None and ref in policy['removed_source_refs']:
+        token = 'removed'
+    if token is None:
+        message = event.get('message')
+        if message is None or message == '':
+            token = 'no_message'
+        else:
+            verdict, value = _classify_with_policy(message, policy['max_message_chars'], context['private'])
+            if verdict != 'KEEP':
+                token = value
+    if token is not None:
+        return token
+    chunks = chunk(value, policy['max_chunk_chars'])
+    if not chunks or any(_OUTPUT.fullmatch(text) is None or _has_marker(text) for text in chunks):
+        return 'encoding'
+    return fields, chunks
+
+
 def _projection(context, *, complete_records=False, source_budget=None):
     prefix = _pinned_dependency("tools.wd_mind_content_prefix_readonly", "tools/wd_mind_content_prefix_readonly.py",
                                 ("read_prefix_rows", "read_complete_prefix_rows"))
     source, policy = context["messages"], context["policy"]
     all_tasks = policy.get("task_scope") == "all_tasks"
-    if all_tasks and complete_records and source["end_cursor"].generation is None:
+    streamed = all_tasks and complete_records and source["end_cursor"].generation is None
+    if streamed:
         absent = _pinned_dependency("tools.wd_mind_absent_generation_prefix_readonly",
                                     "tools/wd_mind_absent_generation_prefix_readonly.py",
-                                    ("read_complete_generationless_prefix_rows",))
+                                    ("_read_complete_generationless_prefix_projected",))
         args = (source["source_path"], source["generation_path"], source["end_cursor"],
                 context["decision"]["source_prefix"]["sha256"])
-        rows = (absent.read_complete_generationless_prefix_rows(*args) if source_budget is None else
-                absent.read_complete_generationless_prefix_rows(*args, source_budget=source_budget))
+        def project_private(ref, event):
+            # Defer screening errors until after the source fences and until
+            # the last row for this reference has won, as in the raw reader.
+            try:
+                return _screen_projection_event(ref, event, context)
+            except MemoryError:
+                raise
+            except Exception:
+                return _DEFERRED_PROJECTION_FAILURE
+        rows = (absent._read_complete_generationless_prefix_projected(*args, projector=project_private)
+                if source_budget is None else
+                absent._read_complete_generationless_prefix_projected(*args, projector=project_private,
+                                                                      source_budget=source_budget))
     elif all_tasks:
         if source_budget is not None:
             raise ValueError('source_budget_unsupported')
@@ -1066,32 +1110,15 @@ def _projection(context, *, complete_records=False, source_budget=None):
                                       context["decision"]["source_prefix"]["sha256"], set(policy["approved_tasks"]))
     records, refused, record_bytes = [], {}, 0
     for ref in sorted(rows):
-        event = rows[ref]
-        if not _hex(ref) or type(event) is not dict or not hmac.compare_digest(_sha(_canonical(event)), ref):
-            raise ValueError("source_record_mismatch")
-        if "approved_source_refs" in policy and ref not in policy["approved_source_refs"]:
+        screened = rows[ref] if streamed else _screen_projection_event(ref, rows[ref], context)
+        if screened is _DEFERRED_PROJECTION_FAILURE:
+            raise ValueError('source_record_mismatch')
+        if screened is None:
             continue
-        fields = _fields(event, policy, context["roster"])
-        if fields is None:
+        if type(screened) is str:
+            refused[screened] = refused.get(screened, 0) + 1
             continue
-        token = fields if type(fields) is str else None
-        if token is None and ref in policy["removed_source_refs"]:
-            token = "removed"
-        if token is None:
-            message = event.get("message")
-            if message is None or message == "":
-                token = "no_message"
-            else:
-                verdict, value = _classify_with_policy(message, policy["max_message_chars"], context["private"])
-                if verdict != "KEEP":
-                    token = value
-        if token is not None:
-            refused[token] = refused.get(token, 0) + 1
-            continue
-        chunks = chunk(value, policy["max_chunk_chars"])
-        if not chunks or any(_OUTPUT.fullmatch(text) is None or _has_marker(text) for text in chunks):
-            refused["encoding"] = refused.get("encoding", 0) + 1
-            continue
+        fields, chunks = screened
         for index in range(len(chunks)):
             record = _record(ref, fields, chunks, index)
             if all_tasks and not complete_records:

@@ -551,6 +551,38 @@ def test_complete_projection_accepts_anchored_generationless_source(reader, tmp_
         reader._verified_complete(snapshot)
 
 
+def test_generationless_streamed_projection_matches_generationful_bytes(reader, tmp_path, monkeypatch):
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    duplicate = _row('synthetic build mentions RCO review')
+    rows = [duplicate, _row('password=syntheticfixturevalue'), duplicate,
+            _row('synthetic private review', agent=LANES[3], agent_uuid=ROSTER[LANES[3]]),
+            _row('synthetic private destination', to=LANES[3]),
+            _row('synthetic ordinary build message', task_id='synthetic-other-task'),
+            _row('contact fixture@example.invalid')]
+    case = _all_tasks_case(reader, tmp_path, rows)
+    baseline = reader._serialized(reader.rederive_complete_message_projection(**case))
+    cursor = case['messages']['end_cursor']
+    case['messages']['end_cursor'] = BridgeCursor(cursor.offset, cursor.file_identity, None)
+    Path(case['messages']['generation_path']).unlink()
+    case['messages']['generation_path'] = str(Path(case['messages']['source_path']).with_name('events.generation.json'))
+    decision = json.loads(case['decision_bytes'])
+    decision['source_prefix']['generation'] = None
+    case['decision_bytes'] = _raw(decision)
+    case['decision_sha256'] = _sha(case['decision_bytes'])
+    scans = []
+    original = absent._scan
+    def observe(*args, **kwargs):
+        result = original(*args, **kwargs)
+        scans.append((kwargs.get('projector') is not None,
+                      all(value is None or type(value) in (str, tuple) for value in result[1].values())))
+        return result
+    monkeypatch.setattr(absent, '_scan', observe)
+    actual = reader._serialized(reader.rederive_complete_message_projection(**case))
+    assert actual == baseline and _sha(actual) == _sha(baseline)
+    assert scans == [(True, True)]
+
+
 @pytest.mark.parametrize('generationless', [False, True])
 def test_complete_decisions_accept_declared_status_but_exclude_rco_and_secret(reader, tmp_path, generationless):
     from waggledance.core.bridge_log_reader import BridgeCursor

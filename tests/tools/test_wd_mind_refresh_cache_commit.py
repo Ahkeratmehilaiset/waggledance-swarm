@@ -237,7 +237,7 @@ def test_gate_on_refresh_cache_checks_charge_same_budget(
     assert owner._refresh_generation(enabled=True)['status'] == 'REFRESHED'
     assert owner._state == 'READY' and owner._cache_status == 'REFRESH_STORED'
     assert len(budgets) == 1 and sum(size for _, size in readings) == 7 * cursor.offset
-    assert budgets[0]._remaining == 2 * 1024**3 - 7 * cursor.offset
+    assert budgets[0]._remaining == runtime._STARTUP_PREWARM_SOURCE_READ_LIMIT - 7 * cursor.offset
     assert events == [('prefix_start', budgets[0]), ('prefix_end', budgets[0]), 'write',
                       ('prefix_start', budgets[0]), ('prefix_end', budgets[0])]
     assert len(written) == 1 and written[0][0] == 'synthetic-binding'

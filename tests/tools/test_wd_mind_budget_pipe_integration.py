@@ -182,7 +182,7 @@ def test_synthetic_owner_real_pipe_selected_resolver_budget(
         assert owner.start()['state'] == 'READY' and launches == [True]
         if gate_on:
             prewarm=sum(n for _,n,tag in reads if tag == 'MainThread')
-            assert prewarm > 0 and budgets[0][2] == 2*1024**3
+            assert prewarm > 0 and budgets[0][2] == runtime._STARTUP_PREWARM_SOURCE_READ_LIMIT
             assert budgets[0][1]._remaining == budgets[0][2]-prewarm
         service_args, client_args = _synthetic_routes(original, owner)
         name = service_args['pipe_name']
@@ -233,12 +233,12 @@ def test_synthetic_owner_real_pipe_selected_resolver_budget(
                 expected_age = math.ceil((clock.now(reader.dt.timezone.utc) - floor).total_seconds())
                 assert row['event_age_seconds_upper_bound'] >= expected_age >= 0
             assert owner_read>0 and client_read>0 and len(clients)==1
-            assert client_read <= 1024**3-clients[0]._source_budget._remaining
+            assert client_read <= session._STARTUP_SOURCE_READ_LIMIT-clients[0]._source_budget._remaining
             for invalid in ({'nonce':'2'*64}, {'lane':'claude-rco-1'}):
                 tampered=dict(frame, **invalid)
                 with pytest.raises(ValueError): validate_reply(tampered, request)
             owned=[(b,limit) for tag,b,limit in budgets if tag=='mind-local-candidates']
-            assert len(owned)==1 and owned[0][1]==1024**3
+            assert len(owned)==1 and owned[0][1]==runtime._STARTUP_OWNER_SOURCE_READ_LIMIT
             assert owner_read == owned[0][1]-owned[0][0]._remaining
         else:
             assert rc != 0 and not out.getvalue() and owner_read == 0

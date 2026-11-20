@@ -845,6 +845,161 @@ def test_selected_row_resolver_refuses_change_after_first_local_read(flat_consum
     assert resolver._closed and resolver._private is None
 
 
+def test_selected_row_resolver_refuses_nonselected_mutation_before_final_reread(flat_consumer_case, monkeypatch):
+    """A same-length unselected-row edit before the final prefix check is refused."""
+    resolver, frame, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    frame['candidates'] = frame['candidates'][:1]
+    selected = frame['candidates'][0]
+    source = Path(snapshot['messages']['source_path'])
+    before = source.read_bytes()
+    before_stat = source.stat()
+    marker = b'"message":'
+    indices = [i for i in range(len(before)) if before.startswith(marker, i)
+               and not selected['source_offset'] <= i < selected['source_offset'] + selected['source_length']]
+    assert indices, 'synthetic fixture needs a distinct unselected row'
+    byte_offset = indices[0] + len(marker) - 3
+    original, calls = type(resolver)._selected, []
+    def mutate_before_final(self, *args):
+        calls.append(True)
+        if len(calls) == 2:
+            with source.open('r+b') as stream:
+                stream.seek(byte_offset)
+                assert stream.read(1) == b'e'
+                stream.seek(byte_offset)
+                stream.write(b'E')
+        return original(self, *args)
+    monkeypatch.setattr(type(resolver), '_selected', mutate_before_final)
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert len(calls) == 2 and resolver._closed and resolver._private is None
+    after = source.read_bytes()
+    after_stat = source.stat()
+    start, end = selected['source_offset'], selected['source_offset'] + selected['source_length']
+    assert before[start:end] == after[start:end] and len(before) == len(after)
+    assert (before_stat.st_dev, before_stat.st_ino) == (after_stat.st_dev, after_stat.st_ino)
+
+
+def test_selected_row_resolver_accepts_append_before_final_prefix_check(flat_consumer_case, monkeypatch):
+    resolver, frame, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    source = Path(snapshot['messages']['source_path'])
+    original, calls = type(resolver)._selected, []
+    def append_after_final(self, *args):
+        result = original(self, *args)
+        calls.append(True)
+        if len(calls) == 2:
+            with source.open('ab') as stream:
+                stream.write(b'{"synthetic":"append after pinned prefix"}\n')
+        return result
+    monkeypatch.setattr(type(resolver), '_selected', append_after_final)
+    result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                              lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert len(calls) == 2 and result['results'] and not resolver._closed
+
+
+def test_selected_row_resolver_refuses_changed_controls_before_final_prefix(flat_consumer_case, monkeypatch):
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    original, calls = type(resolver)._check_controls, []
+    def fail_final(self):
+        calls.append(True)
+        if len(calls) == 4:
+            raise ValueError('synthetic-control-change')
+        return original(self)
+    monkeypatch.setattr(type(resolver), '_check_controls', fail_final)
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert len(calls) == 4 and resolver._closed and resolver._private is None
+
+
+def test_selected_row_age_includes_final_prefix_elapsed(flat_consumer_case, monkeypatch):
+    from datetime import timedelta
+    from tools import wd_mind_retained_query as retained
+    resolver, frame, _, clock = _located_candidates(flat_consumer_case, monkeypatch)
+    original, calls = retained._source_check, []
+    def advance_during_last(context):
+        result = original(context)
+        calls.append(True)
+        if len(calls) == 2:
+            clock.value += timedelta(seconds=35)
+        return result
+    monkeypatch.setattr(retained, '_source_check', advance_during_last)
+    result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                              lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert len(calls) == 2
+    for item in result['results']:
+        observed = (clock.value - content._utc(item['event_time_utc_floor'])).total_seconds()
+        assert item['event_age_seconds_upper_bound'] >= observed
+
+
+def test_selected_row_resolver_rechecks_controls_after_final_hash(flat_consumer_case, monkeypatch):
+    from tools import wd_mind_retained_query as retained
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    source_check, check_controls = retained._source_check, type(resolver)._check_controls
+    state = {'hashes': 0, 'changed': False}
+    def changed_during_final_hash(context):
+        result = source_check(context)
+        state['hashes'] += 1
+        if state['hashes'] == 2:
+            state['changed'] = True
+        return result
+    def check_changed(self):
+        if state['changed']:
+            raise ValueError('synthetic-control-change-during-final-hash')
+        return check_controls(self)
+    monkeypatch.setattr(retained, '_source_check', changed_during_final_hash)
+    monkeypatch.setattr(type(resolver), '_check_controls', check_changed)
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert state['hashes'] == 2 and resolver._closed and resolver._private is None
+
+
+def test_selected_row_exact_time_is_internal_and_matches_source(flat_consumer_case, monkeypatch):
+    from datetime import timezone
+    resolver, frame, snapshot, clock = _located_candidates(flat_consumer_case, monkeypatch)
+    item = frame['candidates'][0]
+    with Path(snapshot['messages']['source_path']).open('rb') as stream:
+        stream.seek(item['source_offset'])
+        event = json.loads(stream.read(item['source_length']))
+    rows = resolver._selected(resolver._context(), [item], 'codex-lead-1', 'shared', clock.now(timezone.utc))
+    assert rows[0][2] == content._utc(event['ts_utc'])
+    result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                              lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert set(result['results'][0]) == {'text', 'source_event_sha256', 'event_time_utc_floor',
+                                         'source_agent', 'event_age_seconds_upper_bound'}
+
+
+def test_selected_row_resolver_refuses_backward_clock_jump_after_final_read(flat_consumer_case, monkeypatch):
+    from datetime import timedelta
+    from tools import wd_mind_retained_query as retained
+    resolver, frame, snapshot, clock = _located_candidates(flat_consumer_case, monkeypatch)
+    frame['candidates'] = frame['candidates'][:1]
+    candidate = frame['candidates'][0]
+    with Path(snapshot['messages']['source_path']).open('rb') as stream:
+        stream.seek(candidate['source_offset'])
+        event = json.loads(stream.read(candidate['source_length']))
+    # The shared fixture's event is at the minute boundary. Model an exact
+    # event later in that minute while retaining its floored output time.
+    event_time = content._utc(event['ts_utc']) + timedelta(seconds=30)
+    selected = type(resolver)._selected
+    def selected_with_subminute_time(self, *args):
+        return [(item, digest, event_time) for item, digest, _ in selected(self, *args)]
+    monkeypatch.setattr(type(resolver), '_selected', selected_with_subminute_time)
+    source_check, hashes = retained._source_check, []
+    def backward_on_final(context):
+        result = source_check(context)
+        hashes.append(True)
+        if len(hashes) == 2:
+            clock.value = event_time - timedelta(microseconds=1)
+        return result
+    monkeypatch.setattr(retained, '_source_check', backward_on_final)
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert len(hashes) == 2 and resolver._closed and resolver._private is None
+
+
 @pytest.fixture
 def flat_consumer_case(source_fixtures, tmp_path, monkeypatch):
     _pin_verified_synthetic_checkout(monkeypatch)

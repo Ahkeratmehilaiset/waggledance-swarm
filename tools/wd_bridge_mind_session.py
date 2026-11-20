@@ -802,7 +802,8 @@ class _SelectedRowResolver:
                     raise ValueError('future_event')
                 results.append(({'text':decoded, 'source_event_sha256':item['source_event_sha256'],
                                  'event_time_utc_floor':record['time_utc'], 'source_agent':fields['agent'],
-                                 'event_age_seconds_upper_bound':math.ceil(age)}, reader._sha(line)))
+                                 'event_age_seconds_upper_bound':math.ceil(age)}, reader._sha(line),
+                                reader._utc(row['ts_utc'])))
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
         return results
 
@@ -856,16 +857,37 @@ class _SelectedRowResolver:
             retained._source_check(context); deadline()
             first = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
             self._check_controls(); deadline()
+            self._check_controls(); deadline()
+            final = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
+            for (before, before_raw, before_time), (after, after_raw, after_time) in zip(first, final):
+                if (before_raw != after_raw or before_time != after_time or
+                        {k:v for k,v in before.items() if k != 'event_age_seconds_upper_bound'} !=
+                        {k:v for k,v in after.items() if k != 'event_age_seconds_upper_bound'}):
+                    raise ValueError('source_changed')
+            # Check the whole prefix after both selected-row rereads and their
+            # comparison. Transient same-user ABA and mutation after the last
+            # check are not detectable in this scheme.
+            self._check_controls(); deadline()
             if self._source_budget is not None:
                 self._source_budget.reserve(self._cursor.offset)
             retained._source_check(context); deadline()
             self._check_controls(); deadline()
-            final = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
-            for (before, before_raw), (after, after_raw) in zip(first, final):
-                if (before_raw != after_raw or
-                        {k:v for k,v in before.items() if k != 'event_age_seconds_upper_bound'} !=
-                        {k:v for k,v in after.items() if k != 'event_age_seconds_upper_bound'}):
-                    raise ValueError('source_changed')
+            # The final hash can be slow. Include the remaining call budget in
+            # the reported ages; UTC jumps and post-check delays remain unknown.
+            from tools import wd_mind_content_query_readonly as reader
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise _SelectedReadDeadline()
+            finished = datetime.now(timezone.utc)
+            for item, _, exact_event_time in final:
+                if exact_event_time > finished:
+                    raise ValueError('future_event')
+                age = (finished - reader._utc(item['event_time_utc_floor'])).total_seconds()
+                if age < 0 or not math.isfinite(age):
+                    raise ValueError('future_event')
+                item['event_age_seconds_upper_bound'] = max(
+                    item['event_age_seconds_upper_bound'], math.ceil(age + remaining) + 1)
+            deadline()
             return {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':lane,
                     'fleet_sha256':self._controls[2], 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN',
                     'same_user_aba':'UNKNOWN', 'current_status_freshness':'UNKNOWN',

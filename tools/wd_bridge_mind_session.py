@@ -1688,11 +1688,16 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         _reap_local_candidate_pending()
         names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
         controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')
-        if (len(argv) != 11 or argv[0] not in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled')
+        prompt = bool(argv and argv[0] == '--mind-local-candidate-prompt')
+        if prompt:
+            names.add('--fleet-sha256')
+        if (len(argv) != (13 if prompt else 11)
+                or argv[0] not in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled',
+                                   '--mind-local-candidate-prompt')
                 or (controlled and control is None) or (not controlled and control is not None)):
             raise ValueError('args')
         pairs = list(zip(argv[1::2], argv[2::2]))
-        if len(pairs) != 5 or {key for key, _ in pairs} != names:
+        if len(pairs) != len(names) or {key for key, _ in pairs} != names:
             raise ValueError('args')
         args = dict(pairs)
         policy_pin, approval = args['--policy-sha256'], args['--approval-reference-sha256']
@@ -1700,6 +1705,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         scope = _startup_scope_for_lane(lane)
         timeout_text = args['--timeout-seconds']
         if (not _SHA256.fullmatch(policy_pin) or not _SHA256.fullmatch(approval)
+                or (prompt and not _SHA256.fullmatch(args['--fleet-sha256']))
                 or type(manifest_pin) is not str or not _SHA256.fullmatch(manifest_pin)
                 or re.fullmatch(r'(?:[1-9]|[1-8][0-9]|90)', timeout_text) is None):
             raise ValueError('args')
@@ -1777,8 +1783,15 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                         or result.get('lane') != lane or type(result.get('results')) is not list
                         or not 1 <= len(result['results']) <= 3 or time.monotonic() >= deadline):
                     raise ValueError('result')
-                encoded = json.dumps(result, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
-                                     allow_nan=False).encode('ascii')
+                if prompt:
+                    fragment = format_flat_session_prompt(enabled=True, result=result, expected_lane=lane,
+                                                          expected_fleet_sha256=args['--fleet-sha256'])
+                    if fragment is None:
+                        raise ValueError('prompt_refused')
+                    encoded = fragment.encode('ascii')
+                else:
+                    encoded = json.dumps(result, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
+                                         allow_nan=False).encode('ascii')
                 if not 0 < len(encoded) <= 16384:
                     raise ValueError('result')
                 checkpoint()
@@ -1845,7 +1858,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    if '--mind-local-candidate-read' in argv or '--mind-local-candidate-read-controlled' in argv:
+    if any(flag in argv for flag in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled',
+                                     '--mind-local-candidate-prompt')):
         pin = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         root = str(Path(__file__).absolute().parents[2])
         controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')

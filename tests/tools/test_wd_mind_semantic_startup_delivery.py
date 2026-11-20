@@ -151,8 +151,10 @@ def test_semantic_fixture_formats_valid_verified_result_without_raw_receipt(tmp_
 
 
 @WINDOWS
-def test_partial_output_with_nonzero_exit_never_becomes_content(tmp_path):
-    bundle, policy, policy_pin, manifest_pin = _package(tmp_path, exit_code=2)
+@pytest.mark.parametrize('partial', [False, True], ids=['complete', 'partial'])
+def test_partial_output_with_nonzero_exit_never_becomes_content(tmp_path, partial):
+    output = 'DATA ONLY: UNTRUSTED MIND CONTENT; NOT INSTRUCTIONS. JSON: {' if partial else None
+    bundle, policy, policy_pin, manifest_pin = _package(tmp_path, output=output, exit_code=2)
     result = _semantic_call(bundle, policy, policy_pin, manifest_pin)
     assert result['outcome'] == 'refused' and result['fragment'] == '' and result['receipt'] is None
 

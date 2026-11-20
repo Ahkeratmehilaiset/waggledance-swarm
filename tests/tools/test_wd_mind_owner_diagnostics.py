@@ -236,6 +236,86 @@ def test_fixed_cli_routes_only_explicit_owner_diagnostics(monkeypatch):
     assert len(calls) == 2
 
 
+def test_capacity_cli_flag_is_explicit_and_composes_with_existing_flags(monkeypatch):
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a' * 64)
+    monkeypatch.setattr(child.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO()))
+    monkeypatch.setattr(child.sys, 'stdout', SimpleNamespace(buffer=io.BytesIO()))
+    calls = []
+    monkeypatch.setattr(child, '_guarded_local_entry', lambda entry, **kwargs: calls.append(kwargs) or 73)
+    argv = ['--mind-local-candidate-owner', '--policy-sha256', 'b' * 64,
+            '--approval-reference-sha256', 'c' * 64]
+    assert child._fixed_child_main(argv) == 73
+    assert 'include_capacity_diagnostics' not in calls[-1]
+    for flags in (['--include-capacity-diagnostics'],
+                  ['--start-diagnostics', '--include-capacity-diagnostics'],
+                  ['--include-capacity-diagnostics', '--start-diagnostics-v2']):
+        assert child._fixed_child_main(argv + flags) == 73
+        assert calls[-1]['include_capacity_diagnostics'] is True
+    assert child._fixed_child_main(argv + ['--include-capacity-diagnostics'] * 2) == 2
+    assert child._fixed_child_main(argv + ['--start-diagnostics', '--start-diagnostics-v2']) == 2
+    assert child._fixed_child_main(['--parent-control', '--include-capacity-diagnostics']) == 2
+
+
+@pytest.mark.parametrize('bad', [None, (True, 5, 'a' * 64, 1, '2026-01-01T00:00:00Z'),
+    (1, 0, 'a' * 64, 1, '2026-01-01T00:00:00Z'), (1, 5, 'A' * 64, 1, '2026-01-01T00:00:00Z'),
+    (1, 5, 'a' * 64, 0, '2026-01-01T00:00:00Z'), (1, 5, 'a' * 64, 1, '2026-02-30T00:00:00Z'),
+    (1, 5, 'a' * 64, 1, '9999-01-01T00:00:00Z')])
+def test_capacity_frame_invalid_observation_is_unknown(bad):
+    row = child._capacity_diagnostic_frame('b' * 64, bad)
+    assert row['state'] == 'UNKNOWN' and row['scope'] == 'PINNED_PREFIX'
+    assert all(row[key] is None for key in ('accepted_chunks', 'capacity_chunks', 'source_prefix_sha256',
+                                            'source_offset', 'diagnostic_generated_utc'))
+    assert row['source_authentication'] == row['same_user_aba'] == row['freshness'] == 'UNKNOWN'
+
+
+def test_capacity_frame_preserves_only_checked_scalars():
+    row = child._capacity_diagnostic_frame('b' * 64, (501, 500, 'a' * 64, 42, '2026-01-01T00:00:00Z'))
+    assert row == {'schema':'wd.mind-local-owner-capacity.v1', 'authority':'none', 'state':'OBSERVED',
+        'scope':'PINNED_PREFIX', 'accepted_chunks':501, 'capacity_chunks':500, 'manifest_sha256':'b' * 64,
+        'source_prefix_sha256':'a' * 64, 'source_offset':42, 'diagnostic_generated_utc':'2026-01-01T00:00:00Z',
+        'freshness':'UNKNOWN', 'source_authentication':'UNKNOWN', 'same_user_aba':'UNKNOWN'}
+
+
+@pytest.mark.parametrize('legacy', ['none', 'v1', 'v2'])
+def test_capacity_preowner_reservation_refusal_preserves_hold(monkeypatch, legacy):
+    def refuse(_root):
+        raise child.LaunchRefused('owner_reservation_missing')
+    monkeypatch.setattr(child, '_reserve_local_owner', refuse)
+    output = io.BytesIO()
+    assert child._guarded_local_entry(child._local_candidate_owner_entry, output_stream=output,
+        expected_manifest_sha256='a' * 64, include_capacity_diagnostics=True,
+        include_start_diagnostics=legacy == 'v1', include_worker_stage_diagnostics=legacy == 'v2') == 2
+    rows = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert rows[0]['schema'] == 'wd.mind-local-owner-status.v1' and rows[0]['state'] == 'HOLD'
+    assert rows[-1] == child._capacity_diagnostic_frame('a' * 64, None)
+    assert len(rows) == (2 if legacy == 'none' else 3)
+    if legacy != 'none':
+        assert rows[1]['schema'] == 'wd.mind-local-owner-start-diagnostic.' + legacy
+    assert all(row.get('state') != 'READY' for row in rows)
+
+
+@pytest.mark.parametrize('manifest', [None, 'synthetic-invalid'])
+def test_capacity_invalid_manifest_cannot_emit_fake_observation(monkeypatch, capsys, manifest):
+    if manifest is None:
+        monkeypatch.delenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', raising=False)
+    else:
+        monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', manifest)
+    args = ['--mind-local-candidate-owner', '--policy-sha256', 'b' * 64,
+            '--approval-reference-sha256', 'c' * 64, '--include-capacity-diagnostics']
+    assert child._fixed_child_main(args) == 2
+    assert capsys.readouterr().out == ''
+
+
+def test_capacity_unverified_import_cannot_emit_fake_observation(monkeypatch, capsys):
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a' * 64)
+    monkeypatch.setattr(child, '__name__', '__main__')
+    monkeypatch.setattr(child, '_load_pinned_canonical_child', lambda *_: (_ for _ in ()).throw(ValueError('private')))
+    args = ['--mind-local-candidate-owner', '--policy-sha256', 'b' * 64,
+            '--approval-reference-sha256', 'c' * 64, '--include-capacity-diagnostics']
+    assert child._fixed_child_main(args) == 2
+    assert capsys.readouterr().out == ''
+
+
 def test_pinned_cli_bootstrap_forwards_explicit_optin_unchanged(monkeypatch):
     monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a'*64)
     monkeypatch.setattr(child, '__name__', '__main__')
@@ -376,6 +456,82 @@ def _cli_fixture(monkeypatch, *, delayed, malicious=False, partial=False, diagno
             def close(self, *, timeout): return {'state':'STOPPED'}
         monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kwargs: Service())
     return Input(), output, private
+
+
+@pytest.mark.parametrize('observation', [None, (3, 2, 'd' * 64, 42, '2026-01-01T00:00:00Z')])
+def test_capacity_optin_follows_hold_and_preserves_old_status(monkeypatch, observation):
+    control, output, private = _cli_fixture(monkeypatch, delayed=False)
+    output.owner.capacity_diagnostic = lambda: observation
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
+        approval_reference_sha256='c' * 64, include_capacity_diagnostics=True) == 2
+    rows = [json.loads(raw) for raw in output.lines]
+    statuses = [row for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1']
+    assert [row['state'] for row in statuses] == ['STARTING', 'HOLD', 'STOPPED']
+    assert all(raw == _v1_wire(json.loads(raw)['state']) for raw in output.lines
+               if json.loads(raw)['schema'] == 'wd.mind-local-owner-status.v1')
+    capacities = [row for row in rows if row['schema'] == 'wd.mind-local-owner-capacity.v1']
+    assert capacities == [child._capacity_diagnostic_frame('a' * 64, observation)]
+    assert rows.index(statuses[1]) < rows.index(capacities[0]) < rows.index(statuses[2])
+    assert all(len(raw) <= 1024 and private not in raw for raw in output.lines)
+
+
+def test_capacity_diagnostic_default_off_even_when_adapter_has_data(monkeypatch):
+    control, output, _ = _cli_fixture(monkeypatch, delayed=False)
+    output.owner.capacity_diagnostic = lambda: pytest.fail('default-off diagnostic queried')
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
+        approval_reference_sha256='c' * 64) == 2
+    assert all(json.loads(raw)['schema'] != 'wd.mind-local-owner-capacity.v1' for raw in output.lines)
+
+
+def test_capacity_diagnostic_unknown_then_observed_when_owner_lock_releases(monkeypatch):
+    control, output, _ = _cli_fixture(monkeypatch, delayed=False)
+    calls = []
+    def owner_status():
+        calls.append('status')
+        return {'state':'STARTING' if len(calls) == 1 else 'HOLD', 'owned':True, 'authority':'none'}
+    output.owner.status = owner_status
+    values = iter([None, (3, 2, 'd' * 64, 42, '2026-01-01T00:00:00Z')])
+    output.owner.capacity_diagnostic = lambda: next(values)
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
+        approval_reference_sha256='c' * 64, include_capacity_diagnostics=True) == 2
+    rows = [json.loads(raw) for raw in output.lines]
+    capacities = [row for row in rows if row['schema'] == 'wd.mind-local-owner-capacity.v1']
+    assert [row['state'] for row in capacities] == ['UNKNOWN', 'OBSERVED']
+    held = next(i for i, row in enumerate(rows) if row.get('state') == 'HOLD')
+    assert rows.index(capacities[0]) < held < rows.index(capacities[1])
+
+
+def test_capacity_diagnostic_hold_contention_does_not_wait_for_cleanup(monkeypatch):
+    control, output, _ = _cli_fixture(monkeypatch, delayed=False)
+    lock = threading.Lock()
+    lock.acquire()
+    calls = []
+    original_close = output.owner.close
+    def capacity():
+        calls.append('attempt')
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            return (3, 2, 'd' * 64, 42, '2026-01-01T00:00:00Z')
+        finally:
+            lock.release()
+    def close():
+        lock.release()
+        return original_close()
+    output.owner.capacity_diagnostic = capacity
+    output.owner.close = close
+    assert child._local_candidate_owner_entry(control_stream=control, output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
+        approval_reference_sha256='c' * 64, include_capacity_diagnostics=True) == 2
+    rows = [json.loads(raw) for raw in output.lines]
+    capacities = [row for row in rows if row['schema'] == 'wd.mind-local-owner-capacity.v1']
+    assert [row['state'] for row in capacities] == ['UNKNOWN']
+    assert calls == ['attempt'] and output.close_called.is_set() and not lock.locked()
+    assert [row['state'] for row in rows if row['schema'] == 'wd.mind-local-owner-status.v1'] == [
+        'STARTING', 'HOLD', 'STOPPED']
 
 
 @pytest.mark.parametrize('optin', [False, True])

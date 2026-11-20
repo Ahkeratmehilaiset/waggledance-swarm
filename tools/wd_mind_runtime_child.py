@@ -26,6 +26,7 @@ import ast
 import _imp
 import ctypes
 from ctypes import wintypes
+import datetime as dt
 import hashlib
 import hmac
 import importlib
@@ -1096,6 +1097,34 @@ def _validated_start_failure(value):
         return {'reason': value['reason'], 'exception_type': value['exception_type']}
     return {'reason': 'UNKNOWN', 'exception_type': 'UNKNOWN'}
 
+
+def _capacity_diagnostic_frame(manifest, observation):
+    """Encode only an as-of-pinned-prefix scalar observation, or UNKNOWN."""
+    if type(manifest) is not str or not _HEX.fullmatch(manifest):
+        raise ValueError('capacity_manifest')
+    fields = (None, None, None, None, None)
+    if type(observation) is tuple and len(observation) == 5:
+        accepted, capacity, digest, offset, observed = observation
+        try:
+            valid_time = (type(observed) is str and
+                          re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', observed) is not None and
+                          dt.datetime.strptime(observed, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%dT%H:%M:%SZ') == observed and
+                          dt.datetime.strptime(observed, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
+                          <= dt.datetime.now(dt.timezone.utc))
+        except (ValueError, OverflowError):
+            valid_time = False
+        if (type(accepted) is int and 0 <= accepted < 2**63 and
+                type(capacity) is int and 0 < capacity < 2**63 and
+                type(digest) is str and _HEX.fullmatch(digest) and
+                type(offset) is int and 0 < offset < 2**63 and valid_time):
+            fields = observation
+    accepted, capacity, digest, offset, observed = fields
+    return {'schema':'wd.mind-local-owner-capacity.v1', 'authority':'none',
+            'state':'OBSERVED' if digest is not None else 'UNKNOWN', 'scope':'PINNED_PREFIX',
+            'accepted_chunks':accepted, 'capacity_chunks':capacity, 'manifest_sha256':manifest,
+            'source_prefix_sha256':digest, 'source_offset':offset, 'diagnostic_generated_utc':observed,
+            'freshness':'UNKNOWN', 'source_authentication':'UNKNOWN', 'same_user_aba':'UNKNOWN'}
+
 class _LocalManifestQuery:
     """Retain one pinned owner in this process; no lane identity is authenticated.
 
@@ -1109,11 +1138,11 @@ class _LocalManifestQuery:
                  '_thread_start_uncertain', '_lock', '_cancel', '_owner_start_gate', '_owner_start_committed',
                  '_state', '_policy_invalid', '_pending_result', '_preclose_runtime_state',
                  '_candidate_inflight', '_candidate_accounting_uncertain', '_host_start_gate', '_host_stop',
-                 '_host_owner_start_inflight', '_start_failure')
+                 '_host_owner_start_inflight', '_start_failure', '_capacity_diagnostics')
 
     def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
                  worker_timeout, lock_timeout, shutdown_timeout, policy_path=None, admission=None,
-                 host_start_gate=None, host_stop=None, host_owner_start_inflight=None):
+                 host_start_gate=None, host_stop=None, host_owner_start_inflight=None, capacity_diagnostics=False):
         self._owner = None
         self._metadata = {'lane': lane}
         self._bundle, self._manifest = bundle, manifest
@@ -1132,6 +1161,7 @@ class _LocalManifestQuery:
         self._preclose_runtime_state = None
         self._candidate_inflight, self._candidate_accounting_uncertain = 0, False
         self._start_failure = None
+        self._capacity_diagnostics = capacity_diagnostics
 
     def __repr__(self):
         return '<PrivateMindLocalManifestQuery>'
@@ -1193,9 +1223,10 @@ class _LocalManifestQuery:
                 _admission=self._admission, _admission_owner=self)
             anchor = self._check_policy()
             stage = 'OWNER_CREATE'
+            owner_options = {'capacity_diagnostics': True} if self._capacity_diagnostics else {}
             owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=self._metadata['lane'],
                 worker_factory=factory, shutdown_timeout=self._shutdown_timeout, policy_anchor=anchor,
-                worker_rotation=True, vector_cache_enabled=True)
+                worker_rotation=True, vector_cache_enabled=True, **owner_options)
             with self._lock:
                 self._owner = owner  # Retain before any worker may be launched.
             stage = 'EXTERNAL_POLICY'
@@ -1305,6 +1336,20 @@ class _LocalManifestQuery:
                 failure = None
         safe = _validated_start_failure(failure)
         return {'reason': safe['reason'], 'exception_type': safe['exception_type'], 'authority': 'none'}
+
+    def capacity_diagnostic(self):
+        if not self._capacity_diagnostics or not self._lock.acquire(blocking=False):
+            return None
+        try:
+            owner, invalid = self._owner, self._policy_invalid
+        finally:
+            self._lock.release()
+        if owner is None or invalid:
+            return None
+        try:
+            return owner.capacity_diagnostic()
+        except Exception:
+            return None
 
     def start_failure_observed(self):
         """Inspect completed startup after close; unknown is not a clean result."""
@@ -1531,7 +1576,7 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
                                 operator_approval_reference_sha256=None, lane=None,
                                 worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5,
                                 policy_path=None, _admission=None, _host_start_gate=None,
-                                _host_stop=None, _host_owner_start_inflight=None):
+                                _host_stop=None, _host_owner_start_inflight=None, _capacity_diagnostics=False):
     """Prepare, but do not start, a pinned in-process Mind owner.
 
     The manifest and operator-policy inputs must come independently from the
@@ -1548,6 +1593,7 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
                 or type(expected_identifier_policy_sha256) is not str or not _HEX.fullmatch(expected_identifier_policy_sha256)
                 or type(operator_approval_reference_sha256) is not str or not _HEX.fullmatch(operator_approval_reference_sha256)
                 or (policy_path is not None and type(policy_path) is not str)
+                or type(_capacity_diagnostics) is not bool
                 or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(),
                                            expected_identifier_policy_sha256)
                 or type(worker_timeout_seconds) not in (int, float) or not math.isfinite(worker_timeout_seconds)
@@ -1562,7 +1608,7 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
         result = _LocalManifestQuery(lane, bundle_root, expected_manifest_sha256, identifier_policy_bytes,
             expected_identifier_policy_sha256, operator_approval_reference_sha256,
             worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path, _admission,
-            _host_start_gate, _host_stop, _host_owner_start_inflight)
+            _host_start_gate, _host_stop, _host_owner_start_inflight, _capacity_diagnostics)
         _admission.bind_owner(result)
     except Exception:
         result = None
@@ -2543,7 +2589,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                                  policy_sha256, approval_reference_sha256, policy_path=None, _cleanup_evidence=None,
                                  _admission=None, _host_start_gate=None, _host_stop=None,
                                  _host_owner_start_inflight=None, include_start_diagnostics=False,
-                                 include_worker_stage_diagnostics=False):
+                                 include_worker_stage_diagnostics=False, include_capacity_diagnostics=False):
     """Retain one owner and a reference-only service until a graceful stop.
 
     The service does not authenticate clients or establish source correctness;
@@ -2564,6 +2610,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
     service_error, control_error = [], []
     last_state, failed, start_failure = None, False, None
     last_diagnostic, diagnostic_count = None, 0
+    capacity_state = None
     startup_reported_ready = False
     ready_publication_started = threading.Event()
     diagnostic_stop, diagnostic_done, diagnostic_thread = threading.Event(), threading.Event(), None
@@ -2601,6 +2648,25 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
         write_record(raw)
         last_state = state
         if state == 'READY': startup_reported_ready = True
+
+    def emit_capacity():
+        nonlocal capacity_state
+        if include_capacity_diagnostics is not True or capacity_state == 'OBSERVED':
+            return
+        observation = None
+        if adapter is not None:
+            try:
+                observation = adapter.capacity_diagnostic()
+            except Exception:
+                observation = None
+        frame = _capacity_diagnostic_frame(expected_manifest_sha256, observation)
+        if frame['state'] == capacity_state:
+            return
+        raw = json.dumps(frame, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii') + b'\n'
+        if len(raw) > 1024:
+            raise ValueError('capacity_diagnostic_size')
+        write_record(raw)
+        capacity_state = frame['state']
 
     def emit_diagnostic():
         nonlocal last_diagnostic, diagnostic_count
@@ -2869,12 +2935,13 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             if type(policy_path) is not str:
                 raise ValueError('policy_path')
             policy = absent._read_pinned(Path(policy_path), policy_sha256, 65536)
+        capacity_options = {'_capacity_diagnostics': True} if include_capacity_diagnostics is True else {}
         adapter = create_local_manifest_query(enabled=True, bundle_root=bundle_root,
             expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
             expected_identifier_policy_sha256=policy_sha256,
             operator_approval_reference_sha256=approval_reference_sha256, lane='codex-lead-1',
             policy_path=policy_path, _admission=_admission, _host_start_gate=_host_start_gate,
-            _host_stop=_host_stop, _host_owner_start_inflight=_host_owner_start_inflight)
+            _host_stop=_host_stop, _host_owner_start_inflight=_host_owner_start_inflight, **capacity_options)
         policy = None
         # A host-accepted STOP and adapter-start commitment share one gate.
         # CLI stream callers have no host gate and retain their old semantics.
@@ -2909,6 +2976,8 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             owner_status = adapter.status()
             if stop.is_set():
                 break
+            if type(owner_status) is dict and owner_status.get('state') in ('STARTING', 'READY'):
+                emit_capacity()
             # Service creation is reachable only after an owned READY state.
             # A query can make the owner BUSY before READY was emitted; still
             # inspect service completion/errors and do not fail that query.
@@ -2941,6 +3010,7 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
                     failed = True
                     break
                 emit('READY')
+                emit_capacity()
             stop.wait(0.1)
         # EOF/STOP can arrive before the first status poll. Do not turn a
         # startup failure that is already visible into a successful stop.
@@ -2972,6 +3042,17 @@ def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, 
             if (include_worker_stage_diagnostics is True or
                     (include_start_diagnostics is True and not startup_reported_ready)):
                 start_diagnostic_worker()
+        # This is the final nonblocking observation attempt before cleanup.
+        # A contended lock can leave capacity UNKNOWN even if it later clears;
+        # cleanup does not wait or retry for diagnostic completeness. The
+        # optional output write itself may block: no hard deadline is claimed.
+        if include_capacity_diagnostics is True and capacity_state != 'OBSERVED':
+            try:
+                if last_state not in ('STARTING', 'READY', 'HOLD'):
+                    emit('HOLD')
+                emit_capacity()
+            except BaseException:
+                failed = True
         if service_thread is not None:
             while not service_done.is_set() or service_thread.is_alive():
                 try: emit('HOLD')
@@ -3184,6 +3265,24 @@ def _emit_preowner_diagnostic(out, manifest, reason, exception_type, v2):
         out.flush()
 
 
+def _emit_preowner_capacity(out, manifest, *, include_status):
+    records = []
+    if include_status:
+        records.append({'schema':'wd.mind-local-owner-status.v1', 'state':'HOLD',
+            'manifest_sha256':manifest, 'authority':'none', 'caller_authentication':'UNKNOWN',
+            'source_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'})
+    records.append(_capacity_diagnostic_frame(manifest, None))
+    for record in records:
+        data = json.dumps(record, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii') + b'\n'
+        offset = 0
+        while offset < len(data):
+            count = out.write(memoryview(data)[offset:])
+            if type(count) is not int or not 0 < count <= len(data) - offset:
+                raise ValueError('diagnostic_write')
+            offset += count
+        out.flush()
+
+
 def _emit_preanchor_diagnostic(out):
     """Emit a fixed refusal without asserting an unavailable manifest pin."""
     data = b'{"authority":"none","reason":"IMPORT","schema":"wd.mind-local-owner-preanchor-diagnostic.v1"}\n'
@@ -3207,14 +3306,18 @@ def _guarded_local_entry(entry, **kwargs):
         # never expose its path, bytes, or the underlying exception.
         v1 = kwargs.get('include_start_diagnostics') is True
         v2 = kwargs.get('include_worker_stage_diagnostics') is True
+        capacity = kwargs.get('include_capacity_diagnostics') is True
         manifest = kwargs.get('expected_manifest_sha256')
-        if (entry is _local_candidate_owner_entry and (v1 or v2)
+        if (entry is _local_candidate_owner_entry and (v1 or v2 or capacity)
                 and type(manifest) is str and _HEX.fullmatch(manifest)):
             try:
                 reason = {'owner_reservation_missing':'ADMISSION_MISSING',
                           'owner_reservation_reserved':'ADMISSION_RESERVED',
                           'owner_reservation_lock_unavailable':'ADMISSION_LOCK_UNAVAILABLE'}.get(str(exc), 'ADMISSION')
-                _emit_preowner_diagnostic(kwargs['output_stream'], manifest, reason, 'LaunchRefused', v2)
+                if v1 or v2:
+                    _emit_preowner_diagnostic(kwargs['output_stream'], manifest, reason, 'LaunchRefused', v2)
+                if capacity:
+                    _emit_preowner_capacity(kwargs['output_stream'], manifest, include_status=not (v1 or v2))
             except Exception:
                 pass  # Output uncertainty remains a refusal, never READY.
         return 2
@@ -3323,12 +3426,18 @@ def _fixed_child_main(argv):
     """Route fixed parent and owner flags; other inputs refuse."""
     if argv and argv[0] == '--mind-local-query':
         return 2  # Before manifest loading, admission, or other side effects.
-    diagnostic_flag = argv[-1] if argv and argv[-1] in ('--start-diagnostics', '--start-diagnostics-v2') else None
-    diagnostic_optin = diagnostic_flag == '--start-diagnostics'
-    worker_diagnostic_optin = diagnostic_flag == '--start-diagnostics-v2'
-    if diagnostic_flag:
-        if not argv or argv[0] != '--mind-local-candidate-owner': return 2
+    flags = []
+    flag_names = ('--start-diagnostics', '--start-diagnostics-v2', '--include-capacity-diagnostics')
+    while argv and argv[-1] in flag_names:
+        flag = argv[-1]
+        if flag in flags: return 2
+        flags.append(flag)
         argv = argv[:-1]
+    diagnostic_optin = '--start-diagnostics' in flags
+    worker_diagnostic_optin = '--start-diagnostics-v2' in flags
+    capacity_optin = '--include-capacity-diagnostics' in flags
+    if diagnostic_optin and worker_diagnostic_optin: return 2
+    if flags and (not argv or argv[0] != '--mind-local-candidate-owner'): return 2
     local_owner = (len(argv) == 5 and argv[0] == '--mind-local-candidate-owner'
                    and argv[1] == '--policy-sha256' and argv[3] == '--approval-reference-sha256'
                    and _HEX.fullmatch(argv[2]) and _HEX.fullmatch(argv[4]))
@@ -3359,17 +3468,18 @@ def _fixed_child_main(argv):
                     except BaseException:
                         pass
                 return 2
-            return canonical._fixed_child_main(argv + ([diagnostic_flag] if diagnostic_flag else []))
+            return canonical._fixed_child_main(argv + list(reversed(flags)))
+        capacity_options = {'include_capacity_diagnostics':True} if capacity_optin else {}
         if local_owner_path:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],
                 policy_sha256=argv[4], approval_reference_sha256=argv[6], include_start_diagnostics=diagnostic_optin,
-                include_worker_stage_diagnostics=worker_diagnostic_optin)
+                include_worker_stage_diagnostics=worker_diagnostic_optin, **capacity_options)
         if local_owner:
             return _guarded_local_entry(_local_candidate_owner_entry, control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                 bundle_root=bundle, expected_manifest_sha256=expected, policy_sha256=argv[2],
                 approval_reference_sha256=argv[4], include_start_diagnostics=diagnostic_optin,
-                include_worker_stage_diagnostics=worker_diagnostic_optin)
+                include_worker_stage_diagnostics=worker_diagnostic_optin, **capacity_options)
         if argv == ['--parent-control']:
             return _parent_control_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                                          bundle_root=bundle, expected_manifest_sha256=expected)

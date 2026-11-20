@@ -1367,12 +1367,13 @@ def _cache_rows_from_screened_projection(projection, ids, vectors):
 
 class _PrivateVectorCache:
     """Owner-only adapter; the installed route must supply a pinned module."""
-    __slots__ = ('_module', '_path', '_verify')
+    __slots__ = ('_module', '_path', '_verify', '_capacity_recording', '_capacity_limit', '_capacity_observation')
 
     def __init__(self, module, path, verify):
         if not callable(verify) or not callable(getattr(module, 'load_cache', None)) or not callable(getattr(module, 'write_cache', None)):
             raise ValueError('cache_provider')
         self._module, self._path, self._verify = module, path, verify
+        self._capacity_recording, self._capacity_limit, self._capacity_observation = False, None, None
 
     def load(self, binding, verify_prefix):
         self._verify()
@@ -1397,6 +1398,8 @@ class _PrivateVectorCache:
         return status
 
     def check_capacity(self, count):
+        if self._capacity_recording:
+            self._capacity_limit = None
         self._verify()
         try:
             limit = getattr(self._module, '_MAX_ROWS', None)
@@ -1404,6 +1407,8 @@ class _PrivateVectorCache:
             self._verify()
             raise
         self._verify()
+        if self._capacity_recording and type(limit) is int and 0 < limit < 2**63:
+            self._capacity_limit = limit
         if type(count) is not int or count < 0 or type(limit) is not int or limit <= 0 or count > limit:
             raise ValueError('cache_capacity')
 
@@ -1482,6 +1487,30 @@ def _load_pinned_vector_cache(binding):
         _CACHE_MODULE_LOCK.release()
 
 
+def _verified_capacity_observation(frozen, projection, report, count, limit):
+    """Return scalar metadata for the checked prefix; time is diagnostic generation, not source check time."""
+    if (type(count) is not int or not 0 <= count < 2**63 or
+            type(limit) is not int or not 0 < limit < 2**63 or
+            type(report) is not dict or report.get('status') != 'MATCH' or
+            report.get('projection_sha256') != frozen.get('projection_sha256') or
+            type(projection) is not dict or type(projection.get('messages')) is not dict or
+            type(projection['messages'].get('accepted')) is not int or
+            projection['messages']['accepted'] != count):
+        raise ValueError('capacity_observation')
+    decision = json.loads(frozen['decision_bytes'].decode('utf-8'),
+                          object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
+    source = report.get('source_prefix')
+    cursor = frozen['messages']['end_cursor']
+    if (type(source) is not dict or source != decision.get('source_prefix') or
+            type(cursor) is not bridge.BridgeCursor or type(cursor.offset) is not int or
+            not 0 < cursor.offset < 2**63 or source.get('offset') != cursor.offset or
+            source.get('generation') != cursor.generation or
+            type(source.get('sha256')) is not str or not reader._hex(source['sha256'])):
+        raise ValueError('capacity_source')
+    return (count, limit, source['sha256'], cursor.offset,
+            time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
+
+
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                  encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease,
                                  prior_memory=None, vector_cache=None):
@@ -1498,6 +1527,9 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
     snapshot = binding.snapshot_for_query()
     package = binding._snapshot_support()
     watcher, output, problem, cleanup_problem, held = None, None, None, None, False
+    capacity_candidate = None
+    if type(vector_cache) is _PrivateVectorCache and vector_cache._capacity_recording:
+        vector_cache._capacity_observation = None
     try:
         try:
             watcher = (package._reserve_watcher() if watcher_lease is None else
@@ -1515,7 +1547,15 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     raise ValueError('records')
                 # Refuse before another full prefix check or encoding if
                 # the cache cannot hold this cold build or refresh.
-                vector_cache.check_capacity(len(records))
+                try:
+                    vector_cache.check_capacity(len(records))
+                finally:
+                    if vector_cache._capacity_recording and vector_cache._capacity_limit is not None:
+                        try:
+                            capacity_candidate = _verified_capacity_observation(
+                                frozen, projection, report, len(records), vector_cache._capacity_limit)
+                        except Exception:
+                            capacity_candidate = None  # Diagnostic failure never changes the build result.
                 del records
             # A new projection is parsed below; do not keep the verified tree
             # and its record list alive during that allocation.
@@ -1638,6 +1678,10 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 package._release_watcher(watcher)
     signals = [_flat_cancellation(exc) for exc in (problem, cleanup_problem) if exc is not None]
     signals = [signal for signal in signals if signal is not None]
+    if (type(vector_cache) is _PrivateVectorCache and vector_cache._capacity_recording and
+            not signals and not held and cleanup_problem is None and capacity_candidate is not None and
+            (problem is None or (type(problem) is ValueError and str(problem) == 'cache_capacity'))):
+        vector_cache._capacity_observation = capacity_candidate
     if signals:
         problem = cleanup_problem = None
         if len(signals) == 1:
@@ -2865,10 +2909,10 @@ class _SingleManifestOwner:
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
                  '_rotation_type', '_vector_cache_enabled', '_cache_status', '_source_budget',
-                 '_prewarm_generation', '_start_failure')
+                 '_prewarm_generation', '_start_failure', '_capacity_diagnostics')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False,
-                 vector_cache_enabled=False):
+                 vector_cache_enabled=False, capacity_diagnostics=False):
         self._generation = (binding, snapshot, None)
         self._lane = lane
         self._lanes, self._factory, self._timeout = frozenset(lanes), factory, timeout
@@ -2893,6 +2937,7 @@ class _SingleManifestOwner:
         self._source_budget = None
         self._prewarm_generation = None
         self._start_failure = None
+        self._capacity_diagnostics = capacity_diagnostics
 
     @property
     def _binding(self):
@@ -3445,6 +3490,25 @@ class _SingleManifestOwner:
         finally:
             self._lock.release()
 
+    def capacity_diagnostic(self):
+        """Return a prior source-bound scalar observation, or no observation."""
+        if not self._capacity_diagnostics or not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if self._handler is None or type(self._handler._vector_cache) is not _PrivateVectorCache:
+                return None
+            value = self._handler._vector_cache._capacity_observation
+            if type(value) is not tuple or len(value) != 5:
+                return None
+            if self._state == 'READY':
+                return value
+            if (self._state == 'HOLD' and self._start_failure is not None and
+                    self._start_failure[0] == 'HANDLER_BUILD' and value[0] > value[1]):
+                return value
+            return None
+        finally:
+            self._lock.release()
+
     def worker_exit_diagnostic(self):
         """Observe the retained worker, without waiting or changing ownership."""
         if not self._lock.acquire(blocking=False):
@@ -3488,6 +3552,7 @@ class _SingleManifestOwner:
                     try:
                         vector_cache = _load_pinned_vector_cache(self._binding)
                         vector_cache.preflight()
+                        vector_cache._capacity_recording = self._capacity_diagnostics
                         self._cache_status = 'BUILDING'
                     except BaseException:
                         self._cache_status = 'PREFLIGHT_REFUSED'
@@ -3872,7 +3937,7 @@ class _SingleManifestOwner:
 
 def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, worker_factory=None,
                                  shutdown_timeout=None, policy_anchor=None, worker_rotation=False,
-                                 vector_cache_enabled=False):
+                                 vector_cache_enabled=False, capacity_diagnostics=False):
     """Create an inert owner, retaining its worker or explicit rotator on HOLD.
 
     The manifest and lane must already be independently bound. No worker is
@@ -3884,6 +3949,7 @@ def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, work
         if (enabled is not True or type(binding) is not _PrivateBinding
                 or type(worker_factory) is not _ManifestWorkerFactory or type(lane) is not str
                 or lane not in reader._LANES or type(worker_rotation) is not bool or type(vector_cache_enabled) is not bool
+                or type(capacity_diagnostics) is not bool
                 or type(shutdown_timeout) not in (int, float)
                 or not math.isfinite(shutdown_timeout) or not 0 <= shutdown_timeout <= 15):
             raise ValueError('input')
@@ -3899,7 +3965,8 @@ def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, work
         if lane not in names:
             raise ValueError('lane')
         result = _SingleManifestOwner(binding, snapshot, lane, names, worker_factory, float(shutdown_timeout),
-                                      rotation_enabled=worker_rotation, vector_cache_enabled=vector_cache_enabled)
+                                      rotation_enabled=worker_rotation, vector_cache_enabled=vector_cache_enabled,
+                                      capacity_diagnostics=capacity_diagnostics)
         if policy_anchor is not None:
             result._bind_policy_anchor(policy_anchor)
     except Exception:

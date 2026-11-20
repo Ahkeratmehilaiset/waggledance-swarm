@@ -98,6 +98,50 @@ function Update-WdMindManualOwner {
                             '"source_authentication":"UNKNOWN","state":"'+$state+'"}'
                         if($line -ceq $expected){$Record.ReportedState=$state;$matched=$true;break}
                     }
+                    # A capacity observation is a separate, explicitly requested
+                    # informational record. It never changes owner readiness.
+                    if (-not $matched -and $Record.ContainsKey('CapacityEnabled') -and $Record.CapacityEnabled -and
+                        $Record.ReportedState -cin @('STARTING','READY','HOLD') -and
+                        ($null -eq $Record.CapacityDiagnostic -or $Record.CapacityDiagnostic.state -ceq 'UNKNOWN') -and
+                        $line.Contains('"schema":"wd.mind-local-owner-capacity.v1"')) {
+                        # Parse only the exact canonical wire grammar. This also avoids
+                        # PowerShell-version-dependent JSON date coercion.
+                        $afterTime=',"freshness":"UNKNOWN","manifest_sha256":"'+[regex]::Escape($Record.Manifest)+'"'
+                        $suffix=',"same_user_aba":"UNKNOWN","schema":"wd\.mind-local-owner-capacity\.v1",'+
+                            '"scope":"PINNED_PREFIX","source_authentication":"UNKNOWN","source_offset":'
+                        $unknown='\A\{"accepted_chunks":null,"authority":"none","capacity_chunks":null,'+
+                            '"diagnostic_generated_utc":null'+$afterTime+$suffix+'null,"source_prefix_sha256":null,"state":"UNKNOWN"\}\z'
+                        $observed='\A\{"accepted_chunks":(?<accepted>0|[1-9][0-9]{0,18}),"authority":"none",'+
+                            '"capacity_chunks":(?<limit>[1-9][0-9]{0,18}),"diagnostic_generated_utc":'+
+                            '"(?<time>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"'+$afterTime+$suffix+
+                            '(?<offset>[1-9][0-9]{0,18}),"source_prefix_sha256":"(?<hash>[0-9a-f]{64})",'+
+                            '"state":"OBSERVED"\}\z'
+                        $accepted=$null;$limit=$null;$offset=$null;$time=$null;$hash=$null
+                        if([regex]::IsMatch($line,$unknown)) {
+                            if($null -ne $Record.CapacityDiagnostic){throw 'mind_manual_capacity'}
+                            $capacityState='UNKNOWN'
+                        }
+                        else {
+                            $match=[regex]::Match($line,$observed)
+                            if(-not $match.Success){throw 'mind_manual_capacity'}
+                            [long]$acceptedValue=0;[long]$limitValue=0;[long]$offsetValue=0
+                            $culture=[Globalization.CultureInfo]::InvariantCulture
+                            if(-not [long]::TryParse($match.Groups['accepted'].Value,[Globalization.NumberStyles]::None,$culture,[ref]$acceptedValue) -or
+                               -not [long]::TryParse($match.Groups['limit'].Value,[Globalization.NumberStyles]::None,$culture,[ref]$limitValue) -or
+                               -not [long]::TryParse($match.Groups['offset'].Value,[Globalization.NumberStyles]::None,$culture,[ref]$offsetValue)) {throw 'mind_manual_capacity'}
+                            $time=$match.Groups['time'].Value;$when=[DateTimeOffset]::MinValue
+                            if(-not [DateTimeOffset]::TryParseExact($time,"yyyy-MM-dd'T'HH:mm:ss'Z'",$culture,
+                                [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$when) -or
+                               $when -gt [DateTimeOffset]::UtcNow){throw 'mind_manual_capacity'}
+                            $accepted=$acceptedValue;$limit=$limitValue;$offset=$offsetValue;$hash=$match.Groups['hash'].Value
+                            $capacityState='OBSERVED'
+                        }
+                        $Record.CapacityDiagnostic=[pscustomobject]@{schema='wd.mind-local-owner-capacity.v1';authority='none';state=$capacityState;
+                            accepted_chunks=$accepted;capacity_chunks=$limit;manifest_sha256=$Record.Manifest;diagnostic_generated_utc=$time;
+                            scope='PINNED_PREFIX';source_offset=$offset;source_prefix_sha256=$hash;
+                            freshness='UNKNOWN';source_authentication='UNKNOWN';same_user_aba='UNKNOWN';binding_valid='UNKNOWN'}
+                        $matched=$true
+                    }
                     $closeDiagnostic='{"authority":"none","reason":"BOUND_EXPIRED_WORKER_UNCONFIRMED","schema":"wd.mind-local-owner-close-diagnostic.v1"}'
                     if (-not $matched -and $line -ceq $closeDiagnostic -and $Record.Stopping -and
                         $Record.ReportedState -cne 'STOPPED' -and $null -eq $Record.CloseDiagnostic) {
@@ -191,7 +235,7 @@ function Start-WdMindManualOwner {
           [Parameter(Mandatory)][string] $OperatorApprovalReferenceSha256,
           [Parameter(Mandatory)][string] $BridgePythonPath,
           [Parameter(Mandatory)][string] $BridgePythonSha256, [switch] $IncludeStartupDiagnostics,
-          [switch] $IncludeWorkerStageDiagnostics)
+          [switch] $IncludeWorkerStageDiagnostics, [switch] $IncludeCapacityDiagnostics)
     if (-not $Enabled) { throw 'mind_manual_owner_disabled' }
     if ($IncludeStartupDiagnostics -and $IncludeWorkerStageDiagnostics) { throw 'mind_manual_diagnostics_option' }
     $policy=$null; $record=$null; $handle=$null; $registered=$false; $preflightStage='INPUT'
@@ -242,7 +286,7 @@ function Start-WdMindManualOwner {
             ' tools/wd_mind_runtime_child.py -VerifyPackage --mind-local-candidate-owner --policy-path '+
             (& $quote ([IO.Path]::GetFullPath($OperatorPolicyPath)))+' --policy-sha256 '+
             (& $quote $OperatorPolicySha256.ToLowerInvariant())+' --approval-reference-sha256 '+
-            (& $quote $OperatorApprovalReferenceSha256.ToLowerInvariant())+$(if($IncludeWorkerStageDiagnostics){' --start-diagnostics-v2'}elseif($IncludeStartupDiagnostics){' --start-diagnostics'}else{''})+'; exit $LASTEXITCODE'
+            (& $quote $OperatorApprovalReferenceSha256.ToLowerInvariant())+$(if($IncludeWorkerStageDiagnostics){' --start-diagnostics-v2'}elseif($IncludeStartupDiagnostics){' --start-diagnostics'}else{''})+$(if($IncludeCapacityDiagnostics){' --include-capacity-diagnostics'}else{''})+'; exit $LASTEXITCODE'
         $info=New-Object Diagnostics.ProcessStartInfo
         $shell=if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'}
         $info.FileName=Join-Path $PSHOME $shell
@@ -270,6 +314,7 @@ function Start-WdMindManualOwner {
         $record=@{Process=$proc;Manifest=$ExpectedManifestHash.ToLowerInvariant();State='HOLD';ReportedState='';
             Stopping=$false;Invalid=$false;DiagnosticsEnabled=[bool]($IncludeStartupDiagnostics -or $IncludeWorkerStageDiagnostics);
             WorkerDiagnosticsEnabled=[bool]$IncludeWorkerStageDiagnostics;DiagnosticCount=0;StartDiagnostic=$null;CloseDiagnostic=$null;
+            CapacityEnabled=[bool]$IncludeCapacityDiagnostics;CapacityDiagnostic=$null;
             OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);Line=(New-Object IO.MemoryStream);
             OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false}
         $handle=[pscustomobject]@{schema='wd.mind-manual-owner-handle.v1';Token=$token;authority='none'}
@@ -322,6 +367,15 @@ function Get-WdMindManualOwnerCloseDiagnostic {
     if(-not $record.Invalid){Update-WdMindManualOwner $record}
     if($record.Invalid){throw 'mind_manual_status'}
     return $record.CloseDiagnostic
+}
+
+function Get-WdMindManualOwnerCapacityDiagnostic {
+    [CmdletBinding()] param([Parameter(Mandatory)] $Owner)
+    $record=Get-WdMindManualOwnerRecord $Owner
+    if(-not $record.ContainsKey('CapacityEnabled') -or -not $record.CapacityEnabled){throw 'mind_manual_diagnostics_disabled'}
+    if(-not $record.Invalid){Update-WdMindManualOwner $record}
+    if($record.Invalid){throw 'mind_manual_status'}
+    return $record.CapacityDiagnostic
 }
 
 function Stop-WdMindManualOwner {

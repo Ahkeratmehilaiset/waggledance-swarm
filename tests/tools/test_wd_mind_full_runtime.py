@@ -80,6 +80,64 @@ def test_startup_source_budget_default_is_enabled():
     assert runtime._STARTUP_OWNER_SOURCE_BUDGET_ENABLED is True
 
 
+@pytest.mark.parametrize('limit', [1, 2, 3])
+def test_capacity_diagnostic_uses_verified_synthetic_projection(tmp_path, monkeypatch, limit):
+    from test_wd_mind_cache_builder_integration import _synthetic_case
+    from tools import wd_mind_vector_cache as cache
+    audit = tmp_path / '.codex-audit'
+    audit.mkdir()
+    case = _synthetic_case(audit, monkeypatch)
+    binding, projection = case.snapshot()
+    assert projection['messages']['accepted'] == 2
+    case.adapter._capacity_recording = True
+    monkeypatch.setattr(cache, '_MAX_ROWS', limit)
+    if limit == 1:
+        from tools import wd_mind_content_snapshot_package as package
+        monkeypatch.setattr(package, '_immutable_prefix', lambda *_a, **_k: pytest.fail('extra source pass'))
+        with pytest.raises(ValueError, match='snapshot_build_refused'):
+            case.build(binding)
+        assert not case.passages and not case.cache_path.exists()
+    else:
+        case.build(binding)
+    accepted, capacity, digest, offset, observed = case.adapter._capacity_observation
+    decision = json.loads(binding.snapshot_for_query()['decision_bytes'])['source_prefix']
+    assert (accepted, capacity, digest, offset) == (2, limit, decision['sha256'], decision['offset'])
+    assert observed.endswith('Z') and len(observed) == 20
+
+
+def test_capacity_diagnostic_is_unknown_if_scan_did_not_complete(tmp_path, monkeypatch):
+    from test_wd_mind_cache_builder_integration import _synthetic_case
+    audit = tmp_path / '.codex-audit'
+    audit.mkdir()
+    case = _synthetic_case(audit, monkeypatch)
+    binding, _ = case.snapshot()
+    case.adapter._capacity_recording = True
+    case.adapter._capacity_observation = (1, 1, 'a' * 64, 1, '2026-01-01T00:00:00Z')
+    monkeypatch.setattr(reader, '_verified_complete', lambda *_a, **_k: (_ for _ in ()).throw(ValueError('source')))
+    with pytest.raises(ValueError, match='snapshot_build_refused'):
+        case.build(binding)
+    assert case.adapter._capacity_observation is None
+
+
+def test_capacity_diagnostic_owner_retains_hold_and_default_off():
+    import threading
+    from types import SimpleNamespace
+    from tools import wd_mind_full_runtime as runtime
+    cache = object.__new__(runtime._PrivateVectorCache)
+    cache._capacity_observation = (3, 2, 'a' * 64, 10, '2026-01-01T00:00:00Z')
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._generation = (None, None, SimpleNamespace(_vector_cache=cache))
+    owner._lock = threading.Lock()
+    owner._state, owner._start_failure = 'HOLD', ('HANDLER_BUILD', 'FullRuntimeRefused')
+    owner._capacity_diagnostics = False
+    assert owner.capacity_diagnostic() is None
+    owner._capacity_diagnostics = True
+    assert owner.capacity_diagnostic() == cache._capacity_observation
+    assert owner._state == 'HOLD'
+    owner._start_failure = ('SOURCE_BUDGET', 'ValueError')
+    assert owner.capacity_diagnostic() is None
+
+
 @pytest.fixture
 def fake_snapshot_owner_orchestration(monkeypatch):
     """Test ownership with an intentionally incomplete synthetic snapshot."""

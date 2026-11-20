@@ -84,11 +84,17 @@ class Adapter:
 class Service:
     def __init__(self):
         self.close_observed = False
+        self.status_calls = 0
     def start(self):
         event('service_start')
         while mode == 'service_start_hold' and not gate('service_start'):
             time.sleep(0.01)
     def status(self):
+        self.status_calls += 1
+        if self.status_calls == 2:
+            # The owner loop already consumed an earlier RUNNING observation.
+            # This test-only event is not a public readiness claim.
+            event('service_running')
         return {'state': 'RUNNING'}
     def close(self, *, timeout):
         assert timeout == 0
@@ -111,6 +117,10 @@ def factory(**kw):
     adapter._owner, adapter._state = Adapter(), 'READY'
     if kw.get('_admission') is not None:
         kw['_admission'].bind_owner(adapter)
+        # Read through the owning guard; external byte-range reads are locked.
+        with kw['_admission']._lock:
+            assert kw['_admission']._guard._read() == child._OWNER_RESERVATION_MAGIC + b'R'
+        event('reservation_held')
     return adapter
 def adapter_status(self):
     if mode == 'building' and not gate('build'):
@@ -152,6 +162,8 @@ class Actor:
         self.observed = {"event": [], "state": []}
         self.pending = queue.Queue()
         self.readers = []
+        self.reader_eof = {"state": threading.Event(), "event": threading.Event()}
+        self.reader_errors = queue.Queue()
         allowed = {'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'PATH', 'PATHEXT',
                    'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA'}
         environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
@@ -174,8 +186,15 @@ class Actor:
             self.eof()
 
     def _drain(self, name, stream):
-        for raw in iter(stream.readline, b""):
-            self.pending.put((name, raw))
+        try:
+            while True:
+                raw = stream.readline()
+                if raw == b"":
+                    self.reader_eof[name].set()
+                    return
+                self.pending.put((name, raw))
+        except BaseException as exc:
+            self.reader_errors.put((name, exc))
 
     def collect(self):
         while True:
@@ -203,11 +222,27 @@ class Actor:
                 pass
 
     def finish(self):
-        code = self.proc.wait(timeout=10)  # Timeout never invokes kill/terminate.
+        timed_out = False
+        try:
+            code = self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            # Release only this fixture's cooperative gates; retain the
+            # process until it actually exits, even if that has no deadline.
+            self.release_test_gates()
+            while True:
+                try:
+                    code = self.proc.wait(timeout=1)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
         for reader in self.readers:
-            reader.join(timeout=2)
-            assert not reader.is_alive(), "Actor pipe still has an unobserved writer"
+            while reader.is_alive():
+                reader.join(timeout=0.25)
         self.collect()
+        assert self.reader_errors.empty(), "Actor output reader failed; EOF not established"
+        assert all(event.is_set() for event in self.reader_eof.values()), "Actor pipe EOF not established"
+        assert not timed_out, "Synthetic actor exceeded its deadline; exit and EOF subsequently observed"
         return code
 
     def release_test_gates(self):
@@ -248,20 +283,55 @@ def refused(actor):
     assert actor.observed["state"] == []
 
 
+def clean_owner_exit(actor, slot):
+    actor.eof()
+    assert actor.finish() == 0
+    assert (slot / MARKER).read_bytes() == MAGIC + b"C"
+    states = [row['state'] for row in actor.observed['state']]
+    assert states[0] == 'STARTING' and states[-1] == 'STOPPED'
+    assert 'READY' not in states and all(state == 'HOLD' for state in states[1:-1])
+    assert {'event': 'owner_stopped'} in actor.observed['event']
+    if {'event': 'service_start'} in actor.observed['event']:
+        assert {'event': 'service_stopped'} in actor.observed['event']
+
+
+def test_finish_timeout_retains_actor_until_exit_and_reports_failure():
+    class SyntheticProcess:
+        def __init__(self): self.calls = 0
+        def wait(self, *, timeout):
+            self.calls += 1
+            if self.calls == 1:
+                raise subprocess.TimeoutExpired('synthetic', timeout)
+            return 0
+    actor = Actor.__new__(Actor)
+    actor.proc = SyntheticProcess()
+    actor.readers = []
+    actor.reader_eof = {'state': threading.Event(), 'event': threading.Event()}
+    for evidence in actor.reader_eof.values(): evidence.set()
+    actor.reader_errors = queue.Queue()
+    released = []
+    actor.release_test_gates = lambda: released.append(True)
+    actor.collect = lambda: None
+    with pytest.raises(AssertionError, match='exceeded its deadline'):
+        actor.finish()
+    assert released == [True] and actor.proc.calls == 2
+
+
 @pytest.mark.parametrize("phase", ["building", "ready"])
 @pytest.mark.parametrize("manifest", ["a" * 64, "b" * 64])
 @pytest.mark.parametrize("route", ["owner", "query"])
 def test_fixed_cli_excludes_second_process_before_factory(tmp_path, actors, phase, manifest, route):
     slot = seed(tmp_path)
     first = actors(slot, tmp_path / "first", mode=phase)
-    first.wait_for("state", "STARTING" if phase == "building" else "READY")
+    first.wait_for("state", "STARTING")
+    first.wait_for("event", "reservation_held")
+    if phase == "ready":
+        first.wait_for("event", "service_running")
     second = actors(slot, tmp_path / "second", manifest=manifest, route=route)
     refused(second)
     assert first.proc.poll() is None
     assert [r["event"] for r in first.collect()["event"]].count("owner_start") == 1
-    first.eof()
-    assert first.finish() == 0
-    assert (slot / MARKER).read_bytes() == MAGIC + b"C"
+    clean_owner_exit(first, slot)
 
 
 @pytest.mark.parametrize("mode,entered", [
@@ -276,16 +346,15 @@ def test_fixed_cli_retains_reservation_until_all_cleanup_finishes(tmp_path, acto
     first = actors(slot, tmp_path / "first", mode=mode)
     first.wait_for("event", "service_start")
     if mode != "service_start_hold":
-        first.wait_for("state", "READY")
+        first.wait_for("event", "service_running")
     first.eof()
     first.wait_for("event", entered)
     first.wait_for("state", "HOLD")
+    first.wait_for("event", "reservation_held")
     refused(actors(slot, tmp_path / "second", manifest="b" * 64))
     assert first.proc.poll() is None
     first.release_test_gates()
-    assert first.finish() == 0
-    assert (slot / MARKER).read_bytes() == MAGIC + b"C"
-    assert first.observed["state"][-1]["state"] == "STOPPED"
+    clean_owner_exit(first, slot)
 
 
 @pytest.mark.parametrize("manifest", ["a" * 64, "b" * 64])
@@ -303,19 +372,22 @@ def test_clean_eof_allows_next_generation_guarded_owner(tmp_path, actors):
     slot = seed(tmp_path)
     for number, manifest in enumerate(("a" * 64, "b" * 64)):
         actor = actors(slot, tmp_path / str(number), manifest=manifest)
-        actor.wait_for("state", "READY")
-        actor.eof()
-        assert actor.finish() == 0
-        assert (slot / MARKER).read_bytes() == MAGIC + b"C"
+        actor.wait_for("event", "service_running")
+        actor.wait_for("event", "reservation_held")
+        clean_owner_exit(actor, slot)
 
 
 def test_independent_synthetic_root_is_not_falsely_blocked(tmp_path, actors):
     first_slot, second_slot = seed(tmp_path, "slot-a"), seed(tmp_path, "slot-b")
     first = actors(first_slot, tmp_path / "first")
-    first.wait_for("state", "READY")
+    first.wait_for("event", "service_running")
     second = actors(second_slot, tmp_path / "second", manifest="b" * 64)
-    second.wait_for("state", "READY")
+    second.wait_for("event", "service_running")
     assert first.proc.poll() is None and second.proc.poll() is None
+    first.wait_for("event", "reservation_held")
+    second.wait_for("event", "reservation_held")
+    clean_owner_exit(first, first_slot)
+    clean_owner_exit(second, second_slot)
 
 
 @pytest.mark.parametrize("state", [None, b"R", b"X"])

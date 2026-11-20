@@ -149,7 +149,18 @@ def test_cache_capacity_refuses_before_encoding(synthetic, monkeypatch):
     old = synthetic.build(original_binding)
     original_cache = synthetic.cache_path.read_bytes()
     monkeypatch.setattr(cache, '_MAX_ROWS', 1)
-    binding, _ = synthetic.snapshot()
+    binding, projection = synthetic.snapshot()
+    assert len(projection['messages']['records']) == 2
+    observed, captures = [], []
+    original_check = runtime._PrivateVectorCache.check_capacity
+    def checked(adapter, count):
+        try:
+            return original_check(adapter, count)
+        except ValueError as exc:
+            observed.append((count, str(exc)))
+            raise
+    monkeypatch.setattr(runtime._PrivateVectorCache, 'check_capacity', checked)
+    monkeypatch.setattr(package, '_immutable_prefix', lambda *_: captures.append(True))
     encoded = []
     def encode(values):
         encoded.extend(values)
@@ -159,6 +170,7 @@ def test_cache_capacity_refuses_before_encoding(synthetic, monkeypatch):
             binding, encode, old.encoder_binding, fixtures._sha(old.encoder_binding), 5, None,
             vector_cache=synthetic.adapter)
     assert encoded == []
+    assert observed == [(2, 'cache_capacity')] and captures == []
     assert synthetic.cache_path.read_bytes() == original_cache
 
 

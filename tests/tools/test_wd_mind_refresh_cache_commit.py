@@ -14,6 +14,7 @@ import pytest
 
 from tools import wd_mind_full_runtime as runtime
 from tools import wd_mind_vector_cache as cache_module
+from tools import wd_mind_content_snapshot_package as package
 from test_wd_mind_cache_builder_integration import _synthetic_case, VECTOR, fixtures
 from test_wd_mind_owner_source_budget import flat_consumer_case, synthetic_checkout_pins
 from test_wd_mind_owner_source_budget import source_fixtures, _instrument_source_streams, _full_fixtures
@@ -112,10 +113,23 @@ def test_refresh_cache_capacity_refuses_before_encoding(refresh_case, monkeypatc
     old_cache = case.cache_path.read_bytes()
     previous = owner._generation
     append(case, 'synthetic over-capacity passage')
+    _, projection = case.snapshot()
+    assert len(projection['messages']['records']) == 3
     monkeypatch.setattr(cache_module, '_MAX_ROWS', 2)
+    observed, captures = [], []
+    original_check = runtime._PrivateVectorCache.check_capacity
+    def checked(adapter, count):
+        try:
+            return original_check(adapter, count)
+        except ValueError as exc:
+            observed.append((count, str(exc)))
+            raise
+    monkeypatch.setattr(runtime._PrivateVectorCache, 'check_capacity', checked)
+    monkeypatch.setattr(package, '_immutable_prefix', lambda *_: captures.append(True))
     with pytest.raises(runtime.FullRuntimeRefused):
         owner._refresh_generation(enabled=True)
     assert case.passages == []
+    assert observed == [(3, 'cache_capacity')] and captures == []
     assert owner._state == 'HOLD' and owner._generation is previous
     assert case.cache_path.read_bytes() == old_cache
 

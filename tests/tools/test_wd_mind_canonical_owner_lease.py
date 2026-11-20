@@ -295,7 +295,9 @@ def test_owner_tolerates_busy_while_started_service_becomes_ready(monkeypatch, s
     from tools import wd_mind_full_runtime as runtime
     from tools import wd_mind_runtime_process as process
 
-    permit_service, ready = threading.Event(), threading.Event()
+    permit_service, running_observed, explicit_stop = (threading.Event() for _ in range(3))
+    stop_observed, stop_timed_out, start_attempted, failure_injected = (threading.Event() for _ in range(4))
+    closes = []
     class Adapter:
         _owner = object()
         calls = 0
@@ -306,18 +308,38 @@ def test_owner_tolerates_busy_while_started_service_becomes_ready(monkeypatch, s
                 permit_service.set()
                 return {'state': 'BUSY'}
             return {'state': 'READY', 'owned': True}
-        def close(self): return {'state': 'STOPPED', 'owned': False}
+        def close(self):
+            closes.append('owner')
+            return {'state': 'STOPPED', 'owned': False}
     class Service:
         def start(self):
+            start_attempted.set()
             assert permit_service.wait(3)
-            if service_fails: raise RuntimeError('synthetic service failure')
-        def status(self): return {'state': 'RUNNING'}
-        def close(self, timeout): return {'state': 'STOPPED'}
+            if service_fails:
+                failure_injected.set()
+                raise RuntimeError('synthetic service failure')
+        def status(self):
+            self.calls = getattr(self, 'calls', 0) + 1
+            if self.calls == 2:
+                # First RUNNING status was already consumed by the owner loop.
+                running_observed.set()
+                explicit_stop.set()
+            return {'state': 'RUNNING'}
+        def close(self, timeout):
+            closes.append('service')
+            return {'state': 'STOPPED'}
     class Control:
-        def read(self, size): ready.wait(1); return b'S'
+        def read(self, size):
+            if not explicit_stop.wait(5):
+                stop_timed_out.set()
+                raise TimeoutError('synthetic STOP not signalled')
+            stop_observed.set()
+            return b'S'
     class Output(io.BytesIO):
         def write(self, value):
-            if b'"state":"READY"' in bytes(value): ready.set()
+            if service_fails and b'"state":"HOLD"' in bytes(value):
+                # Trigger explicit synthetic STOP after service failure is reported.
+                explicit_stop.set()
             return super().write(value)
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', True)
     monkeypatch.setattr(child, '_read_local_policy_frame', lambda *a, **k: b'synthetic')
@@ -325,11 +347,20 @@ def test_owner_tolerates_busy_while_started_service_becomes_ready(monkeypatch, s
     monkeypatch.setattr(process, 'local_candidate_pipe_name', lambda **kw: 'synthetic')
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **kw: Service())
     output = Output()
+    cleanup = {}
     result = child._local_candidate_owner_entry(control_stream=Control(), output_stream=output,
         bundle_root='synthetic', expected_manifest_sha256='a' * 64, policy_sha256='b' * 64,
-        approval_reference_sha256='c' * 64, _cleanup_evidence={})
+        approval_reference_sha256='c' * 64, _cleanup_evidence=cleanup)
     assert result == (2 if service_fails else 0)
-    assert ready.is_set() is (not service_fails)
+    assert start_attempted.is_set() and permit_service.is_set()
+    assert failure_injected.is_set() is service_fails
+    assert running_observed.is_set() is (not service_fails)
+    assert stop_observed.is_set() and not stop_timed_out.is_set()
+    assert sorted(closes) == ['owner', 'service'] and cleanup.get('clean') is True
+    statuses = [json.loads(line)['state'] for line in output.getvalue().splitlines()]
+    assert statuses[0] == 'STARTING' and statuses[-1] == 'STOPPED' and 'READY' not in statuses
+    if service_fails:
+        assert 'HOLD' in statuses
 
 
 @pytest.mark.parametrize('diagnostic_flag', ['--start-diagnostics', '--start-diagnostics-v2'])

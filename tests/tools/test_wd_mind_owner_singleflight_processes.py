@@ -35,7 +35,16 @@ reserve = child._reserve_local_owner
 def checked_reserve(path):
     if path != audit:
         raise RuntimeError('unexpected audit root')
-    return reserve(path)
+    emit('synthetic_reservation_enter')
+    try:
+        guard = reserve(path)
+    except child.LaunchRefused:
+        emit('synthetic_reservation_refused')
+        raise
+    # The owning descriptor may read its reserved marker; another process
+    # must not read the byte range while the Windows lock is held.
+    emit('synthetic_reservation_acquired', marker_reserved=(guard._read() == child._OWNER_RESERVATION_MAGIC + b'R'))
+    return guard
 child._reserve_local_owner = checked_reserve
 def emit(event, **data):
     print(json.dumps(dict(event=event, **data)), flush=True)
@@ -68,7 +77,13 @@ class Owner:
         return {'state': 'STOPPED', 'owned': False}
 class Service:
     def start(self): pass
-    def status(self): return {'state': 'RUNNING'}
+    def status(self):
+        self.status_calls = getattr(self, 'status_calls', 0) + 1
+        if self.status_calls == 2:
+            # The first RUNNING result was already consumed by the real owner
+            # loop. This synthetic event is not a public READY status.
+            emit('synthetic_service_running')
+        return {'state': 'RUNNING'}
     def close(self, *, timeout): return {'state': 'STOPPED'}
 def factory(**kw):
     adapter = child._LocalManifestQuery(
@@ -143,20 +158,23 @@ class Actor:
             except queue.Empty:
                 pytest.fail(f'synthetic actor {self.process.pid} did not reach {event}; not killed')
             self.events.append(item)
-            if item.get('event') == event or (event == 'ready' and item.get('state') == 'READY'):
+            if item.get('event') == event:
                 return item
             if item.get('event') == 'eof':
                 pytest.fail('actor exited early: ' + ''.join(self.errors))
 
     def request_stop(self):
+        sent = False
         if self.process.stdin is not None and not self.process.stdin.closed:
             try:
                 self.process.stdin.write('S')
                 self.process.stdin.flush()
+                sent = True
             except (BrokenPipeError, OSError):
                 pass
             finally:
                 self.process.stdin.close()
+        return sent
 
     def wait_clean(self):
         self.request_stop()
@@ -188,28 +206,45 @@ def test_second_fixed_cli_refuses_before_build_during_owned_phase(
         first.until('build_enter')
         if phase == 'cleanup_hold':
             (case / 'build-complete').touch()
-            first.until('ready')
-            first.request_stop()
+            first.until('synthetic_service_running')
+            assert first.request_stop(), 'first actor did not receive explicit STOP'
             first.until('owner_hold')
+        assert first.process.poll() is None
+        assert [item.get('event') for item in first.events
+                if str(item.get('event', '')).startswith('synthetic_reservation_')] == [
+                    'synthetic_reservation_enter', 'synthetic_reservation_acquired']
+        assert next(item for item in first.events
+                    if item.get('event') == 'synthetic_reservation_acquired')['marker_reserved'] is True
         second = Actor(case, second_manifest, second_route)
         result = second.until('done')
         assert result['result'] == 2
         assert not any(item.get('event') == 'build_enter' for item in second.events)
+        reservation_events = [item.get('event') for item in second.events
+                              if str(item.get('event', '')).startswith('synthetic_reservation_')]
+        if second_route == 'owner':
+            assert reservation_events == ['synthetic_reservation_enter', 'synthetic_reservation_refused']
+        else:
+            # The query CLI refuses before reservation; this is not evidence
+            # that a query encountered an already-owned reservation.
+            assert reservation_events == []
         second.wait_clean()
+        assert first.process.poll() is None
         (case / 'build-complete').touch()
         (case / 'cleanup-complete').touch()
         if phase == 'building':
-            first.until('ready')
-            first.request_stop()
+            first.until('synthetic_service_running')
+            assert first.request_stop(), 'first actor did not receive explicit STOP'
         assert first.until('done')['result'] == 0
         first.wait_clean()
         assert (audit / MARKER).read_bytes() == MAGIC + b'C'
         replacement = Actor(case, second_manifest, 'owner')
         replacement.until('build_enter')
-        replacement.until('ready')
-        replacement.request_stop()
+        replacement.until('synthetic_service_running')
+        assert replacement.request_stop(), 'replacement actor did not receive explicit STOP'
         assert replacement.until('done')['result'] == 0
         replacement.wait_clean()
+        for actor in (first, second, replacement):
+            assert not any(item.get('state') == 'READY' for item in actor.events)
     finally:
         (case / 'build-complete').touch()
         (case / 'cleanup-complete').touch()

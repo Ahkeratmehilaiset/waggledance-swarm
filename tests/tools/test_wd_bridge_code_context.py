@@ -249,7 +249,22 @@ def _intra_repo_closure(entrypoints):
         seen.add(relative)
         tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         modules: set[str] = set()
+        # This function is invoked only by the separately manifest-verified E5
+        # runtime bootstrap. Its site-packages are not bridge dependencies.
+        # Do not exempt module-level imports or imports in any other file.
+        isolated_imports = set()
+        if relative == "tools/wd_mind_e5_worker.py":
+            mains = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"]
+            if len(mains) == 1:
+                isolated_imports = {
+                    node for node in ast.walk(mains[0])
+                    if (isinstance(node, ast.ImportFrom) and node.level == 0
+                        and node.module == "sentence_transformers" and len(node.names) == 1
+                        and node.names[0].name == "SentenceTransformer" and node.names[0].asname is None)
+                }
         for node in ast.walk(tree):
+            if node in isolated_imports:
+                continue
             if isinstance(node, ast.Import):
                 modules.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and not node.level:
@@ -316,6 +331,33 @@ def test_mind_smoke_closure_follows_unlisted_transitive_and_flat_imports(tmp_pat
     foreign.parent.mkdir(parents=True)
     foreign.write_text("", encoding="utf-8")
     assert _module_relative("sandbox.other.example") is None
+
+
+def test_e5_worker_dependency_exception_is_limited_to_worker(tmp_path, monkeypatch):
+    sources = {
+        'tools/wd_mind_e5_worker.py': 'def main():\n    from sentence_transformers import SentenceTransformer\n',
+        'tools/ordinary_bridge.py': 'from sentence_transformers import SentenceTransformer\n',
+    }
+    for relative, text in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+    monkeypatch.setattr(sys.modules[__name__], 'ROOT', tmp_path)
+    _, worker_dependencies = _intra_repo_closure(['tools/wd_mind_e5_worker.py'])
+    assert worker_dependencies == set()
+    _, other_dependencies = _intra_repo_closure(['tools/ordinary_bridge.py'])
+    assert other_dependencies == {'sentence_transformers'}
+    worker = tmp_path / 'tools/wd_mind_e5_worker.py'
+    worker.write_text('from sentence_transformers import SentenceTransformer\n', encoding='utf-8')
+    _, top_level_dependencies = _intra_repo_closure(['tools/wd_mind_e5_worker.py'])
+    assert top_level_dependencies == {'sentence_transformers'}
+    worker.write_text('def main():\n    import sentence_transformers\n', encoding='utf-8')
+    _, different_import = _intra_repo_closure(['tools/wd_mind_e5_worker.py'])
+    assert different_import == {'sentence_transformers'}
+    worker.write_text('def main():\n    from sentence_transformers import SentenceTransformer\n'
+                      'def other():\n    from sentence_transformers import SentenceTransformer\n', encoding='utf-8')
+    _, other_function_import = _intra_repo_closure(['tools/wd_mind_e5_worker.py'])
+    assert other_function_import == {'sentence_transformers'}
 
 
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():

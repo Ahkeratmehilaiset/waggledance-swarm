@@ -9,9 +9,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -599,6 +601,51 @@ if((Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $pin.Name) -Algorithm SHA
     assert result['view_json'] == ''
 
 
+def _ensure_safe_test_audit_root(audit):
+    """Create the test-only audit root without accepting a preexisting link."""
+    try:
+        metadata = audit.lstat()
+    except FileNotFoundError:
+        try:
+            audit.mkdir()
+        except FileExistsError:
+            # Another test may have created it between lstat and mkdir.
+            pass
+        metadata = audit.lstat()
+    reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+    assert not getattr(metadata, 'st_file_attributes', 0) & reparse
+    assert stat.S_ISDIR(metadata.st_mode)
+    assert audit.is_dir() and audit.resolve(strict=True) == audit.absolute()
+    return audit
+
+
+def test_audit_root_setup_creates_and_reuses_plain_directory(tmp_path):
+    audit = tmp_path / '.codex-audit'
+    assert _ensure_safe_test_audit_root(audit) == audit
+    assert _ensure_safe_test_audit_root(audit) == audit
+
+
+def test_audit_root_setup_rejects_regular_file(tmp_path):
+    audit = tmp_path / '.codex-audit'
+    audit.write_bytes(b'synthetic')
+    with pytest.raises(AssertionError):
+        _ensure_safe_test_audit_root(audit)
+    assert audit.read_bytes() == b'synthetic'
+
+
+def test_audit_root_setup_rejects_reparse_before_following():
+    class ReparseAudit:
+        def lstat(self):
+            return SimpleNamespace(st_mode=stat.S_IFDIR,
+                                   st_file_attributes=getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400))
+
+        def __getattr__(self, name):
+            pytest.fail('must not follow or create a preexisting reparse point: ' + name)
+
+    with pytest.raises(AssertionError):
+        _ensure_safe_test_audit_root(ReparseAudit())
+
+
 @WINDOWS
 @pytest.mark.parametrize('case', ['traversal', 'ancestor_junction', 'audit_file', 'target_directory', 'valid'])
 def test_receipt_path_is_verified_before_any_creation_or_write(tmp_path, case):
@@ -611,8 +658,7 @@ def test_receipt_path_is_verified_before_any_creation_or_write(tmp_path, case):
     elif case == 'ancestor_junction':
         # Keep this link entirely outside pytest's automatic recursive basetemp
         # cleanup. On interruption its UUID root is retained, never auto-traversed.
-        audit = ROOT / '.codex-audit'
-        assert audit.is_dir() and audit.resolve(strict=True) == audit.absolute()
+        audit = _ensure_safe_test_audit_root(ROOT / '.codex-audit')
         owned = audit / ('direct-junction-fixture-' + uuid.uuid4().hex)
         assert owned.parent == audit and not owned.exists()
         owned.mkdir()

@@ -52,6 +52,32 @@ def _packaged_python() -> list[str]:
     return [entry for entry in _definition()["python_files"] if entry.endswith(".py")]
 
 
+def test_mind_retained_query_is_packaged_and_smoke_imported():
+    definition = _definition()
+    assert 'tools/wd_mind_retained_query.py' in definition['python_files']
+    assert 'tools.wd_mind_retained_query' in definition['import_smoke']['package_modules']
+
+
+def test_mind_runtime_child_is_an_explicit_packaged_entrypoint():
+    definition = _definition()
+    assert 'tools/wd_mind_runtime_child.py' in definition['python_files']
+    assert definition['python_entrypoints']['mind_runtime_child'] == 'tools/wd_mind_runtime_child.py'
+
+
+def test_mind_rotating_client_is_packaged_and_smoke_imported():
+    definition = _definition()
+    assert 'tools/wd_mind_e5_rotating_client.py' in definition['python_files']
+    assert 'tools.wd_mind_e5_rotating_client' in definition['import_smoke']['package_modules']
+
+
+def test_mind_vector_cache_is_packaged_and_smoke_imported_without_entrypoint():
+    definition = _definition()
+    path = 'tools/wd_mind_vector_cache.py'
+    assert definition['python_files'].count(path) == 1
+    assert definition['import_smoke']['package_modules'].count('tools.wd_mind_vector_cache') == 1
+    assert path not in definition['python_entrypoints'].values()
+
+
 def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
     definition = _definition()
     capability = definition["manual_execution_capability"]

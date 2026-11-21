@@ -1058,7 +1058,7 @@ def _select_local_source_record(reader, records, hit, used):
 
 
 _LOCAL_START_REASONS = frozenset(('BINDING_CHECK', 'CACHE_PREFLIGHT', 'WORKER_SETUP',
-    'HANDLER_BUILD', 'CACHE_RESULT', 'FINAL_BINDING_CHECK', 'SOURCE_PREWARM', 'SOURCE_BUDGET',
+    'HANDLER_BUILD', 'CACHE_CAPACITY', 'CACHE_RESULT', 'FINAL_BINDING_CHECK', 'SOURCE_PREWARM', 'SOURCE_BUDGET',
     'ADMISSION', 'POLICY', 'RUNTIME_BINDING', 'WORKER_FACTORY', 'OWNER_CREATE',
     'EXTERNAL_POLICY', 'OWNER_START', 'OWNER_NOT_READY', 'OWNER_ENTRY', 'IMPORT', 'THREAD_START', 'UNKNOWN'))
 _LOCAL_START_TYPES = frozenset(('ValueError', 'TypeError', 'RuntimeError', 'OSError',
@@ -1181,9 +1181,14 @@ class _LocalManifestQuery:
             if self._cancel.is_set():
                 return
             stage = 'RUNTIME_BINDING'
-            binding = runtime.assemble_full_runtime(enabled=True, bundle_root=self._bundle,
-                expected_manifest_sha256=self._manifest, identifier_policy_bytes=self._policy,
-                expected_identifier_policy_sha256=self._policy_sha)
+            try:
+                binding = runtime.assemble_full_runtime(enabled=True, bundle_root=self._bundle,
+                    expected_manifest_sha256=self._manifest, identifier_policy_bytes=self._policy,
+                    expected_identifier_policy_sha256=self._policy_sha)
+            except runtime._EagerSourceBudgetRefused as exc:
+                if type(exc) is runtime._EagerSourceBudgetRefused:
+                    stage = 'SOURCE_BUDGET'
+                raise
             if self._cancel.is_set():
                 return
             stage = 'WORKER_FACTORY'

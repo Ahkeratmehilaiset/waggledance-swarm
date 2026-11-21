@@ -68,6 +68,30 @@ def _owner(monkeypatch, tmp_path, *, vector_cache_enabled=False):
     return owner, launches
 
 
+@pytest.mark.parametrize('valid_limit', [True, False])
+def test_owner_cache_capacity_start_diagnostic(monkeypatch, tmp_path, valid_limit):
+    from test_wd_mind_cache_builder_integration import _synthetic_case, _synthetic_verified_row_count
+    owner, _ = _owner(monkeypatch, tmp_path, vector_cache_enabled=True)
+    audit = tmp_path / '.codex-audit'
+    audit.mkdir()
+    case = _synthetic_case(audit, monkeypatch)
+    binding, _ = case.snapshot()
+    owner._binding, owner._snapshot = binding, binding.snapshot_for_query()
+    _synthetic_verified_row_count(monkeypatch, 250001)
+    if not valid_limit:
+        monkeypatch.setattr(case.adapter._module, '_MAX_ROWS', 250001)
+    monkeypatch.setattr(case.adapter._module, 'preflight', lambda path: 'MISSING')
+    monkeypatch.setattr(runtime, '_load_pinned_vector_cache', lambda _: case.adapter)
+    from tools import wd_mind_e5_snapshot_adapter as adapter_module
+    provider = SimpleNamespace(passage=lambda values: case.passages.extend(values),
+        encoder_binding_bytes=case.encoder, encoder_binding_sha256=runtime.reader._sha(case.encoder))
+    monkeypatch.setattr(adapter_module, 'create_single_flat_adapter', lambda **kwargs: provider)
+    assert owner.start()['state'] == 'HOLD'
+    reason, typename = ('CACHE_CAPACITY', 'UNKNOWN') if valid_limit else ('HANDLER_BUILD', 'FullRuntimeRefused')
+    assert owner.start_diagnostic() == {'reason': reason, 'exception_type': typename, 'authority': 'none'}
+    assert case.passages == [] and not case.cache_path.exists()
+
+
 def test_preworker_failure_keeps_exact_legacy_status_and_optin_reason(monkeypatch, tmp_path):
     owner, launches = _owner(monkeypatch, tmp_path, vector_cache_enabled=True)
     class Cache:
@@ -410,9 +434,10 @@ def test_cli_legacy_wire_stays_exact_and_diagnostic_is_optin(monkeypatch, optin)
 
 
 @pytest.mark.parametrize('mode', ['off', 'v1', 'v2'])
-def test_cli_source_budget_preflight_reason_is_fixed_and_optin(monkeypatch, mode):
+@pytest.mark.parametrize('reason', ['SOURCE_BUDGET', 'CACHE_CAPACITY'])
+def test_cli_source_budget_preflight_reason_is_fixed_and_optin(monkeypatch, mode, reason):
     control, output, private = _cli_fixture(monkeypatch, delayed=False)
-    output.owner.start_diagnostic = lambda: {'reason':'SOURCE_BUDGET',
+    output.owner.start_diagnostic = lambda: {'reason':reason,
         'exception_type':'UNKNOWN', 'authority':'none'}
     args = dict(control_stream=control, output_stream=output, bundle_root='synthetic',
                 expected_manifest_sha256='a'*64, policy_sha256='b'*64, approval_reference_sha256='c'*64,
@@ -423,7 +448,7 @@ def test_cli_source_budget_preflight_reason_is_fixed_and_optin(monkeypatch, mode
     if mode == 'off':
         assert diagnostics == []
     else:
-        expected = {'schema':'wd.mind-local-owner-start-diagnostic.' + mode, 'reason':'SOURCE_BUDGET',
+        expected = {'schema':'wd.mind-local-owner-start-diagnostic.' + mode, 'reason':reason,
                     'exception_type':'UNKNOWN', 'authority':'none'}
         if mode == 'v2': expected.update(worker_exit_code=None, worker_exit_stage_hint='UNKNOWN')
         assert diagnostics == [expected]
@@ -1078,7 +1103,7 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual helper is Windows-specific')
 @pytest.mark.parametrize('shell', ['powershell.exe', 'pwsh.exe'])
-@pytest.mark.parametrize('mode', ['legacy', 'legacy_record', 'valid', 'not_enabled', 'before_hold',
+@pytest.mark.parametrize('mode', ['legacy', 'legacy_record', 'valid', 'cache_capacity', 'not_enabled', 'before_hold',
                                   'bad_reason', 'bad_type', 'extra_field', 'oversize', 'updated', 'triple'])
 def test_manual_parser_requires_optin_prior_hold_and_bounded_enums(shell, mode):
     executable = shutil.which(shell)
@@ -1090,6 +1115,7 @@ def test_manual_parser_requires_optin_prior_hold_and_bounded_enums(shell, mode):
             'index_refresh':'NOT_SCHEDULED'}
     diagnostic = {'schema':'wd.mind-local-owner-start-diagnostic.v1', 'reason':'HANDLER_BUILD',
                   'exception_type':'FullRuntimeRefused', 'authority':'none'}
+    if mode == 'cache_capacity': diagnostic.update(reason='CACHE_CAPACITY', exception_type='UNKNOWN')
     if mode == 'bad_reason': diagnostic['reason'] = 'fake-private-content'
     if mode == 'bad_type': diagnostic['exception_type'] = 'fake-private-content'
     if mode == 'extra_field': diagnostic['extra'] = 'fake-private-content'
@@ -1110,7 +1136,7 @@ def test_manual_parser_requires_optin_prior_hold_and_bounded_enums(shell, mode):
         'authority':'none', 'caller_authentication':'UNKNOWN', 'index_refresh':'NOT_SCHEDULED'}
     if mode in ('legacy', 'legacy_record'):
         assert not result['invalid'] and result['diagnostic'] is None
-    elif mode in ('valid', 'updated'):
+    elif mode in ('valid', 'updated', 'cache_capacity'):
         assert not result['invalid'] and result['diagnostic'] == diagnostic
     else:
         assert result['invalid']

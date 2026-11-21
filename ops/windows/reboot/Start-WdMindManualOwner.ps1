@@ -106,7 +106,7 @@ function Update-WdMindManualOwner {
                         $matched=$true
                     }
                     if (-not $matched -and $Record.ContainsKey('DiagnosticsEnabled') -and $Record.DiagnosticsEnabled -and $Record.ReportedState -ceq 'HOLD') {
-                        $reasons=@('BINDING_CHECK','CACHE_PREFLIGHT','WORKER_SETUP','HANDLER_BUILD','CACHE_RESULT',
+                        $reasons=@('BINDING_CHECK','CACHE_PREFLIGHT','WORKER_SETUP','HANDLER_BUILD','CACHE_CAPACITY','CACHE_RESULT',
                             'FINAL_BINDING_CHECK','SOURCE_PREWARM','SOURCE_BUDGET','ADMISSION','ADMISSION_MISSING','ADMISSION_RESERVED','ADMISSION_LOCK_UNAVAILABLE','POLICY','RUNTIME_BINDING','WORKER_FACTORY',
                             'OWNER_CREATE','EXTERNAL_POLICY','OWNER_START','OWNER_NOT_READY','OWNER_ENTRY','IMPORT','THREAD_START','UNKNOWN')
                         $types=@('ValueError','TypeError','RuntimeError','OSError','FileNotFoundError','PermissionError',

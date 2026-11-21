@@ -111,7 +111,8 @@ def test_startup_candidate_supplies_fixed_source_limit(monkeypatch):
             '--lane', 'codex-lead-1', '--timeout-seconds', '5']
     output, error = io.BytesIO(), io.BytesIO()
     assert session._local_candidate_entry(args, output, error, 'synthetic-bundle', 'c'*64) == 2
-    assert calls == [1024 * 1024 * 1024]
+    assert calls == [4 * (10 * 1024 ** 3) + (64 * 1024 ** 2 + 1) + 1
+                     + 6 * (4 * 1024 ** 2 + 1)]
     assert output.getvalue() == b''
 
 

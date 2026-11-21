@@ -22,7 +22,16 @@ MAGIC = b'WD_MIND_OWNER_V1\n'
 MARKER = 'mind-owner-reservation.v1'
 
 
-ACTOR = r'''
+_ACTOR_FRAME_WRITER = r'''
+def emit(event, **data):
+    # A worker thread can emit while the owner writes a status frame.
+    frame = (json.dumps(dict(event=event, **data)) + '\n').encode('utf-8')
+    if sys.stdout.buffer.write(frame) != len(frame):
+        raise OSError('short synthetic event write')
+'''
+
+
+ACTOR = _ACTOR_FRAME_WRITER + r'''
 import json, os, pathlib, sys, time
 root, case, audit, manifest, route = sys.argv[1:]
 sys.path.insert(0, root)
@@ -46,8 +55,6 @@ def checked_reserve(path):
     emit('synthetic_reservation_acquired', marker_reserved=(guard._read() == child._OWNER_RESERVATION_MAGIC + b'R'))
     return guard
 child._reserve_local_owner = checked_reserve
-def emit(event, **data):
-    print(json.dumps(dict(event=event, **data)), flush=True)
 def await_gate(name):
     deadline = time.monotonic() + 45
     while not (case / name).exists():
@@ -139,7 +146,12 @@ class Actor:
     def _read_stdout(self):
         try:
             for line in self.process.stdout:
-                self.queue.put(json.loads(line))
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError as error:
+                    self.queue.put(error)
+                    return
+                self.queue.put(item)
         finally:
             self.queue.put({'event': 'eof'})
 
@@ -157,6 +169,8 @@ class Actor:
                 item = self.queue.get(timeout=remaining)
             except queue.Empty:
                 pytest.fail(f'synthetic actor {self.process.pid} did not reach {event}; not killed')
+            if isinstance(item, json.JSONDecodeError):
+                pytest.fail(f'invalid synthetic actor frame: {item}: {item.doc!r}')
             self.events.append(item)
             if item.get('event') == event:
                 return item
@@ -265,7 +279,7 @@ _SYNTHETIC_PACKAGE_FILES = (
     'waggledance/core/bridge_log_reader.py',
 )
 
-_DISTINCT_ROOT_ACTOR = r'''
+_DISTINCT_ROOT_ACTOR = _ACTOR_FRAME_WRITER + r'''
 import hashlib, json, os, pathlib, sys
 bundle, slot, manifest = map(str, sys.argv[1:])
 bundle, slot = pathlib.Path(bundle), pathlib.Path(slot)
@@ -277,15 +291,14 @@ expected_file = bundle / 'tools-bootstrap' / 'tools' / 'wd_mind_runtime_child.py
 assert pathlib.Path(child.__file__).resolve() == expected_file.resolve()
 assert expected_file.resolve().parents[2] == bundle.resolve()
 assert child._AUDIT_ROOT == pathlib.Path(r'C:\Python\project2\.codex-audit')
-print(json.dumps({'event': 'loaded', 'path': str(expected_file.resolve()),
-                  'sha256': hashlib.sha256(expected_file.read_bytes()).hexdigest(),
-                  'manifest': manifest}), flush=True)
+emit('loaded', path=str(expected_file.resolve()),
+     sha256=hashlib.sha256(expected_file.read_bytes()).hexdigest(), manifest=manifest)
 child._AUDIT_ROOT = slot  # Never open the live reservation in this test.
 os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH'] = manifest
 def entry(*, _cleanup_evidence, _admission, **kwargs):
     assert pathlib.Path(kwargs['bundle_root']).resolve() == bundle.resolve()
     assert kwargs['expected_manifest_sha256'] == manifest
-    print(json.dumps({'event': 'entry'}), flush=True)
+    emit('entry')
     if sys.stdin.buffer.read(1) != b'S':
         return 2
     _cleanup_evidence['clean'] = True
@@ -295,9 +308,9 @@ result = child._fixed_child_main([
     '--mind-local-candidate-owner', '--policy-sha256', 'd' * 64,
     '--approval-reference-sha256', 'c' * 64])
 if result == 2:
-    print(json.dumps({'event': 'refused'}), flush=True)
+    emit('refused')
 else:
-    print(json.dumps({'event': 'done', 'result': result}), flush=True)
+    emit('done', result=result)
 '''
 
 

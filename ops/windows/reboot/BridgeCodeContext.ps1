@@ -37,6 +37,55 @@ $script:WdBridgeCodeDefinitionName = 'bridge-code-files.json'
 # Exact, case-sensitive path only; no other .md (or any other type) is admitted.
 $script:WdBridgeCodeCharterRelative = 'docs/architecture/IDLE_AUTONOMY_CHARTER.md'
 $script:WdBridgeCodePythonFlags = @('-S', '-B')
+$script:WdMindPinnedSourceTrampoline = @'
+import builtins, hashlib, hmac, importlib.machinery, json, sys, types
+try:
+    path, manifest_path, expected = sys.argv[1], sys.argv[2], sys.argv[3].lower()
+    if not sys.flags.safe_path:
+        raise ValueError('safe_path')
+    if len(expected) != 64 or any(ch not in '0123456789abcdef' for ch in expected):
+        raise ValueError('pin')
+    with open(manifest_path, 'rb') as stream:
+        manifest_raw = stream.read(4 * 1024 * 1024 + 1)
+    if len(manifest_raw) > 4 * 1024 * 1024 or not hmac.compare_digest(hashlib.sha256(manifest_raw).hexdigest(), expected):
+        raise ValueError('manifest')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate')
+            result[key] = value
+        return result
+    manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    if type(manifest) is not dict or type(manifest.get('schema_version')) is not int or manifest['schema_version'] != 1 or type(manifest.get('files')) is not dict:
+        raise ValueError('manifest_shape')
+    source_pin = manifest['files']['tools-bootstrap/tools/wd_mind_runtime_child.py']
+    if type(source_pin) is not str:
+        raise ValueError('source_pin')
+    source_pin = source_pin.lower()
+    if len(source_pin) != 64 or any(ch not in '0123456789abcdef' for ch in source_pin):
+        raise ValueError('source_pin')
+    with open(path, 'rb') as stream:
+        source = stream.read(8 * 1024 * 1024 + 1)
+    if len(source) > 8 * 1024 * 1024 or not hmac.compare_digest(hashlib.sha256(source).hexdigest(), source_pin):
+        raise ValueError('source')
+except BaseException:
+    raise SystemExit(2) from None
+sys.argv = [path] + sys.argv[4:]
+def run_verified_script(script_path, script_source):
+    main = sys.modules.get('__main__')
+    if type(main) is not types.ModuleType or main.__dict__ is not globals():
+        raise SystemExit(2)
+    namespace = main.__dict__
+    compiled = compile(script_source, script_path, 'exec')
+    loader = importlib.machinery.SourceFileLoader('__main__', script_path)
+    bootstrap_builtins = builtins
+    namespace.clear()
+    namespace.update({'__name__':'__main__', '__file__':script_path, '__package__':None,
+        '__spec__':None, '__cached__':None, '__loader__':loader, '__builtins__':bootstrap_builtins})
+    exec(compiled, namespace)
+run_verified_script(path, source)
+'@
 # Invoke-WdBridgePythonTool streams the packaged tool's own output to the
 # caller, so its exit code travels here instead of on the output stream.
 $script:WdBridgeCodeLastExitCode = $null
@@ -876,6 +925,10 @@ function Invoke-WdBridgePythonTool {
     $package = Get-WdBridgeCodePackageDefinition -Path $definitionPath
     $definition = $package.Definition
     $normalizedTool = $Tool.Replace('\', '/')
+    if ($normalizedTool -ceq 'tools/wd_mind_runtime_child.py' -and
+        $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$') {
+        throw 'Mind child requires an external manifest anchor'
+    }
     $entrypoints = @($definition.python_entrypoints.PSObject.Properties | ForEach-Object { [string]$_.Value })
     $manual = $ToolArguments.Count -gt 0 -and $ToolArguments[0] -ceq '--wd-manual-execution'
     $manualRuntimeRoot = [string]$env:WD_BRIDGE_RUNTIME_ROOT
@@ -958,7 +1011,12 @@ function Invoke-WdBridgePythonTool {
         $ErrorActionPreference = 'Continue'
         # No Out-Host: the packaged tools emit JSON that callers parse, so the
         # success stream must stay capturable. Interactive runs still display it.
-        & $python.Path @($script:WdBridgeCodePythonFlags) $toolPath @ToolArguments
+        if ($normalizedTool -ceq 'tools/wd_mind_runtime_child.py') {
+            & $python.Path @($script:WdBridgeCodePythonFlags) '-c' $script:WdMindPinnedSourceTrampoline $toolPath $deploymentPath $expectedManifestHash @ToolArguments
+        }
+        else {
+            & $python.Path @($script:WdBridgeCodePythonFlags) $toolPath @ToolArguments
+        }
         $exitCode = [int]$LASTEXITCODE
     }
     finally {

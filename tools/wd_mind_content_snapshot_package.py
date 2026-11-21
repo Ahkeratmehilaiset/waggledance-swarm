@@ -745,7 +745,7 @@ class _ConsumerSourceOwner:
         self._root, self._pin, self._controls = root, pin, controls
         self._snapshot, self._gate = snapshot, gate
 
-    def resolve(self, *, proposals, lane, scope):
+    def resolve(self, *, proposals, lane, scope, source_budget=None):
         output = None
         try:
             if (_consumer_bundle_controls(self._root, self._pin) != self._controls
@@ -760,7 +760,10 @@ class _ConsumerSourceOwner:
                 candidates.append({'ref_sha256': item['ref_sha256'], 'doc_id_sha256': item['doc_id_sha256'],
                                    'ref_kind': 'sha256_of_projected_metadata', 'canonical_event': False})
             now = datetime.now(timezone.utc)
-            resolved = self._gate._resolve(candidates, reader._utc_text(now), self._snapshot)
+            resolved = (self._gate._resolve(candidates, reader._utc_text(now), self._snapshot)
+                        if source_budget is None else
+                        self._gate._resolve(candidates, reader._utc_text(now), self._snapshot,
+                                            source_budget=source_budget))
             if len(resolved) != len(proposals):
                 raise ValueError('candidate_count')
             projection = json.loads(self._snapshot['projection_bytes'].decode('utf-8'),
@@ -777,7 +780,7 @@ class _ConsumerSourceOwner:
                     raise ValueError('source')
                 floor = reader._utc(record['time_utc'])
                 age = (datetime.now(timezone.utc) - floor).total_seconds()
-                if age < 0 or math.ceil(age) >= 900 or reader._utc(record['available_utc']) > datetime.now(timezone.utc):
+                if age < 0 or reader._utc(record['available_utc']) > datetime.now(timezone.utc):
                     raise ValueError('stale')
                 hits.append({'text': item['stored_text'], 'source_event_sha256': source_ref,
                              'event_time_utc_floor': record['time_utc'], 'source_agent': record['meta']['agent']})
@@ -785,11 +788,11 @@ class _ConsumerSourceOwner:
                 raise ValueError('controls_changed')
             if type(self._gate) is _ConsumerFlatGate:
                 self._gate._check_delivery_binding()
-            # A response cannot carry partial output or stale material at return.
+            # Recheck time at delivery; historical records remain eligible.
             finished = datetime.now(timezone.utc)
             for hit in hits:
                 age = (finished - reader._utc(hit['event_time_utc_floor'])).total_seconds()
-                if age < 0 or math.ceil(age) >= 900:
+                if age < 0:
                     raise ValueError('delivery_stale')
                 hit['event_age_seconds_upper_bound'] = math.ceil(age)
             output = {'authority': 'none', 'sender_authentication': 'UNKNOWN',
@@ -973,7 +976,7 @@ class _ConsumerFlatGate(reader._NarrowReadGate):
 
 def create_consumer_flat_source_owner(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                                       snapshot=None, flat_manifest_bytes=None, flat_manifest_sha256=None,
-                                      ids=None, vectors=None, encoder_binding_bytes=None):
+                                      ids=None, vectors=None, encoder_binding_bytes=None, source_budget=None):
     """Independently build a process-local flat source gate; never trust IPC pins.
 
     Full source verification occurs while constructing this owner. Peer identity,
@@ -994,14 +997,17 @@ def create_consumer_flat_source_owner(*, enabled=False, bundle_root=None, expect
                 or os.path.normcase(os.path.abspath(frozen['messages']['generation_path'])) != os.path.normcase(os.path.abspath(sidecar))
                 or frozen['roster_bytes'] != roster or frozen['messages']['policy_bytes'] != policy):
             raise ValueError('source_controls')
-        projection, context, before = reader._verified_complete(frozen)
+        projection, context, before = (reader._verified_complete(frozen) if source_budget is None else
+                                       reader._verified_complete(frozen, source_budget=source_budget))
         _verified_flat_manifest(flat_manifest_bytes, flat_manifest_sha256, frozen, projection,
                                 ids, vectors, encoder, check_vectors=True)
         references = {row['provenance']['source_event_ref'] for row in projection['messages']['records']}
         if not references or any(not reader._hex(ref) for ref in references):
             raise ValueError('references')
-        entries = reader._narrow_row_index(context, references)
-        _, _, after = reader._verified_complete(frozen)
+        entries = (reader._narrow_row_index(context, references) if source_budget is None else
+                   reader._narrow_row_index(context, references, source_budget=source_budget))
+        _, _, after = (reader._verified_complete(frozen) if source_budget is None else
+                       reader._verified_complete(frozen, source_budget=source_budget))
         if before != after:
             raise ValueError('source_changed')
         cursor = context['messages']['end_cursor']

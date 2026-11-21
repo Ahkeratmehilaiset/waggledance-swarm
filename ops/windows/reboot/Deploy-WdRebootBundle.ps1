@@ -27,6 +27,12 @@ param(
     # Optional operator attestation for a previously observed fresh RCO3 session.
     # Does not launch/register a lane; omission leaves enrollment absent.
     [string] $RcoEnrollmentRecordPath = '',
+    # Optional, source-bound runtime descriptors; omission keeps the bundle unchanged.
+    [string] $MindRuntimeDescriptorSetPath = '',
+    # Operator-supplied private policy stays outside the bundle. Only its hash
+    # and the independently supplied approval reference enter the manifest.
+    [string] $MindIdentifierPolicyPath = '',
+    [string] $MindApprovalReferenceSha256 = '',
     # Verify and stage the commit-addressed bundle only: no machine wrapper,
     # data copy, state pointer, Grok resolve or task registration is touched.
     [switch] $StageOnly,
@@ -104,6 +110,422 @@ function Assert-WdPathWithoutReparse {
         throw "trusted path is not a file: $candidate"
     }
     return $candidate
+}
+
+function Read-WdMindRuntimeFileSnapshot {
+    param([string] $Path, [int] $Limit)
+    if ($Path -cnotmatch '^[Cc]:\\' -or $Limit -lt 1 -or $Limit -gt 8388608) {
+        throw 'Mind descriptor requires a bounded absolute persistent C: path'
+    }
+    foreach ($part in $Path.Substring(3).Split('\')) {
+        if (-not $part -or $part -in @('.', '..') -or $part -match '[<>:"|?*\x00-\x1f]' -or
+            $part.EndsWith('.') -or $part.EndsWith(' ') -or
+            $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+            throw 'Mind descriptor path is not canonical'
+        }
+    }
+    $full = Assert-WdPathWithoutReparse -Path $Path -TrustedRoot 'C:\' -ExpectedType Leaf
+    $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if (-not ('WaggleDance.WdMindDescriptorFileV1' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace WaggleDance {
+    public static class WdMindDescriptorFileV1 {
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+        public static string FinalPath(SafeFileHandle handle) {
+            var path = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandleW(handle, path, (uint)path.Capacity, 0);
+            if (length == 0 || length >= path.Capacity) throw new IOException("Mind descriptor handle unavailable");
+            return path.ToString();
+        }
+    }
+}
+'@
+        }
+        $opened = [WaggleDance.WdMindDescriptorFileV1]::FinalPath($stream.SafeFileHandle)
+        if (-not $opened.Equals(('\\?\' + $full), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Mind descriptor opened handle differs from its checked path'
+        }
+        $buffer = New-Object byte[] ($Limit + 1)
+        $count = 0
+        while ($count -lt $buffer.Length) {
+            $read = $stream.Read($buffer, $count, $buffer.Length - $count)
+            if ($read -eq 0) { break }
+            $count += $read
+        }
+        if ($count -eq 0 -or $count -gt $Limit) { throw 'Mind descriptor byte budget exceeded' }
+        $bytes = New-Object byte[] $count
+        [Array]::Copy($buffer, $bytes, $count)
+        $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes)
+        if (-not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid($text)) {
+            throw 'Mind descriptor violates strict UTF-8 JSON contract'
+        }
+        [void](Assert-WdPathWithoutReparse -Path $full -TrustedRoot 'C:\' -ExpectedType Leaf)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        return [pscustomobject]@{ Path = $full; Limit = $Limit; Bytes = $bytes; Hash = $hash; Text = $text }
+    } finally { $stream.Dispose() }
+}
+
+function Assert-WdMindRuntimeKeys {
+    param($Value, [string[]] $Keys)
+    if ($null -eq $Value -or $Value -isnot [pscustomobject]) { throw 'Mind descriptor object required' }
+    $names = @($Value.PSObject.Properties.Name)
+    if ($names.Count -ne $Keys.Count) { throw 'Mind descriptor field set differs' }
+    foreach ($key in $Keys) {
+        if ($key -cnotin $names) { throw 'Mind descriptor field set differs' }
+    }
+}
+
+function Read-WdMindRuntimeDirectorySnapshot {
+    param($Path)
+    if ($Path -isnot [string] -or $Path.Length -gt 32767 -or $Path -cnotmatch '^[Cc]:\\') {
+        throw 'Mind runtime location requires an absolute persistent C: directory'
+    }
+    foreach ($part in $Path.Substring(3).Split('\')) {
+        if (-not $part -or $part.Length -gt 255 -or $part -in @('.', '..') -or
+            $part -match '[<>:"|?*\x00-\x1f/]' -or $part.EndsWith('.') -or $part.EndsWith(' ') -or
+            $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+            throw 'Mind runtime location path is not canonical'
+        }
+    }
+    $full = Assert-WdPathWithoutReparse -Path $Path -TrustedRoot 'C:\' -ExpectedType Directory
+    if (-not ('WaggleDance.WdMindLocationV1' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace WaggleDance {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WdMindLocationInformation {
+        public uint Attributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
+    }
+    public static class WdMindLocationV1 {
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, System.Text.StringBuilder path, uint length, uint flags);
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security,
+            uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError=true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out WdMindLocationInformation info);
+        public static string[] Snapshot(string path) {
+            // OPEN_EXISTING; BACKUP_SEMANTICS | OPEN_REPARSE_POINT. Metadata only.
+            using (var handle = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+                WdMindLocationInformation info;
+                if (handle.IsInvalid || !GetFileInformationByHandle(handle, out info) ||
+                    (info.Attributes & 0x10) == 0 || (info.Attributes & 0x400) != 0)
+                    throw new IOException("Mind runtime directory handle refused");
+                var final = new System.Text.StringBuilder(32768);
+                uint length = GetFinalPathNameByHandleW(handle, final, (uint)final.Capacity, 0);
+                if (length == 0 || length >= final.Capacity) throw new IOException("Mind runtime directory path unavailable");
+                return new string[] { final.ToString(),
+                    info.VolumeSerialNumber.ToString("x8") + info.FileIndexHigh.ToString("x8") + info.FileIndexLow.ToString("x8") };
+            }
+        }
+    }
+}
+'@
+    }
+    $opened = [WaggleDance.WdMindLocationV1]::Snapshot($full)
+    if (-not $opened[0].Equals(('\\?\' + $full), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Mind runtime directory handle differs from its checked path'
+    }
+    [void](Assert-WdPathWithoutReparse -Path $full -TrustedRoot 'C:\' -ExpectedType Directory)
+    return [pscustomobject]@{ Path = $full; Identity = $opened[1] }
+}
+
+function Assert-WdMindRuntimeMessagePolicy {
+    param($Policy)
+    $keys = @('schema', 'lanes', 'types', 'task_scope', 'removed_source_refs', 'max_message_chars', 'max_chunk_chars')
+    if ($null -ne $Policy -and $null -ne $Policy.PSObject.Properties['approved_source_refs']) { $keys += 'approved_source_refs' }
+    Assert-WdMindRuntimeKeys $Policy $keys
+    if ($Policy.schema -isnot [string] -or $Policy.schema -cne 'wd.mind-content-policy.v3' -or
+        $Policy.task_scope -isnot [string] -or $Policy.task_scope -cne 'all_tasks' -or
+        $Policy.max_message_chars -isnot [int] -or $Policy.max_message_chars -lt 1 -or $Policy.max_message_chars -gt 4096 -or
+        $Policy.max_chunk_chars -isnot [int] -or $Policy.max_chunk_chars -lt 16 -or $Policy.max_chunk_chars -gt 300) {
+        throw 'Mind message policy schema or budget differs'
+    }
+    foreach ($name in @('lanes', 'types', 'removed_source_refs', 'approved_source_refs')) {
+        $property = $Policy.PSObject.Properties[$name]
+        if ($null -eq $property) { continue }
+        $values = $property.Value
+        if ($values -isnot [array] -or $values.Count -gt 4096) { throw 'Mind message policy set type differs' }
+        $seen = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        foreach ($value in $values) {
+            if ($value -isnot [string] -or -not $seen.Add($value)) { throw 'Mind message policy duplicate or invalid item' }
+            if ($name -ceq 'lanes') {
+                if ($value -cnotin @('codex-lead-1', 'codex-tools-1', 'fable-5')) { throw 'Mind message policy lane differs' }
+            } elseif ($name -ceq 'types') {
+                if ($value -cnotin @('message', 'wake_request', 'handoff', 'test', 'claim', 'release', 'done', 'milestone', 'status', 'progress', 'decision')) {
+                    throw 'Mind message policy event type differs'
+                }
+            } elseif ($value -cnotmatch '^[0-9a-f]{64}\z') { throw 'Mind message policy source ref differs' }
+        }
+        if ($name -ceq 'lanes' -and $values.Count -ne 3) { throw 'Mind full runtime policy requires all three allowed lanes' }
+        if ($name -ceq 'types' -and ($values.Count -lt 1 -or $values.Count -gt 11)) { throw 'Mind message policy type set differs' }
+    }
+}
+
+function Assert-WdMindRuntimeRecords {
+    param($Records, [switch] $Interpreter)
+    $maxCount = if ($Interpreter) { 1024 } else { 50000 }
+    $maxItem = if ($Interpreter) { 536870912L } else { 8589934592L }
+    $maxTotal = if ($Interpreter) { 4294967296L } else { 17179869184L }
+    if ($Records -isnot [array] -or $Records.Count -lt 1 -or $Records.Count -gt $maxCount) {
+        throw 'Mind descriptor record budget differs'
+    }
+    $files = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $dirs = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $cases = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
+    $roles = @(); $total = 0L
+    foreach ($record in $Records) {
+        $keys = @('path', 'size', 'sha256')
+        if ($Interpreter) { $keys += 'role' }
+        Assert-WdMindRuntimeKeys $record $keys
+        if ($record.path -isnot [string] -or $record.sha256 -isnot [string] -or
+            $record.sha256 -cnotmatch '^[0-9a-f]{64}\z' -or
+            ($record.size -isnot [int] -and $record.size -isnot [long]) -or
+            $record.size -lt 0 -or $record.size -gt $maxItem) { throw 'Mind descriptor record type differs' }
+        $path = $record.path
+        # Interpreter parsing applies runtime._path_parts to "assets/" + path.
+        $pathBudget = if ($Interpreter) { 4089 } else { 4096 }
+        if ($path.Length -gt $pathBudget -or $path.Contains('\')) { throw 'Mind descriptor relative path differs' }
+        $parts = $path.Split('/')
+        if (-not $Interpreter -and ($parts.Count -lt 2 -or $parts[0] -cnotin @('site', 'model', 'assets'))) {
+            throw 'Mind runtime namespace differs'
+        }
+        $spaceException = -not $Interpreter -and $path -cin @(
+            'site/scipy/io/tests/data/Transparent Busy.ani', 'site/setuptools/launcher manifest.xml',
+            'site/setuptools/script (dev).tmpl', 'site/setuptools/_vendor/jaraco/text/Lorem ipsum.txt')
+        foreach ($part in $parts) {
+            if (-not $part -or $part.Length -gt 255 -or $part -in @('.', '..') -or
+                $part.StartsWith(' ') -or $part.EndsWith(' ') -or $part.EndsWith('.') -or
+                $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$' -or
+                (-not $spaceException -and $part -cnotmatch '^[A-Za-z0-9_.+\-]+\z')) {
+                throw 'Mind descriptor relative segment differs'
+            }
+        }
+        if (-not $files.Add($path)) { throw 'Mind descriptor duplicate path' }
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            $name = ($parts[0..$i] -join '/')
+            if ($cases.ContainsKey($name) -and $cases[$name] -cne $name) { throw 'Mind descriptor case collision' }
+            $cases[$name] = $name
+            if ($i -lt $parts.Count - 1) { [void]$dirs.Add($name) }
+        }
+        if ($dirs.Count -gt 100000) { throw 'Mind descriptor directory budget exceeded' }
+        $total += $record.size
+        if ($total -gt $maxTotal) { throw 'Mind descriptor total budget exceeded' }
+        if ($Interpreter) {
+            if ($record.role -isnot [string] -or $record.role -cnotin @('interpreter', 'stdlib', 'dll')) {
+                throw 'Mind interpreter role differs'
+            }
+            $roles += $record.role
+        }
+    }
+    foreach ($file in $files) { if ($dirs.Contains($file)) { throw 'Mind descriptor file-directory collision' } }
+    if ($Interpreter -and (@($roles | Where-Object { $_ -ceq 'interpreter' }).Count -ne 1 -or
+        'stdlib' -cnotin $roles -or 'dll' -cnotin $roles)) { throw 'Mind interpreter role set differs' }
+}
+
+function Read-WdMindRuntimeDescriptorSet {
+    param([string] $Path, [string] $SourceCommit, [string] $WorkerSha256)
+    if ($Path -ceq '') { return $null }
+    if ($SourceCommit -cnotmatch '^[0-9a-f]{40}\z' -or $WorkerSha256 -cnotmatch '^[0-9a-f]{64}\z') {
+        throw 'Mind descriptors require exact archived source pins'
+    }
+    $outer = Read-WdMindRuntimeFileSnapshot -Path $Path -Limit 16384
+    $document = ConvertFrom-Json -InputObject $outer.Text -ErrorAction Stop
+    Assert-WdMindRuntimeKeys $document @('schema', 'source_commit', 'files')
+    if ($document.schema -isnot [string] -or $document.source_commit -isnot [string] -or
+        $document.schema -cnotin @('wd.mind-runtime-descriptor-set.v1', 'wd.mind-runtime-descriptor-set.v2') -or
+        $document.source_commit -cne $SourceCommit) {
+        throw 'Mind descriptor set source binding differs'
+    }
+    $schemas = [ordered]@{
+        'wd-mind-runtime-manifest.json' = 'wd.q4-runtime-manifest.v1'
+        'wd-mind-interpreter-identity.json' = 'wd.q4-interpreter-identity.v1'
+        'wd-mind-e5-encoder-binding.json' = 'wd.mind-memory-encoder-binding.v1'
+    }
+    $limits = @(8388608, 1048576, 65536)
+    $v2 = $document.schema -ceq 'wd.mind-runtime-descriptor-set.v2'
+    if ($v2) {
+        $schemas['wd-mind-runtime-location.json'] = 'wd.mind-runtime-location.v1'
+        $schemas['wd-mind-message-policy.json'] = 'wd.mind-content-policy.v3'
+        $limits += @(16384, 65536)
+    }
+    Assert-WdMindRuntimeKeys $document.files @($schemas.Keys)
+    $snapshots = [ordered]@{}; $parsed = @{}; $index = 0
+    foreach ($name in $schemas.Keys) {
+        $pin = $document.files.PSObject.Properties[$name].Value
+        Assert-WdMindRuntimeKeys $pin @('sha256', 'schema')
+        if ($pin.sha256 -isnot [string] -or $pin.sha256 -cnotmatch '^[0-9a-f]{64}\z' -or
+            $pin.schema -isnot [string] -or $pin.schema -cne $schemas[$name]) {
+            throw 'Mind descriptor pin or schema differs'
+        }
+        $snapshot = Read-WdMindRuntimeFileSnapshot -Path (Join-Path (Split-Path -Parent $outer.Path) $name) -Limit $limits[$index]
+        $index++
+        if ($snapshot.Hash -cne $pin.sha256) { throw 'Mind descriptor hash mismatch' }
+        $value = ConvertFrom-Json -InputObject $snapshot.Text -ErrorAction Stop
+        if ($value.schema -isnot [string] -or $value.schema -cne $schemas[$name]) { throw 'Mind descriptor payload schema differs' }
+        $snapshots[$name] = $snapshot; $parsed[$name] = $value
+    }
+    $runtime = $parsed['wd-mind-runtime-manifest.json']
+    Assert-WdMindRuntimeKeys $runtime @('schema', 'generation', 'revision', 'files')
+    if ($runtime.generation -isnot [string] -or $runtime.revision -isnot [string] -or
+        $runtime.generation -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})\z' -or
+        $runtime.revision -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})\z') { throw 'Mind runtime revision differs' }
+    Assert-WdMindRuntimeRecords $runtime.files
+    $identity = $parsed['wd-mind-interpreter-identity.json']
+    Assert-WdMindRuntimeKeys $identity @('schema', 'files')
+    Assert-WdMindRuntimeRecords $identity.files -Interpreter
+    $binding = $parsed['wd-mind-e5-encoder-binding.json']
+    Assert-WdMindRuntimeKeys $binding @('schema', 'encoder', 'code_sha256', 'passage_policy', 'query_policy')
+    Assert-WdMindRuntimeKeys $binding.encoder @('model', 'revision', 'weights_sha256')
+    $weights = @($runtime.files | Where-Object { $_.path -ceq 'model/model.safetensors' })
+    if ($weights.Count -ne 1 -or $binding.code_sha256 -isnot [string] -or
+        $binding.encoder.model -isnot [string] -or $binding.encoder.revision -isnot [string] -or
+        $binding.encoder.weights_sha256 -isnot [string] -or $binding.code_sha256 -cne $WorkerSha256 -or
+        $binding.encoder.model -cne 'intfloat/multilingual-e5-small' -or
+        $binding.encoder.revision -cne $runtime.revision -or $binding.encoder.weights_sha256 -cne $weights[0].sha256) {
+        throw 'Mind encoder source/runtime binding differs'
+    }
+    foreach ($name in @('passage', 'query')) {
+        $policy = $binding.PSObject.Properties[$name + '_policy'].Value
+        Assert-WdMindRuntimeKeys $policy @('prefix', 'truncate_chars', 'normalize', 'dtype', 'dim')
+        if ($policy.prefix -isnot [string] -or $policy.dtype -isnot [string] -or
+            $policy.prefix -cne ($name + ': ') -or $policy.dtype -cne 'float32' -or
+            $policy.normalize -isnot [bool] -or -not $policy.normalize -or
+            $policy.truncate_chars -isnot [int] -or $policy.truncate_chars -ne 2000 -or
+            $policy.dim -isnot [int] -or $policy.dim -ne 384) { throw 'Mind encoder policy differs' }
+    }
+    $result = [pscustomobject]@{ Outer = $outer; Files = $snapshots }
+    if ($v2) {
+        $location = $parsed['wd-mind-runtime-location.json']
+        Assert-WdMindRuntimeKeys $location @('schema', 'source_commit', 'runtime_root', 'interpreter_root',
+            'runtime_manifest_sha256', 'interpreter_identity_sha256', 'encoder_binding_sha256')
+        if ($location.source_commit -isnot [string] -or $location.source_commit -cne $SourceCommit) {
+            throw 'Mind runtime location source commit differs'
+        }
+        foreach ($pair in @(@('runtime_manifest_sha256', 'wd-mind-runtime-manifest.json'),
+                             @('interpreter_identity_sha256', 'wd-mind-interpreter-identity.json'),
+                             @('encoder_binding_sha256', 'wd-mind-e5-encoder-binding.json'))) {
+            $pin = $location.PSObject.Properties[$pair[0]].Value
+            if ($pin -isnot [string] -or $pin -cne $snapshots[$pair[1]].Hash) { throw 'Mind runtime location descriptor pin differs' }
+        }
+        $runtimeRoot = Read-WdMindRuntimeDirectorySnapshot $location.runtime_root
+        $interpreterRoot = Read-WdMindRuntimeDirectorySnapshot $location.interpreter_root
+        $rootPrefix = $runtimeRoot.Path.TrimEnd('\') + '\'
+        $interpreterPrefix = $interpreterRoot.Path.TrimEnd('\') + '\'
+        if ($rootPrefix.StartsWith($interpreterPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+            $interpreterPrefix.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Mind runtime and interpreter roots must be disjoint'
+        }
+        Assert-WdMindRuntimeMessagePolicy $parsed['wd-mind-message-policy.json']
+        $result | Add-Member -NotePropertyName LocationRoots -NotePropertyValue @($runtimeRoot, $interpreterRoot)
+    }
+    return $result
+}
+
+function Assert-WdMindRuntimeDescriptorInputs {
+    param($Set)
+    if ($null -eq $Set) { return }
+    foreach ($snapshot in @($Set.Outer) + @($Set.Files.Values)) {
+        $current = Read-WdMindRuntimeFileSnapshot -Path $snapshot.Path -Limit $snapshot.Limit
+        if ($current.Hash -cne $snapshot.Hash) { throw 'Mind descriptor input changed after validation' }
+    }
+    $locations = $Set.PSObject.Properties['LocationRoots']
+    if ($null -ne $locations) {
+        foreach ($snapshot in $locations.Value) {
+            $current = Read-WdMindRuntimeDirectorySnapshot $snapshot.Path
+            if ($current.Identity -cne $snapshot.Identity) { throw 'Mind runtime directory changed after validation' }
+        }
+    }
+}
+
+function Add-WdMindRuntimeDescriptorFiles {
+    param($Set, $SourceHashes, $SourcePaths, [string] $StagingRoot)
+    if ($null -eq $Set) { return }
+    Assert-WdMindRuntimeDescriptorInputs $Set
+    foreach ($name in $Set.Files.Keys) {
+        if ($SourceHashes.Contains($name) -or $SourcePaths.Contains($name)) { throw 'Mind descriptor name already exists in source commit' }
+    }
+    [void](Assert-WdPathWithoutReparse -Path $StagingRoot -TrustedRoot 'C:\' -AllowMissing)
+    if (Test-Path -LiteralPath $StagingRoot) { throw 'Mind descriptor staging directory already exists' }
+    [void](New-Item -ItemType Directory -Path $StagingRoot)
+    [void](Assert-WdPathWithoutReparse -Path $StagingRoot -TrustedRoot 'C:\' -ExpectedType Directory)
+    foreach ($name in $Set.Files.Keys) {
+        $snapshot = $Set.Files[$name]
+        $destination = Join-Path $StagingRoot $name
+        $output = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $output.Write($snapshot.Bytes, 0, $snapshot.Bytes.Length) } finally { $output.Dispose() }
+        $staged = Read-WdMindRuntimeFileSnapshot -Path $destination -Limit $snapshot.Limit
+        if ($staged.Hash -cne $snapshot.Hash) { throw 'Mind descriptor staging hash differs' }
+        $SourceHashes[$name] = $snapshot.Hash.ToUpperInvariant()
+        $SourcePaths[$name] = $destination
+    }
+    # These are caller-selected descriptor pins, not authentication of assets,
+    # model/interpreter execution, operator approval, or a same-user ABA defense.
+    Assert-WdMindRuntimeDescriptorInputs $Set
+}
+
+function New-WdMindPolicyApprovalDescriptor {
+    param([string] $PolicyPath, [string] $ApprovalReferenceSha256)
+    if ($PolicyPath -ceq '' -and $ApprovalReferenceSha256 -ceq '') { return $null }
+    if ($PolicyPath -ceq '' -or $ApprovalReferenceSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z') {
+        throw 'Mind policy path and approval reference must both be supplied'
+    }
+    $snapshot = Read-WdMindRuntimeFileSnapshot -Path $PolicyPath -Limit 65536
+    if ($snapshot.Bytes.Length -ge 3 -and $snapshot.Bytes[0] -eq 0xef -and
+        $snapshot.Bytes[1] -eq 0xbb -and $snapshot.Bytes[2] -eq 0xbf) { throw 'Mind policy encoding differs' }
+    # Schema and identifier semantics are checked by the pinned reader. This
+    # staging step binds bytes; it does not assert that the policy is usable.
+    $reference = $ApprovalReferenceSha256.ToLowerInvariant()
+    $text = '{"approval_reference_sha256":"' + $reference + '","identifier_policy_sha256":"' +
+        $snapshot.Hash + '","schema":"wd.mind-identifier-policy-approval.v1"}'
+    $bytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes($text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    # Do not retain the policy text or bytes in the returned object.
+    return [pscustomobject]@{ PolicyPath=$snapshot.Path; PolicyHash=$snapshot.Hash;
+        DescriptorBytes=$bytes; DescriptorHash=$hash }
+}
+
+function Assert-WdMindPolicyApprovalInput {
+    param($Approval)
+    if ($null -eq $Approval) { return }
+    $snapshot = Read-WdMindRuntimeFileSnapshot -Path $Approval.PolicyPath -Limit 65536
+    if ($snapshot.Hash -cne $Approval.PolicyHash) { throw 'Mind policy input changed after validation' }
+}
+
+function Add-WdMindPolicyApprovalDescriptor {
+    param($Approval, $SourceHashes, $SourcePaths, [string] $StagingRoot)
+    if ($null -eq $Approval) { return }
+    Assert-WdMindPolicyApprovalInput $Approval
+    $name = 'wd-mind-identifier-policy-approval.json'
+    if ($SourceHashes.Contains($name) -or $SourcePaths.Contains($name)) { throw 'Mind approval descriptor already exists' }
+    [void](Assert-WdPathWithoutReparse -Path $StagingRoot -TrustedRoot 'C:\' -ExpectedType Directory)
+    $path = Join-Path $StagingRoot $name
+    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($Approval.DescriptorBytes, 0, $Approval.DescriptorBytes.Length) } finally { $stream.Dispose() }
+    $staged = Read-WdMindRuntimeFileSnapshot -Path $path -Limit 65536
+    if ($staged.Hash -cne $Approval.DescriptorHash) { throw 'Mind approval descriptor staging hash differs' }
+    $SourceHashes[$name] = $Approval.DescriptorHash.ToUpperInvariant()
+    $SourcePaths[$name] = $path
+    Assert-WdMindPolicyApprovalInput $Approval
 }
 
 function Assert-ChildPath {
@@ -1075,6 +1497,21 @@ if ($null -ne $rcoEnrollmentText) {
     . (Join-Path $toolsBootstrapSource 'BridgeLogReader.ps1')
     $rcoEnrollment = ConvertFrom-WdRcoEnrollmentRecord -Text $rcoEnrollmentText -SourceCommit $head
 }
+$mindRuntimeDescriptors = $null
+if ($MindRuntimeDescriptorSetPath -cne '') {
+    . (Join-Path $toolsBootstrapSource 'BridgeLogReader.ps1')
+    $workerName = 'tools-bootstrap/tools/wd_mind_e5_worker.py'
+    if (-not $sourceHashes.Contains($workerName)) { throw 'Mind runtime worker is absent from exact source package' }
+    $mindRuntimeDescriptors = Read-WdMindRuntimeDescriptorSet -Path $MindRuntimeDescriptorSetPath `
+        -SourceCommit $head -WorkerSha256 ([string]$sourceHashes[$workerName]).ToLowerInvariant()
+}
+$mindPolicyApproval = New-WdMindPolicyApprovalDescriptor -PolicyPath $MindIdentifierPolicyPath `
+    -ApprovalReferenceSha256 $MindApprovalReferenceSha256
+if ($null -ne $mindPolicyApproval -and ($null -eq $mindRuntimeDescriptors -or
+    -not $mindRuntimeDescriptors.Files.Contains('wd-mind-runtime-location.json') -or
+    -not $mindRuntimeDescriptors.Files.Contains('wd-mind-message-policy.json'))) {
+    throw 'Mind policy approval requires the complete source-bound runtime descriptor set'
+}
 $manualFleetAgents = @()
 $manualActivation = $null
 if ($null -ne $manualApprovalText) {
@@ -1102,6 +1539,10 @@ $bridgePythonStage = Install-WdBridgePythonSite `
     -SiteDirectory $bridgeSiteStaging `
     -WorkDirectory (Join-Path $materializationRoot 'python-work') `
     -WheelSource $WheelSource
+Add-WdMindRuntimeDescriptorFiles -Set $mindRuntimeDescriptors -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
+    -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
+Add-WdMindPolicyApprovalDescriptor -Approval $mindPolicyApproval -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
+    -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
 foreach ($stagedName in @($bridgePythonStage.Wheels.Keys)) {
     $sourceHashes['tools-bootstrap/' + $stagedName] = [string]$bridgePythonStage.Wheels[$stagedName]
     $sourcePaths['tools-bootstrap/' + $stagedName] = Join-Path $materializationRoot (
@@ -1257,6 +1698,8 @@ if ($DryRun) {
     return
 }
 
+Assert-WdMindRuntimeDescriptorInputs $mindRuntimeDescriptors
+Assert-WdMindPolicyApprovalInput $mindPolicyApproval
 if (-not (Test-Path -LiteralPath $storeFull -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $storeFull -Force)
 }
@@ -1324,7 +1767,7 @@ $installedManifestPath = Join-Path $targetRoot 'deployment-manifest.json'
     -ExpectedType Leaf)
 $installedManifestSnapshot = Read-Utf8DeploymentSnapshot `
     -Path $installedManifestPath
-if (($null -ne $manualActivation -or $null -ne $rcoEnrollment) -and
+if (($null -ne $manualActivation -or $null -ne $rcoEnrollment -or $null -ne $mindRuntimeDescriptors -or $null -ne $mindPolicyApproval) -and
     -not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid([string]$installedManifestSnapshot.Text)) {
     throw 'installed manual execution manifest violates the strict JSON contract'
 }

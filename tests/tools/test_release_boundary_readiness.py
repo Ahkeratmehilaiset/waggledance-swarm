@@ -1646,6 +1646,19 @@ def test_canonical_wrapper_captures_the_exact_sixteen_input_closure(
     assert all(path.is_absolute() and path.is_relative_to(ROOT)
                for path in boundary.CANONICAL_INPUTS.values())
 
+    # Another test can create the checkout's audit directory after collection.
+    # Bind the wrapper's cache checks to a directory owned by this test.
+    cache_root = tmp_path / ".codex-audit"
+    cache_root.mkdir()
+    info = cache_root.lstat()
+    monkeypatch.setattr(boundary, "_PYCACHE_ROOT", cache_root)
+    monkeypatch.setattr(boundary, "_PYCACHE_ROOT_SAFE", True)
+    monkeypatch.setattr(
+        boundary, "_PYCACHE_ROOT_IDENTITY", (info.st_dev, info.st_ino, info.st_mode)
+    )
+    monkeypatch.setattr(boundary, "_PYCACHE_PREFIX", cache_root / "prefix")
+    monkeypatch.setattr(boundary, "_PYCACHE_PREFIX_PREEXISTED", False)
+
     entries = _canonical_entries(tmp_path)
     window = {"git_before": _git_snapshot(entries), "inputs": entries}
     validator = __import__("tools.operator_decision_pack", fromlist=["*"])

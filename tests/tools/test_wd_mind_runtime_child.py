@@ -434,9 +434,13 @@ def test_running_service_never_publishes_ready_and_still_closes(monkeypatch, dia
             return {'state':'STOPPED', 'owned':False}
     owner = Owner()
     class Service:
+        def __init__(self): self.close_calls = 0
         def start(self): pass
         def status(self): service_seen.set(); return {'state':'RUNNING'}
-        def close(self, *, timeout): return {'state':'STOPPED'}
+        def close(self, *, timeout):
+            # Make HOLD observable even when the owner closes immediately.
+            self.close_calls += 1
+            return {'state': 'HOLD' if self.close_calls == 1 else 'STOPPED'}
     monkeypatch.setattr(child, 'create_local_manifest_query', lambda **_: owner)
     monkeypatch.setattr(process, 'create_local_candidate_service', lambda **_: Service())
     thread = threading.Thread(target=lambda: result.append(child._local_candidate_owner_entry(
@@ -453,6 +457,7 @@ def test_running_service_never_publishes_ready_and_still_closes(monkeypatch, dia
         stop_requested.set()
         thread.join(5)
     assert not thread.is_alive() and result == [0]
+    assert owner.closed
     assert [row['state'] for row in frames] == ['STARTING', 'HOLD', 'STOPPED']
     assert all(row['authority'] == 'none' for row in frames)
 

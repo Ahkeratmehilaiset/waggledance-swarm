@@ -70,7 +70,8 @@ def test_two_distinct_questions_reach_the_owner_layer_unchanged(driver, bound):
     item = items(driver)
     first, second = driver.ask(route, item['A1'], LEAD), driver.ask(route, item['A2'], LEAD)
     assert [request for _, request in observed] == [
-        {'schema': 'wd.mind-flat-owner-request.v1', 'lane': LEAD, 'scope': 'own', 'query': item[key]['question']}
+        {'schema': 'wd.mind-flat-owner-request.v1', 'lane': LEAD, 'scope': driver.SCOPE[LEAD],
+         'query': item[key]['question']}
         for key in ('A1', 'A2')]
     assert [lane for lane, _ in observed] == [LEAD, LEAD]
     assert item['A1']['question'] != item['A2']['question']
@@ -116,10 +117,15 @@ def test_the_true_binding_is_served_and_a_wrong_one_is_a_counted_refusal(driver,
     assert driver.ask(wrong, item, LEAD)[:2] == ('REFUSED', 'mapper_refused') and len(observed) == 1
 
 
-def test_the_twelve_invented_asks_give_the_hand_worked_classes_through_the_mapper(driver, bound):
+@pytest.mark.parametrize('table', ['product', 'earlier'])
+def test_the_twelve_invented_asks_give_the_hand_worked_classes_through_the_mapper(driver, bound, table):
     route, _, observed, _ = bound
-    card, rows = driver.run(route, driver.synthetic_sets(), driver.LANES)
-    assert {row['id']: row['class'] for row in rows} == driver.EXPECTED_SELFTEST['per_ask']
+    scope, wanted = ((driver.PRODUCT_SCOPE, driver.EXPECTED_PRODUCT) if table == 'product'
+                     else (driver.EARLIER_SCOPE, driver.EXPECTED_SELFTEST))
+    with driver.using_scope(scope):
+        card, rows = driver.run(route, driver.synthetic_sets(), driver.LANES)
+    assert {row['id']: row['class'] for row in rows} == wanted['per_ask']
+    assert [request['scope'] for lane, request in observed] == [scope[lane] for lane, request in observed]
     assert card['refusal_reasons'] == {'mapper_refused': 1}  # the ask with a NUL character
     assert len(observed) == 11 and all('\x00' not in request['query'] for _, request in observed)
 
@@ -127,7 +133,7 @@ def test_the_twelve_invented_asks_give_the_hand_worked_classes_through_the_mappe
 def test_the_startup_request_keeps_the_fixed_overview_text(driver, bound):
     _, handler, observed, _ = bound
     startup = {'schema': 'wd.mind-pipe-request.v1', 'query_id': 'startup_work_overview', 'nonce': 'd' * 64,
-               'lane': LEAD, 'scope': 'own'}
+               'lane': LEAD, 'scope': driver.SCOPE[LEAD]}
     answer = runtime.map_pipe_candidates(enabled=True, handler=handler, request=startup)
     assert answer['schema'] == 'wd.mind-pipe-candidates.v1'
     assert [request['query'] for _, request in observed] == [runtime._STARTUP_PIPE_QUERY]
@@ -140,5 +146,24 @@ def test_a_foreign_row_from_the_owner_layer_passes_the_mapper_and_is_named_by_th
     """The mapper adds no scope filter of its own; the driver still names a row written by another lane."""
     route, _, observed, owner = bound
     owner[0] = driver._OwnerIgnoringScope()
-    assert driver.ask(route, items(driver)['A5'], LEAD)[0] == 'SERVED_OUTSIDE_SCOPE'
-    assert len(observed) == 1
+    with driver.using_scope(driver.EARLIER_SCOPE):  # only a lane that asks with scope own can be served outside it
+        assert driver.ask(route, items(driver)['A5'], LEAD)[0] == 'SERVED_OUTSIDE_SCOPE'
+    assert len(observed) == 1 and observed[0][1]['scope'] == 'own'
+
+
+def test_the_driver_table_equals_both_product_helpers(driver):
+    """Three places fix the scope per lane: the session helper, the child helper and the driver table."""
+    from tools import wd_bridge_mind_session as session, wd_mind_runtime_child as child
+    for lane in driver.LANES:
+        assert session._startup_scope_for_lane(lane) == child._startup_scope_for_lane(lane) == driver.SCOPE[lane]
+    assert driver.SCOPE == driver.PRODUCT_SCOPE
+
+
+def test_under_shared_visibility_a_build_lane_reaches_a_row_of_another_lane_through_the_mapper(driver, bound):
+    """Synthetic cross-lane case: Lead asks for a row the stand-in holds as written by the tools lane."""
+    route, _, observed, _ = bound
+    item = items(driver)['A5']
+    assert [row['agent'] for row in item['gold']] == ['codex-tools-1']
+    assert driver.ask(route, item, LEAD)[0] == 'HIT_FIRST'
+    assert observed == [(LEAD, {'schema': 'wd.mind-flat-owner-request.v1', 'lane': LEAD, 'scope': 'shared',
+                                'query': item['question']})]

@@ -1,4 +1,4 @@
-"""Question-test driver for a Mind free-question route (fable-5, draft 4, 2026-11-22).
+"""Question-test driver for a Mind free-question route (fable-5, draft 5, 2026-11-22).
 
 DRAFT for the second Mind change. This file holds NO question and NO answer: the question sets it
 reads are private evaluation material and are never committed, posted or indexed.
@@ -16,12 +16,15 @@ response = the non-location mapper answer (Lead 15:34Z and 15:41Z): schema wd.mi
            nonce, lane and scope echoed, status CANDIDATES or ABSTAIN, at most 3 candidates, each with exactly
            ref_sha256, doc_id_sha256, source_event_sha256. The v3 label belongs to the request only.
 
-SCOPE RULE (runtime line 2101 at the base; to re-read in the v3 code when a route is bound): with scope own
-a build lane is served only rows it wrote itself; reviewer lanes ask with scope shared. A gold row written
-by another lane is therefore OUT OF REACH for a build lane and is counted apart from a miss. A served row
-that any loaded set knows to be written by another lane is classed SERVED_OUTSIDE_SCOPE before any hit is
-awarded, also when the answer mixes own and foreign rows. A served row whose author no loaded set knows
-cannot be judged here: the scope filter itself needs its own product tests.
+SCOPE RULE. The driver asks with the scope the product gives each lane. At this revision that is the
+shared scope for all five lanes (PRODUCT_SCOPE, equal to the two product helpers), so every gold row is in
+reach of every lane. The owner and the resolver still honour an own scope when one is asked, and the scorer
+keeps its own-scope classes for that: with scope own a lane is served only rows it wrote itself, a gold row
+written by another lane is OUT OF REACH and is counted apart from a miss, and a served row that any loaded
+set knows to be written by another lane is classed SERVED_OUTSIDE_SCOPE before any hit is awarded, also
+when the answer mixes own and foreign rows. EARLIER_SCOPE (the table of the base a30bbb62, build lanes own)
+is kept only for the self test of those classes. A served row whose author no loaded set knows cannot be
+judged here: the scope filter itself needs its own product tests.
 
 ROUTES. A route is called as route(request, caller): caller is the trusted (lane, scope) of the asking
 lane, handed over by the driver beside the request and never read out of the request object; the draft
@@ -40,6 +43,7 @@ MODES (run with the fleet-pinned Python 3.13, flags -I -B):
   convert-v1 V1.json OUT.json      my usefulness test set v1 -> this driver's set format (stays private)
   run --route synthetic --lanes a,b --out DIR SET.json [...]
 """
+import contextlib
 import hashlib
 import json
 import re
@@ -54,8 +58,12 @@ sys.dont_write_bytecode = True
 
 BASE_COMMIT = 'a30bbb625c3fa7c382524e7e51f94efb887e01fe'
 LANES = ('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
-SCOPE = {'codex-lead-1': 'own', 'codex-tools-1': 'own', 'fable-5': 'own',
-         'claude-rco-1': 'shared', 'claude-rco-2': 'shared'}
+# The scope each lane asks with. PRODUCT_SCOPE mirrors the two product helpers of this revision.
+PRODUCT_SCOPE = {lane: 'shared' for lane in LANES}
+# The table of the base a30bbb62. Kept only so that the self test still exercises the own-scope classes.
+EARLIER_SCOPE = {'codex-lead-1': 'own', 'codex-tools-1': 'own', 'fable-5': 'own',
+                 'claude-rco-1': 'shared', 'claude-rco-2': 'shared'}
+SCOPE = dict(PRODUCT_SCOPE)  # the active table; real runs never change it
 HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 SET_SCHEMA = 'fable5.mind-question-set.v1'
 GOLD_KIND = 'sha256_of_canonical_event_json'
@@ -84,6 +92,22 @@ def is_hex(value):
 
 
 # ---------------------------------------------------------------- request and response (proposed v3)
+
+@contextlib.contextmanager
+def using_scope(table):
+    """Swap the active lane table for one block. For the self test and tests only."""
+    if (type(table) is not dict or set(table) != set(LANES)
+            or any(value not in ('own', 'shared') for value in table.values())):
+        raise DriverError('scope_table')
+    saved = dict(SCOPE)
+    SCOPE.clear()
+    SCOPE.update(table)
+    try:
+        yield
+    finally:
+        SCOPE.clear()
+        SCOPE.update(saved)
+
 
 def build_request(question, lane, scope):
     """The ONE place that knows the proposed v3 request shape."""
@@ -463,6 +487,18 @@ EXPECTED_SELFTEST = {
                'hit_first_rate': 0.75, 'hit_within_three_rate': 0.75, 'negative_controls': 2},
     'refusal_reasons': {'synthetic_owner_refused': 1}}
 
+# The same twelve asks under PRODUCT_SCOPE, worked out by hand before the first run. A5 and A6 ask for a
+# row another lane wrote: out of reach under the earlier table, a first hit under shared visibility.
+EXPECTED_PRODUCT = {
+    'per_ask': dict(EXPECTED_SELFTEST['per_ask'], A5='HIT_FIRST', A6='HIT_FIRST'),
+    'all': {'asks': 12, 'answerable_asks_in_reach': 10, 'in_reach_and_answered_by_route': 9,
+            'hit_first_rate': 0.6, 'hit_within_three_rate': 0.7, 'negative_controls': 2,
+            'negative_pass_rate': 0.5},
+    'mine': {'asks': 6, 'answerable_asks_in_reach': 6, 'in_reach_and_answered_by_route': 6,
+             'hit_first_rate': 0.5, 'hit_within_three_rate': 0.6667, 'negative_controls': 0},
+    'others': EXPECTED_SELFTEST['others'],
+    'refusal_reasons': {'synthetic_owner_refused': 1}}
+
 
 class _OwnerIgnoringScope(SyntheticOwner):
     """Fault stand-in: serves a build lane rows written by others."""
@@ -535,6 +571,11 @@ def scope_regression_cases():
     own_only, peer_only = dict(mixed, id='M2', gold=gold(0)), dict(mixed, id='M4', gold=gold(2))
     negative = dict(mixed, id='M3', expect='ABSTAIN', gold=[])
     authors = {SyntheticOwner.row_hash(index): agent for index, (agent, _) in enumerate(SyntheticOwner.ROWS)}
+    with using_scope(EARLIER_SCOPE):  # these cases are about a lane that asks with scope own
+        return _scope_cases(mixed, own_only, peer_only, negative, authors, lead, reviewer)
+
+
+def _scope_cases(mixed, own_only, peer_only, negative, authors, lead, reviewer):
     return {
         'mixed_gold_only_peer_row_served': ask(_FixedOwner(2), mixed, lead)[0],
         'mixed_gold_own_then_peer_served': ask(_FixedOwner(0, 2), mixed, lead)[0],
@@ -595,10 +636,36 @@ def response_fault_cases():
     return outcome
 
 
+def product_table_problems():
+    """The twelve invented asks under the active product table against EXPECTED_PRODUCT."""
+    card, rows = run(SyntheticOwner(), synthetic_sets(), LANES)
+    problems = []
+    per_ask = {row['id']: row['class'] for row in rows}
+    if per_ask != EXPECTED_PRODUCT['per_ask']:
+        problems.append(('product_per_ask', {key: (per_ask.get(key), want) for key, want in
+                                             EXPECTED_PRODUCT['per_ask'].items() if per_ask.get(key) != want}))
+    for name, part in (('all', card['all']), ('mine', card['questions_by_me']),
+                       ('others', card['questions_by_others'])):
+        for key, want in EXPECTED_PRODUCT[name].items():
+            if part[key] != want:
+                problems.append(('product_' + name, key, part[key], want))
+    if card['refusal_reasons'] != EXPECTED_PRODUCT['refusal_reasons']:
+        problems.append(('product_refusal_reasons', card['refusal_reasons']))
+    if set(SCOPE.values()) != {'shared'} or card['all']['classes']['OUT_OF_REACH_NO_CANDIDATES']:
+        problems.append(('product_table_is_not_shared_for_all', dict(SCOPE)))
+    return problems, card
+
+
 def selftest():
+    product_problems, product_card = product_table_problems()
+    with using_scope(EARLIER_SCOPE):  # the earlier table keeps the own-scope classes under test
+        return _selftest_earlier_table(product_problems, product_card)
+
+
+def _selftest_earlier_table(product_problems, product_card):
     sets = synthetic_sets()
     card, rows = run(SyntheticOwner(), sets, LANES)
-    problems = []
+    problems = list(product_problems)
     per_ask = {row['id']: row['class'] for row in rows}
     if per_ask != EXPECTED_SELFTEST['per_ask']:
         problems.append(('per_ask', {key: (per_ask.get(key), want) for key, want in
@@ -640,6 +707,10 @@ def selftest():
                                          'refusal_reasons')}
     result = {'selftest': 'MATCH' if not problems else 'MISMATCH', 'problems': problems,
               'asks': card['all']['asks'], 'classes': card['all']['classes'],
+              'product_table': {'scope': dict(PRODUCT_SCOPE), 'classes': product_card['all']['classes'],
+                                'answerable_asks_in_reach': product_card['all']['answerable_asks_in_reach'],
+                                'hit_first_rate': product_card['all']['hit_first_rate'],
+                                'hit_within_three_rate': product_card['all']['hit_within_three_rate']},
               'altered_responses_refused': '%d of %d' % (len(faults) - len(accepted), len(faults)),
               'altered_response_reasons': faults,
               'scope_cases': scope_cases,

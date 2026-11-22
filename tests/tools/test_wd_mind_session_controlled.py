@@ -41,7 +41,7 @@ def test_controlled_go_precedes_exactly_one_real_resolution(flat_consumer_case,m
             stream.seek(item['source_offset'])
             if json.loads(stream.read(item['source_length']))['agent']=='codex-lead-1': own.append(item)
     assert own
-    frame['candidates'],frame['scope']=own[:1],'own'
+    frame['candidates']=own[:1]
     policy=tmp_path/'synthetic-policy.json'
     policy.write_bytes(snapshot['identifier_policy_binding'][0])
     sha=hashlib.sha256(policy.read_bytes()).hexdigest()

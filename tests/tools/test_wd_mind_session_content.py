@@ -1707,7 +1707,6 @@ def test_consumer_child_entry_fixtures_never_publish_unverified_content(flat_con
     policy = content._sha(snapshot['identifier_policy_binding'][0])
     lane = b'codex-lead-1'
     frame = json.loads(response())
-    frame['scope'] = 'own'
     if fault == 'candidate': frame['candidates'][0]['source_event_sha256'] = '0'*64
     payload = json.dumps(frame, separators=(',', ':')).encode()
     control = (b'MCC1' + bytes.fromhex(owner._pin) + bytes.fromhex(policy) + bytes.fromhex('3'*64)
@@ -1772,9 +1771,7 @@ def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monke
     _, owner, proposals, snapshot, _, response = flat_consumer_case
     meta, blocks = _export_fixture(owner, snapshot)
     wire = _synthetic_export_wire(meta, blocks, b'B'*32)
-    frame = json.loads(response())
-    frame['scope'] = 'own'
-    payload = json.dumps(frame, separators=(',', ':')).encode()
+    payload = response()
     control = session._ConsumerKeyBox()
     control._key = b'B'*32
     control._nonce, control._lane = '1'*64, 'codex-lead-1'

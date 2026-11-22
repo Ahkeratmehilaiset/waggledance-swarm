@@ -3967,11 +3967,12 @@ def create_flat_request_handler(*, enabled=False, binding=None, lane=None, worke
 _STARTUP_PIPE_QUERY = 'current task active work next step recent status'
 
 
-def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_locations=False):
-    """Map one fixed public in-process query to source hashes, never text.
+def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_locations=False,
+                        free_question_binding=None):
+    """Map a startup query or an explicitly bound in-process question to source hashes.
 
-    The caller must authenticate and bind the peer separately; accepting a
-    lane string here is not proof of caller identity. No listener is created.
+    For a free question, the trusted caller authenticates the peer and passes
+    its bound (lane, scope). The result carries source hashes only.
     """
     result = None
     try:
@@ -3980,16 +3981,33 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_l
                 or (_include_locations and type(handler._retained) is not _RetainedFlatQueryState)):
             raise ValueError('input')
         frozen = dict(request)
-        if (set(frozen) != {'schema', 'query_id', 'nonce', 'lane', 'scope'}
-                or any(type(frozen[key]) is not str for key in frozen)
-                or frozen['schema'] != 'wd.mind-pipe-request.v1'
-                or frozen['query_id'] != 'startup_work_overview'
-                or not reader._hex(frozen['nonce']) or frozen['lane'] not in reader._LANES
-                or frozen['scope'] not in ('own', 'shared')):
+        if any(type(value) is not str for value in frozen.values()):
+            raise ValueError('request')
+        keys = {'schema', 'query_id', 'nonce', 'lane', 'scope'}
+        is_free_question = frozen.get('schema') == 'wd.mind-pipe-request.v3'
+        if is_free_question:
+            keys.add('question')
+        if (set(frozen) != keys or not reader._hex(frozen['nonce'])
+                or frozen['lane'] not in reader._LANES or frozen['scope'] not in ('own', 'shared')):
+            raise ValueError('request')
+        query = _STARTUP_PIPE_QUERY
+        if is_free_question:
+            if (frozen['query_id'] != 'free_question' or _include_locations
+                    or type(free_question_binding) is not tuple
+                    or any(type(value) is not str for value in free_question_binding)
+                    or free_question_binding != (frozen['lane'], frozen['scope'])):
+                raise ValueError('free_question_binding')
+            from tools import wd_mind_runtime_process as process
+
+            query = frozen['question']
+            if len(query) > process._LOCAL_CANDIDATE_MAX_BYTES or not query.strip() or '\x00' in query:
+                raise ValueError('question')
+            process._local_candidate_encode(frozen)
+        elif frozen['schema'] != 'wd.mind-pipe-request.v1' or frozen['query_id'] != 'startup_work_overview':
             raise ValueError('request')
         reply = handler.lane_view(frozen['lane']).handle({
             'schema': 'wd.mind-flat-owner-request.v1', 'lane': frozen['lane'],
-            'scope': frozen['scope'], 'query': _STARTUP_PIPE_QUERY})
+            'scope': frozen['scope'], 'query': query})
         if (type(reply) is not dict
                 or set(reply) != {'schema', 'lane', 'scope', 'authority', 'expires_utc',
                                   'expiry_scope', 'snapshot_freshness', 'result'}

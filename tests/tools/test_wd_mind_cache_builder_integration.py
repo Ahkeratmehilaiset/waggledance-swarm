@@ -134,7 +134,7 @@ def _synthetic_case(tmp_path, monkeypatch, *, existing=False):
         return runtime._build_flat_memory_immutable(binding, encode, encoder, fixtures._sha(encoder),
                                                      5, None, vector_cache=adapter)
     return SimpleNamespace(case=case, source=source, cache_path=cache_path, snapshot=snapshot,
-                           passages=passages, checks=checks, build=build, adapter=adapter)
+                           passages=passages, checks=checks, build=build, adapter=adapter, encoder=encoder)
 
 
 @pytest.fixture
@@ -142,6 +142,63 @@ def synthetic(tmp_path, monkeypatch):
     audit_root = tmp_path / '.codex-audit'
     audit_root.mkdir()
     return _synthetic_case(audit_root, monkeypatch)
+
+
+def _synthetic_verified_row_count(monkeypatch, count):
+    """Only the verified count is synthetic. No vector buffers are allocated."""
+    original = reader._verified_complete
+    def verified(snapshot, **kwargs):
+        projection, context, report = original(snapshot, **kwargs)
+        records = projection['messages']['records']
+        return dict(projection, messages=dict(projection['messages'], records=[records[0]] * count)), context, report
+    monkeypatch.setattr(reader, '_verified_complete', verified)
+
+
+@pytest.mark.parametrize('count', [250000, 250001])
+def test_cache_capacity_precedes_prefix_capture_and_encoding(synthetic, monkeypatch, count):
+    original, _ = synthetic.snapshot()
+    assert synthetic.build(original).cache_status == 'MISS_STORED'
+    original_cache = synthetic.cache_path.read_bytes()
+    synthetic.passages.clear()
+    binding, _ = synthetic.snapshot()
+    _synthetic_verified_row_count(monkeypatch, count)
+    captures = []
+    def stop_at_capture(*args):
+        captures.append(True)
+        raise ValueError('synthetic stop after capacity check')
+    monkeypatch.setattr(package, '_immutable_prefix', stop_at_capture)
+    reason = 'CACHE_CAPACITY' if count > 250000 else 'snapshot_build_refused'
+    with pytest.raises(ValueError, match=f'^{reason}$'):
+        synthetic.build(binding)
+    assert captures == ([] if count > 250000 else [True])
+    assert synthetic.passages == [] and synthetic.cache_path.read_bytes() == original_cache
+
+
+def test_cache_capacity_at_limit_and_build_without_cache(synthetic, monkeypatch):
+    assert synthetic.adapter.has_capacity(250000) is True
+    assert synthetic.adapter.has_capacity(250001) is False
+    binding, _ = synthetic.snapshot()
+    memory = synthetic.build(binding)
+    assert memory.cache_status == 'MISS_STORED'
+    old_cache = synthetic.cache_path.read_bytes()
+    monkeypatch.setattr(cache, '_MAX_ROWS', 1)
+    binding, _ = synthetic.snapshot()
+    encoded = []
+    def encode(values):
+        encoded.extend(values)
+        return VECTOR * len(values)
+    no_cache = runtime._build_flat_memory_immutable(
+        binding, encode, memory.encoder_binding, fixtures._sha(memory.encoder_binding), 5, None)
+    assert len(no_cache.ids) == 2 and len(encoded) == 2
+    assert synthetic.cache_path.read_bytes() == old_cache
+
+
+@pytest.mark.parametrize('limit,count', [(True,250001), (1,250001), (250001,250001), (250000,True), (250000,-1)])
+def test_invalid_cache_capacity_inputs_are_generic(synthetic, monkeypatch, limit, count):
+    monkeypatch.setattr(cache, '_MAX_ROWS', limit)
+    with pytest.raises(ValueError) as refused:
+        synthetic.adapter.has_capacity(count)
+    assert str(refused.value) != 'CACHE_CAPACITY'
 
 
 def test_cold_warm_and_append_use_only_screened_vectors(synthetic):

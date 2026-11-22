@@ -380,6 +380,14 @@ class FullRuntimeRefused(ValueError):
     """Fixed refusal without source paths, contents or key material."""
 
 
+class _EagerSourceBudgetRefused(FullRuntimeRefused):
+    """The local source exceeds the effective eager projection limit (256 MiB)."""
+
+
+class _CacheCapacityRefused(FullRuntimeRefused):
+    """The verified projection exceeds the pinned cache format's row limit."""
+
+
 class _GenerationInputRefused(FullRuntimeRefused):
     """A generation-delivery request is invalid before any provider call."""
 
@@ -1019,6 +1027,7 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
     of approval or of a trusted parent channel.
     """
     result = None
+    over_budget = False
     cancelled_type = cancellation_group = None
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
@@ -1039,9 +1048,13 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         reader._load_identifier_policy(identifier, key, tag, allow_empty_v2=True)
         bundle = Path(bundle_root)
         controls = _bundle_inputs(bundle, expected_manifest_sha256)
-        observed = prefix.observe_prefix(enabled=True, bundle_root=bundle_root,
-                                         expected_manifest_sha256=expected_manifest_sha256,
-                                         scope='full_prefix_v1')
+        try:
+            observed = prefix.observe_prefix(enabled=True, bundle_root=bundle_root,
+                expected_manifest_sha256=expected_manifest_sha256, scope='full_prefix_v1',
+                max_prefix_bytes=reader._max_eager_source_bytes())
+        except prefix._ObservedPrefixBudgetRefused as exc:
+            over_budget = type(exc) is prefix._ObservedPrefixBudgetRefused
+            raise
         meta = dict(observed.metadata)
         observed = None  # Unscreened events are never returned or logged.
         if (meta['manifest_sha256'] != expected_manifest_sha256 or meta['generation'] != 'UNKNOWN'
@@ -1105,6 +1118,8 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         raise cancelled_type() from None
     if cancellation_group is not None:
         raise cancellation_group from None
+    if over_budget:
+        raise _EagerSourceBudgetRefused('SOURCE_BUDGET') from None
     if result is None:
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
     return result
@@ -1399,6 +1414,18 @@ class _PrivateVectorCache:
             raise ValueError('cache_preflight')
         return status
 
+    def has_capacity(self, count):
+        self._verify()
+        try:
+            limit = getattr(self._module, '_MAX_ROWS', None)
+        except Exception:
+            self._verify()
+            raise
+        self._verify()
+        if type(count) is not int or count < 0 or type(limit) is not int or limit != 250000:
+            raise ValueError('cache_controls')
+        return count <= limit
+
     def write(self, binding, rows):
         self._verify()
         try:
@@ -1490,6 +1517,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
     snapshot = binding.snapshot_for_query()
     package = binding._snapshot_support()
     watcher, output, problem, cleanup_problem, held = None, None, None, None, False
+    over_capacity = False
     try:
         try:
             watcher = (package._reserve_watcher() if watcher_lease is None else
@@ -1499,6 +1527,17 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
         if not held:
             frozen = package._snapshot(snapshot, {'streamed': True})
             projection, context, report = reader._verified_complete(frozen)
+            if vector_cache is not None:
+                if type(vector_cache) is not _PrivateVectorCache:
+                    raise ValueError('cache_provider')
+                records = projection['messages']['records']
+                if type(records) is not list:
+                    raise ValueError('records')
+                # Refuse before capturing another full prefix or encoding if
+                # the cache cannot hold this cold build or refresh.
+                if not vector_cache.has_capacity(len(records)):
+                    over_capacity = True
+                    raise _CacheCapacityRefused('CACHE_CAPACITY')
             immutable_prefix = package._immutable_prefix(context)
             projection = json.loads(frozen['projection_bytes'].decode('utf-8'),
                                     object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
@@ -1521,7 +1560,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     def verify_old_prefix(offset, expected):
                         return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
                                 and reader._hex(expected)
-                                and hmac.compare_digest(reader._sha(immutable_prefix[:offset]), expected))
+                                and hmac.compare_digest(reader._sha(memoryview(immutable_prefix)[:offset]), expected))
                     cached = vector_cache.load(cache_binding, verify_old_prefix)
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
                     cache_status = 'HIT'
@@ -1617,6 +1656,9 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
         raise BaseExceptionGroup('provider_cancelled', signals) from None
     if held:
         raise FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold') from None
+    if over_capacity and cleanup_problem is None and type(problem) is _CacheCapacityRefused:
+        problem = None
+        raise _CacheCapacityRefused('CACHE_CAPACITY') from None
     if cleanup_problem is not None or problem is not None:
         raise ValueError('snapshot_build_refused') from None
     return output
@@ -1631,6 +1673,7 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
     Provider identity and supplied encoder metadata are caller-trusted; this
     format makes no FAISS, model-authentication or cross-process claim.
     """
+    immutable_build = False
     result = None
     try:
         if (enabled is not True or type(binding) is not _PrivateBinding
@@ -1641,6 +1684,7 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
         if source_verification is not None:
             if type(source_verification) is not str or source_verification != 'verified_immutable_snapshot_v1':
                 raise ValueError('source_verification')
+            immutable_build = True
             return _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
                                                 encoder_binding_sha256, watcher_join_timeout_seconds, _watcher_lease,
                                                 _prior_memory, _vector_cache)
@@ -1678,6 +1722,9 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                                     encoder_binding_bytes)
     except FullRuntimeSnapshotHold:
         raise
+    except _CacheCapacityRefused as exc:
+        if immutable_build and type(exc) is _CacheCapacityRefused:
+            raise
     except Exception:
         pass
     if result is None:
@@ -1884,8 +1931,15 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
     return result
 
 
-_STARTUP_OWNER_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
-_STARTUP_PREWARM_SOURCE_READ_LIMIT = 2 * 1024 * 1024 * 1024
+# Source size and total I/O are separate limits. Each operation still reserves
+# every planned full-prefix pass and selected-row read before touching source.
+_STARTUP_MAX_SOURCE_PREFIX_BYTES = reader._COMPLETE_SOURCE_PREFIX_BYTES
+_STARTUP_OWNER_SOURCE_READ_LIMIT = (
+    3 * _STARTUP_MAX_SOURCE_PREFIX_BYTES + 6 * (4 * 1024 * 1024 + 1) + 3
+)
+_STARTUP_PREWARM_SOURCE_READ_LIMIT = (
+    7 * _STARTUP_MAX_SOURCE_PREFIX_BYTES + 4 * 1024 * 1024 + 1
+)
 _STARTUP_OWNER_SOURCE_BUDGET_ENABLED = True
 
 
@@ -1901,6 +1955,8 @@ def _startup_owner_source_budget(snapshot):
     # boundary bytes, and three rotation source-check bytes.
     if type(offset) is not int or offset <= 0:
         raise ValueError('source_budget')
+    if offset > _STARTUP_MAX_SOURCE_PREFIX_BYTES:
+        raise _StartupSourceBudgetRefused('source_budget')
     if 3 * offset + 3 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
         raise _StartupSourceBudgetRefused('source_budget')
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
@@ -1912,6 +1968,8 @@ def _prewarm_source_fits(snapshot, *, extra_prefix_passes=0):
     if (type(offset) is not int or offset <= 0 or type(extra_prefix_passes) is not int
             or extra_prefix_passes not in (0, 2)):
         raise ValueError('source_budget')
+    if offset > _STARTUP_MAX_SOURCE_PREFIX_BYTES:
+        raise _StartupSourceBudgetRefused('source_budget')
     if (5 + extra_prefix_passes) * offset + 4 * 1024 * 1024 + 1 > _STARTUP_PREWARM_SOURCE_READ_LIMIT:
         raise _StartupSourceBudgetRefused('source_budget')
 
@@ -1927,6 +1985,8 @@ def _local_query_source_budget(snapshot):
     offset = snapshot['messages']['end_cursor'].offset
     if type(offset) is not int or offset <= 0:
         raise ValueError('source_budget')
+    if offset > _STARTUP_MAX_SOURCE_PREFIX_BYTES:
+        raise _StartupSourceBudgetRefused('source_budget')
     if 3 * offset + 6 * (4 * 1024 * 1024 + 1) + 3 > _STARTUP_OWNER_SOURCE_READ_LIMIT:
         raise _StartupSourceBudgetRefused('source_budget')
     return prefix._SourceReadBudget(_STARTUP_OWNER_SOURCE_READ_LIMIT)
@@ -2141,14 +2201,19 @@ class _FlatRequestHandler:
     def _build(self, prior_memory):
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        building_memory = False
         try:
             if self._closed or self._failed or self._memory is not None:
                 raise ValueError('state')
-            memory = build_flat_memory(enabled=True, binding=self._binding, passage_encoder=self._adapter.passage,
-                encoder_binding_bytes=self._adapter.encoder_binding_bytes,
-                encoder_binding_sha256=self._adapter.encoder_binding_sha256,
+            passage = self._adapter.passage
+            encoder_bytes = self._adapter.encoder_binding_bytes
+            encoder_pin = self._adapter.encoder_binding_sha256
+            building_memory = True
+            memory = build_flat_memory(enabled=True, binding=self._binding, passage_encoder=passage,
+                encoder_binding_bytes=encoder_bytes, encoder_binding_sha256=encoder_pin,
                 source_verification='verified_immutable_snapshot_v1', _watcher_lease=self._watcher_lease,
                 _prior_memory=prior_memory, _vector_cache=self._vector_cache)
+            building_memory = False
             self._memory = memory
             self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
             self._source_check()
@@ -2158,8 +2223,10 @@ class _FlatRequestHandler:
                 reader._q4_vector(self._adapter.query('Mind startup readiness'))
             self._running_owner()
             return {'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'}
-        except Exception:
+        except Exception as exc:
             self._failed = True
+            if building_memory and type(exc) is _CacheCapacityRefused:
+                raise
         finally:
             self._lock.release()
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
@@ -2663,10 +2730,19 @@ def _verify_refresh_basis(owner):
     return str(binding._PrivateBinding__bundle), binding._PrivateBinding__manifest, policy, pin
 
 
+_REFRESH_SOURCE_BUDGET = object()
+_REFRESH_CACHE_CAPACITY = object()
+
+
 def _stage_refresh_generation(owner):
     bundle, manifest, policy, policy_pin = _verify_refresh_basis(owner)
-    binding = assemble_full_runtime(enabled=True, bundle_root=bundle, expected_manifest_sha256=manifest,
-        identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_pin)
+    try:
+        binding = assemble_full_runtime(enabled=True, bundle_root=bundle, expected_manifest_sha256=manifest,
+            identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_pin)
+    except _EagerSourceBudgetRefused as exc:
+        if type(exc) is _EagerSourceBudgetRefused:
+            return _REFRESH_SOURCE_BUDGET
+        raise
     snapshot = binding.snapshot_for_query()
     # A refreshed-cache commit needs two additional budgeted prefix checks.
     # Refuse before _build starts passage encoding if they cannot fit.
@@ -2675,7 +2751,12 @@ def _stage_refresh_generation(owner):
     handler = _FlatRequestHandler(binding, snapshot, owner._lane, owner._lanes, owner._client,
         owner._adapter, owner._factory, owner._timeout, owner._factory._bulk, owner._watcher_lease,
         owner._handler._vector_cache)
-    handler._build(owner._handler._memory)
+    try:
+        handler._build(owner._handler._memory)
+    except _CacheCapacityRefused as exc:
+        if type(exc) is _CacheCapacityRefused:
+            return _REFRESH_CACHE_CAPACITY
+        raise
     return {'binding':binding, 'snapshot':snapshot, 'memory':handler._memory, 'handler':handler}
 
 
@@ -2963,6 +3044,8 @@ class _SingleManifestOwner:
             self._state = 'HOLD'
             _verify_refresh_basis(self)
             staged = _stage_refresh_generation(self)
+            if staged is _REFRESH_SOURCE_BUDGET or staged is _REFRESH_CACHE_CAPACITY:
+                raise ValueError('refresh_resource_limit')
             generation = _validate_refresh_generation(self, staged)
             if self._rotation_enabled:
                 if not self._rotation_is_bound() or self._adapter is None:
@@ -3027,7 +3110,12 @@ class _SingleManifestOwner:
                     self._handler._retained = None
                 self._retained = None
                 self._state = 'HOLD'
-            pending = _flat_cancellation(exc)
+            if staged is _REFRESH_SOURCE_BUDGET:
+                pending = _EagerSourceBudgetRefused('SOURCE_BUDGET')
+            elif staged is _REFRESH_CACHE_CAPACITY:
+                pending = _CacheCapacityRefused('CACHE_CAPACITY')
+            else:
+                pending = _flat_cancellation(exc)
         finally:
             # These objects may contain identifier-policy and HMAC key bytes.
             # Keep them out of this frame before any refusal or cancellation.
@@ -3534,6 +3622,8 @@ class _SingleManifestOwner:
                 self._state = 'HOLD'
                 pending_cancel = _flat_cancellation(exc)
             except BaseException as exc:
+                if stage == 'HANDLER_BUILD' and type(exc) is _CacheCapacityRefused:
+                    stage = 'CACHE_CAPACITY'
                 self._start_failure = (stage, next((name for kind, name in _START_ERROR_TYPES.items() if type(exc) is kind), 'UNKNOWN'))
                 # Unknown post-launch states are never declared exited. The
                 # saved owner (if present) remains reachable for explicit EOF.

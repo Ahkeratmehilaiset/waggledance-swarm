@@ -1024,13 +1024,11 @@ def _wait_for_owner_close(owner):
 
 
 def _startup_scope_for_lane(lane):
-    """Keep build lanes own-scoped and let RCO lanes read allowed build rows."""
+    """Let every recognized lane read the allowed build rows of all build lanes."""
     if type(lane) is not str:
         raise ValueError('lane')
-    if lane in ('claude-rco-1', 'claude-rco-2'):
+    if lane in ('claude-rco-1', 'claude-rco-2', 'codex-lead-1', 'codex-tools-1', 'fable-5'):
         return 'shared'
-    if lane in ('codex-lead-1', 'codex-tools-1', 'fable-5'):
-        return 'own'
     raise ValueError('lane')
 
 

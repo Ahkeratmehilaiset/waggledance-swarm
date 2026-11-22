@@ -380,7 +380,7 @@ def test_prefix_budget_reason_is_not_emitted_after_deadline(monkeypatch, tmp_pat
     assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
 
 
-@pytest.mark.parametrize(('lane', 'scope'), [('codex-lead-1', 'own'), ('claude-rco-1', 'shared')])
+@pytest.mark.parametrize(('lane', 'scope'), [('codex-lead-1', 'shared'), ('claude-rco-1', 'shared')])
 def test_local_candidate_cli_rechecks_real_synthetic_rows(flat_consumer_case, monkeypatch, tmp_path, lane, scope):
     from tools import wd_mind_runtime_process as process
     resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
@@ -411,6 +411,55 @@ def test_local_candidate_cli_rechecks_real_synthetic_rows(flat_consumer_case, mo
     assert result['results'][0]['source_event_sha256'] == frame['candidates'][0]['source_event_sha256']
     assert observed['schema'] == 'wd.mind-pipe-request.v2' and observed['scope'] == scope
     assert policy not in out.getvalue()
+
+
+@pytest.mark.parametrize('lane_scope', ['shared', 'own'])
+def test_local_candidate_cli_serves_a_build_lane_a_row_of_another_build_lane(
+        flat_consumer_case, monkeypatch, tmp_path, lane_scope):
+    """Five-lane shared visibility on synthetic rows.
+
+    The entry takes the scope from the lane table, and a build lane receives a row that a different build
+    lane wrote. The control puts the earlier own scope back for that lane: the same row is then refused
+    with no partial output, which shows the row really is another lane's.
+    """
+    from tools import wd_mind_runtime_process as process
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    probe = dict(frame, lane='claude-rco-1')
+    writer = resolver.resolve(ipc_bytes=content._canonical(probe), expected_nonce='1'*64, lane='claude-rco-1',
+                              scope='shared', deadline_monotonic=time.monotonic()+60)['results'][0]['source_agent']
+    reader = sorted(lane for lane in content._BUILD_LANES if lane != writer)[0]
+    assert writer in content._BUILD_LANES and reader != writer
+    if lane_scope == 'own':
+        monkeypatch.setattr(session, '_startup_scope_for_lane', lambda lane: 'own')
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: resolver)
+    observed = {}
+    class Query:
+        def __init__(self, request): self.request = request
+        def start(self): pass
+        def wait(self, *, timeout):
+            frame.update(nonce=self.request['nonce'], lane=self.request['lane'], scope=self.request['scope'])
+            return {'status':'CANDIDATES', 'authority':'none', 'sender_authentication':'UNKNOWN',
+                    'source_verification':'UNVERIFIED', 'candidate_frame':content._canonical(frame)}
+        def status(self): return {'state':'STOPPED'}
+    def factory(*, enabled, pipe_name, request):
+        observed.update(request)
+        return Query(request)
+    monkeypatch.setattr(process, 'create_local_candidate_query', factory)
+    policy = b'{"private":"synthetic-only"}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(_local_client_args(policy_path, policy, lane=reader),
+                                          out, err, str(Path.cwd()), 'a'*64)
+    assert observed['lane'] == reader and observed['scope'] == lane_scope
+    if lane_scope == 'own':
+        assert code != 0 and out.getvalue() == b''
+        assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+        return
+    assert code == 0 and err.getvalue() == b''
+    result = json.loads(out.getvalue())
+    assert result['results'][0]['source_event_sha256'] == frame['candidates'][0]['source_event_sha256']
+    assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
 
 
 @pytest.mark.parametrize('fault', ['missing', 'relative', 'wrong_hash', 'oversized', 'untrusted_row'])

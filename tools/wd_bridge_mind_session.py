@@ -1290,13 +1290,11 @@ def _read_parent_consumer_control(*, enabled=False, stream=None, expected_manife
 
 
 def _startup_scope_for_lane(lane):
-    """Match the fixed owner scope; this does not authenticate the lane."""
+    """Give every recognized lane the same shared scope; this does not authenticate the lane."""
     if type(lane) is not str:
         raise ValueError('lane')
-    if lane in ('claude-rco-1', 'claude-rco-2'):
+    if lane in ('claude-rco-1', 'claude-rco-2', 'codex-lead-1', 'codex-tools-1', 'fable-5'):
         return 'shared'
-    if lane in ('codex-lead-1', 'codex-tools-1', 'fable-5'):
-        return 'own'
     raise ValueError('lane')
 
 

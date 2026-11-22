@@ -1,0 +1,99 @@
+"""Self test of the question-test driver for the proposed Mind free-question route.
+
+No model, no bridge log and no product code is run: the driver is exercised only against its own
+synthetic stand-in of six invented rows. Question sets are private evaluation material and are not here.
+"""
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+DRIVER_PATH = Path(__file__).with_name('mind_question_test_driver.py')
+
+
+@pytest.fixture(scope='module')
+def driver():
+    spec = importlib.util.spec_from_file_location('mind_question_test_driver', DRIVER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_self_test_matches_the_hand_worked_classes(driver, capsys):
+    assert driver.selftest() == 0
+    assert capsys.readouterr().out.rstrip().endswith('SELFTEST MATCH')
+
+
+def test_request_is_the_proposed_v3_shape(driver):
+    request = driver.build_request('synthetic question', 'codex-tools-1', 'own')
+    assert set(request) == {'schema', 'query_id', 'nonce', 'lane', 'scope', 'question'}
+    assert request['schema'] == 'wd.mind-pipe-request.v3' and request['query_id'] == 'free_question'
+    assert driver.is_hex(request['nonce']) and request['question'] == 'synthetic question'
+
+
+def test_every_altered_response_is_refused(driver):
+    outcome = driver.response_fault_cases()
+    assert len(outcome) == 21
+    assert sorted(name for name, result in outcome.items() if not result.startswith('refused:')) == []
+
+
+def test_unbound_route_refuses_every_ask_and_reports_no_rate(driver):
+    card, rows = driver.run(driver.PipeV3NotBound(), driver.synthetic_sets(), driver.LANES)
+    assert card['all']['asks'] == 12 and card['all']['classes']['REFUSED'] == 12
+    # A refusal stays in the count the rates are taken over: it reads as zero, never as no figure.
+    assert card['all']['hit_first_rate'] == 0.0 and card['all']['negative_pass_rate'] == 0.0
+    assert set(card['refusal_reasons']) == {'route_not_bound'}
+
+
+def test_out_of_reach_is_counted_apart_from_a_miss(driver):
+    card, rows = driver.run(driver.SyntheticOwner(), driver.synthetic_sets(), driver.LANES)
+    classes = {row['id']: row['class'] for row in rows}
+    assert classes['A4'] == 'MISS_NO_CANDIDATES' and classes['A5'] == 'OUT_OF_REACH_NO_CANDIDATES'
+    assert card['all']['answerable_asks_in_reach'] == 8 and card['all']['in_reach_and_answered_by_route'] == 7
+    assert card['label'] == 'SYNTHETIC STAND-IN, NOT A MIND MEASUREMENT'
+
+
+def test_card_and_rows_never_carry_a_question_text(driver, tmp_path):
+    card, rows = driver.run(driver.SyntheticOwner(), driver.synthetic_sets(), driver.LANES)
+    saved = json.dumps([card, rows])
+    for document, _ in driver.synthetic_sets():
+        for item in document['questions']:
+            assert item['question'] not in saved
+
+
+@pytest.mark.parametrize('change', [
+    {'schema': 'other'}, {'gold_kind': 'event_id'}, {'author': ''}, {'questions': []}])
+def test_a_malformed_set_is_refused(driver, change):
+    document = dict(driver.synthetic_sets()[0][0], **change)
+    with pytest.raises(driver.DriverError):
+        driver.check_set(document)
+
+
+def test_an_answerable_question_without_gold_is_refused(driver):
+    document = json.loads(json.dumps(driver.synthetic_sets()[0][0]))
+    document['questions'][0]['gold'] = []
+    with pytest.raises(driver.DriverError):
+        driver.check_set(document)
+
+
+def test_a_peer_row_served_under_scope_own_is_never_a_hit(driver):
+    """Lead's counterexample of 2026-11-22: gold with one own and one peer row, only the peer row served."""
+    cases = driver.scope_regression_cases()
+    assert cases == driver.EXPECTED_SCOPE_CASES
+    assert cases['mixed_gold_only_peer_row_served'] == 'SERVED_OUTSIDE_SCOPE'
+    assert cases['mixed_gold_own_then_peer_served'] == 'SERVED_OUTSIDE_SCOPE'
+    assert cases['mixed_gold_only_own_row_served'] == 'HIT_FIRST'
+
+
+@pytest.mark.parametrize('name', ['candidates_v2_label', 'candidates_v3_label', 'row_with_false_location',
+                                  'rows_with_three_locations'])
+def test_only_the_non_location_answer_with_three_hash_fields_is_read(driver, name):
+    assert driver.response_fault_cases()[name].startswith('refused:')
+
+
+def test_one_gold_reference_has_one_writer(driver):
+    document = json.loads(json.dumps(driver.synthetic_sets()[0][0]))
+    document['questions'][1]['gold'][0]['agent'] = 'codex-tools-1'
+    with pytest.raises(driver.DriverError):
+        driver.check_set(document)

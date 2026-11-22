@@ -162,6 +162,10 @@ class _SelectedSourcePrefixBudgetRefused(MindContentSessionRefused):
     """Known source-prefix preflight exceeds the selected read budget."""
 
 
+class _SelectedEagerSourceBudgetRefused(MindContentSessionRefused):
+    """Startup requires an owner capable of building this frozen prefix."""
+
+
 def _pin_flat_session(bundle_root, expected_manifest_sha256):
     """Check this module's actual file against a separately supplied anchor."""
     from tools import wd_mind_absent_generation_prefix_readonly as absent
@@ -525,8 +529,21 @@ def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None,
 
 
 # Startup limits source bytes returned by unbuffered bridge-log reads. This is
-# independent of the result-frame bound and does not bound other file IO.
-_STARTUP_SOURCE_READ_LIMIT = 1024 * 1024 * 1024
+# independent of the result-frame bound and does not bound other file IO. The
+# selected resolver reads the frozen prefix once to capture it, once to check
+# that capture, and twice around the selected-row checks. A 10 GiB prefix needs
+# four complete passes; selecting up to three rows twice also needs room for
+# each row and its preceding boundary byte. The tail reader reserves at most
+# 64 MiB plus its boundary byte; the initial prefix boundary costs one byte.
+_MAX_STARTUP_PREFIX_BYTES = 10 * 1024 ** 3
+_STARTUP_TAIL_READ_ALLOWANCE = 64 * 1024 ** 2 + 1
+_MAX_SELECTED_CANDIDATES = 3
+_MAX_SELECTED_SOURCE_ROW_BYTES = 4 * 1024 ** 2
+_STARTUP_SOURCE_READ_LIMIT = (
+    4 * _MAX_STARTUP_PREFIX_BYTES
+    + _STARTUP_TAIL_READ_ALLOWANCE + 1
+    + 2 * _MAX_SELECTED_CANDIDATES * (_MAX_SELECTED_SOURCE_ROW_BYTES + 1)
+)
 
 
 class _SourceReadBudget:
@@ -566,6 +583,8 @@ class _SelectedReadDeadline(Exception):
 
 
 def _preflight_selected_source_prefix(budget, offset):
+    if type(offset) is not int or not 0 < offset <= _MAX_STARTUP_PREFIX_BYTES:
+        raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget') from None
     try:
         budget.require(1 + 4 * offset)
     except ValueError as exc:
@@ -960,6 +979,8 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
             _preflight_selected_source_prefix(source_budget, cursor.offset)
         with bridge._open_log(source) as stream:
             reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            if source_budget is not None and cursor.offset > reader._max_eager_source_bytes():
+                raise _SelectedEagerSourceBudgetRefused('SOURCE_BUDGET')
             stream.seek(cursor.offset - 1)
             if _bounded_source_read(stream, source_budget, 1) != b'\n':
                 raise ValueError('source_boundary')
@@ -982,7 +1003,7 @@ def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_ma
         retained._source_check(result._context())
         result._check_controls()
         return result
-    except _SelectedSourcePrefixBudgetRefused:
+    except (_SelectedSourcePrefixBudgetRefused, _SelectedEagerSourceBudgetRefused):
         raise
     except Exception:
         raise MindContentSessionRefused('mind_session_content_refused') from None
@@ -1583,10 +1604,16 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 policy = _selected_pin_read(Path(args['--policy-path']), policy_pin, 65536)
                 if not policy:
                     raise ValueError('policy_empty')
-                state['resolver'] = create_selected_row_resolver(enabled=True, bundle_root=bundle_root,
-                    expected_manifest_sha256=manifest_pin, identifier_policy_bytes=policy,
-                    expected_identifier_policy_sha256=policy_pin,
-                    expected_approval_reference_sha256=approval, source_read_limit=_STARTUP_SOURCE_READ_LIMIT)
+                try:
+                    state['resolver'] = create_selected_row_resolver(enabled=True, bundle_root=bundle_root,
+                        expected_manifest_sha256=manifest_pin, identifier_policy_bytes=policy,
+                        expected_identifier_policy_sha256=policy_pin,
+                        expected_approval_reference_sha256=approval, source_read_limit=_STARTUP_SOURCE_READ_LIMIT)
+                except _SelectedEagerSourceBudgetRefused as exc:
+                    with state['result_lock']:
+                        if type(exc) is _SelectedEagerSourceBudgetRefused and not state['abandoned']:
+                            state['reason'] = 'SOURCE_BUDGET'
+                    return
                 policy = None
                 if time.monotonic() >= deadline:
                     raise ValueError('deadline')
@@ -1660,6 +1687,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         if worker.is_alive() or time.monotonic() >= deadline:
             raise ValueError('refused')
         if state['result'] is None:
+            if state['reason'] == 'SOURCE_BUDGET':
+                raise _SelectedEagerSourceBudgetRefused('SOURCE_BUDGET')
             if state['reason'] == 'SOURCE_PREFIX_BUDGET':
                 raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget')
             raise ValueError('refused')
@@ -1674,6 +1703,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
             if (type(exc) is _SelectedSourcePrefixBudgetRefused and deadline is not None
                     and time.monotonic() < deadline):
                 error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n')
+            elif type(exc) is _SelectedEagerSourceBudgetRefused and deadline is not None and time.monotonic() < deadline:
+                error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_BUDGET","authority":"none"}\n')
             else:
                 error.write(b'{"error":"mind_session_content_refused","authority":"none"}\n')
             error.flush()

@@ -52,6 +52,10 @@ class PrefixSnapshotRefused(ValueError):
     """Fixed refusal without paths, source content or chained exceptions."""
 
 
+class _ObservedPrefixBudgetRefused(PrefixSnapshotRefused):
+    """The fenced local tail exceeds the caller's full-prefix allowance."""
+
+
 class _SourceReadBudget:
     """Shared in-process byte allowance; reserve before reading the source."""
 
@@ -374,7 +378,7 @@ def read_complete_generationless_prefix_rows(source_path, generation_path, end_c
 
 
 def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, tasks=None,
-                   scope="selected_tasks_v1"):
+                   scope="selected_tasks_v1", max_prefix_bytes=None):
     """Observe an LF-complete source prefix; return PRIVATE unscreened rows.
 
     ``expected_manifest_sha256`` must be anchored independently by the trusted
@@ -383,9 +387,12 @@ def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=
     approved content policy and must call ``verify_prefix`` after provider work.
     """
     result = None
+    over_budget = False
     try:
         if enabled is not True:
             raise ValueError("invalid_input")
+        if max_prefix_bytes is not None and (type(max_prefix_bytes) is not int or max_prefix_bytes <= 0):
+            raise ValueError("invalid_prefix_limit")
         scoped_tasks = _scope_tasks(scope, tasks)
         selected = None if scoped_tasks is None else frozenset(scoped_tasks)
         source, sidecar, fleet_pin = _deployment_source(bundle_root, expected_manifest_sha256)
@@ -402,6 +409,9 @@ def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=
                 raise ValueError("tail_invalid")
             end = tail.end_offset
             size = _fence(stream, source, sidecar, identity, max(initial_size, end))
+            if max_prefix_bytes is not None and end > max_prefix_bytes:
+                over_budget = True
+                raise _ObservedPrefixBudgetRefused()
             first_hash, rows = _scan(stream, end, selected)
             size = _fence(stream, source, sidecar, identity, max(initial_size, size, end))
             second_hash = _hash_prefix(stream, end)
@@ -419,8 +429,10 @@ def observe_prefix(*, enabled=False, bundle_root=None, expected_manifest_sha256=
                     "fleet_sha256": fleet_pin, "manifest_sha256": expected_manifest_sha256.lower(),
                     "observed_utc": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")}
         result = ObservedPrefix(metadata=metadata, rows=rows)
-    except Exception:
-        pass
+    except Exception as exc:
+        over_budget = over_budget and type(exc) is _ObservedPrefixBudgetRefused
+    if over_budget:
+        raise _ObservedPrefixBudgetRefused("SOURCE_BUDGET") from None
     if result is None:
         raise PrefixSnapshotRefused("mind_prefix_snapshot_refused") from None
     return result

@@ -138,7 +138,7 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
             assert not readings and not budgets and not created_budgets and owner._source_budget is None
         else:
             assert readings and owner._source_budget is budgets[0]
-            assert sum(size for state, size in readings if state == 'STARTING') <= 2 * 1024 ** 3
+            assert sum(size for state, size in readings if state == 'STARTING') <= runtime._STARTUP_PREWARM_SOURCE_READ_LIMIT
             if fault == 'prewarm_mid_budget':
                 assert sum(size for state, size in readings if state == 'STARTING') == 3 * old_cursor.offset
                 assert budgets[0]._remaining == 1
@@ -149,7 +149,7 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
     assert type(owner._retained) is runtime._RetainedFlatQueryState
     prewarm_bytes = sum(size for state, size in readings if state == 'STARTING')
     assert prewarm_bytes == 5 * old_cursor.offset
-    assert budgets[0]._remaining == 2 * 1024 ** 3 - prewarm_bytes
+    assert budgets[0]._remaining == runtime._STARTUP_PREWARM_SOURCE_READ_LIMIT - prewarm_bytes
     request = {'schema': 'wd.mind-pipe-request.v2', 'query_id': 'startup_work_overview',
                'nonce': '0' * 64, 'lane': 'codex-lead-1', 'scope': 'shared'}
     if fault == 'candidate_source_mutation':
@@ -166,5 +166,5 @@ def test_refresh_uses_real_prewarm_and_candidate_with_metered_source(
     assert reply['status'] == 'CANDIDATES' and reply['candidates']
     query_bytes = sum(size for state, size in readings if state == 'READY')
     assert query_bytes > 3 * old_cursor.offset
-    assert len(budgets) == 2 and budgets[1]._remaining == 1024 ** 3 - query_bytes
+    assert len(budgets) == 2 and budgets[1]._remaining == runtime._STARTUP_OWNER_SOURCE_READ_LIMIT - query_bytes
     assert owner._state == 'READY' and owner._owner is worker

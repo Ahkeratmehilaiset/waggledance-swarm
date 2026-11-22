@@ -1352,14 +1352,17 @@ print('synthetic_adapter_manifest_verified')
 
 
 @pytest.mark.parametrize(('lane_name', 'expected_scope'), [
-    ('codex-lead-1', 'own'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
+    ('codex-lead-1', 'shared'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
 def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle, lane_name, expected_scope):
     _owner_child_role_case(synthetic_bundle, lane_name, expected_scope, 'gate_off')
 
 
+# Five-lane visibility: the child gives every recognized lane the shared scope. The rows that must stay
+# out (written by a reviewer lane, addressed to a reviewer lane, wrong sender identity) are checked for
+# every lane in the case below.
 @pytest.mark.parametrize(('lane_name', 'expected_scope'), [
-    ('codex-lead-1', 'own'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
+    ('codex-lead-1', 'shared'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
 def test_gate_on_owner_child_role_runs_in_separate_synthetic_process(
         synthetic_bundle, lane_name, expected_scope, synthetic_startup_query_gate_on):

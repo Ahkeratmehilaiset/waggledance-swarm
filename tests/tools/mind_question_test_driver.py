@@ -1,4 +1,4 @@
-"""Question-test driver for a Mind free-question route (fable-5, draft 3, 2026-11-22).
+"""Question-test driver for a Mind free-question route (fable-5, draft 4, 2026-11-22).
 
 DRAFT for the second Mind change. This file holds NO question and NO answer: the question sets it
 reads are private evaluation material and are never committed, posted or indexed.
@@ -26,8 +26,10 @@ cannot be judged here: the scope filter itself needs its own product tests.
 ROUTES. A route is called as route(request, caller): caller is the trusted (lane, scope) of the asking
 lane, handed over by the driver beside the request and never read out of the request object; the draft
 mapper takes it as free_question_binding and refuses a request whose lane or scope differs from it.
-Only the synthetic stand-in exists here. It is NOT Mind: a word-overlap toy over six invented rows,
-used to exercise the driver. The route pipe-v3 refuses until it is bound to an exact commit on Lead's yes.
+The synthetic stand-in is NOT Mind: a word-overlap toy over six invented rows, used to exercise the driver.
+MapperRoute binds an in-process mapper function that the caller hands in (this file imports no product
+code); the draft binding test uses it over a synthetic owner layer. The command-line route pipe-v3 still
+refuses: a run against a real owner needs Lead's yes with an exact commit.
 
 HANDLING. Question texts and gold rows are evaluation material: they stay in private files on this machine.
 This driver prints and saves cards (counts), ids, classes and hashes only, never a question text.
@@ -182,6 +184,29 @@ class PipeV3NotBound:
     def __call__(self, request, caller=None):
         raise DriverError('route_not_bound: no free-question route exists at %s; bind to an exact commit '
                           'on the yes of Lead before any real ask' % BASE_COMMIT[:8])
+
+
+class MapperRoute:
+    """Binds an in-process mapper function to the driver.
+
+    The mapper is called as mapper(enabled=True, handler=handler, request=request,
+    free_question_binding=caller): the trusted caller identity goes in beside the request, unchanged.
+    The caller of this class hands in the mapper, its handler and the mapper's refusal class, so the
+    driver itself imports no product code. A refusal of the mapper is one counted refusal of the ask.
+    """
+    name = 'in-process-mapper'
+
+    def __init__(self, mapper, handler, refusal):
+        if not callable(mapper) or not (isinstance(refusal, type) and issubclass(refusal, Exception)):
+            raise DriverError('mapper_route_arguments')
+        self._mapper, self._handler, self._refusal = mapper, handler, refusal
+
+    def __call__(self, request, caller=None):
+        try:
+            return self._mapper(enabled=True, handler=self._handler, request=request,
+                                free_question_binding=caller)
+        except self._refusal:
+            raise DriverError('mapper_refused') from None
 
 
 ROUTES = {'synthetic': SyntheticOwner, 'pipe-v3': PipeV3NotBound}

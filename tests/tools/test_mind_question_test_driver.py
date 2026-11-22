@@ -142,3 +142,53 @@ def test_a_caller_identity_of_another_lane_is_a_refusal_in_the_card(driver):
     item = driver.synthetic_sets()[0][0]['questions'][0]
     assert driver.ask(driver._RouteGivingAnotherCaller(), item, 'codex-lead-1')[:2] == (
         'REFUSED', 'synthetic_owner_refused')
+
+
+def test_mapper_route_hands_the_request_and_the_caller_identity_to_the_mapper(driver):
+    calls = []
+
+    class Refusal(Exception):
+        pass
+
+    def mapper(**arguments):
+        calls.append(arguments)
+        if arguments['request']['question'] == 'refuse':
+            raise Refusal('x')
+        if arguments['request']['question'] == 'break':
+            raise RuntimeError('x')
+        return 'answer'
+
+    handler = object()
+    route = driver.MapperRoute(mapper, handler, Refusal)
+    request = driver.build_request('synthetic amber valve', 'codex-lead-1', 'own')
+    assert route(request, ('codex-lead-1', 'own')) == 'answer'
+    assert calls == [{'enabled': True, 'handler': handler, 'request': request,
+                      'free_question_binding': ('codex-lead-1', 'own')}]
+    assert calls[0]['request'] is request and calls[0]['handler'] is handler
+    with pytest.raises(driver.DriverError, match='mapper_refused'):
+        route(dict(request, question='refuse'), ('codex-lead-1', 'own'))
+    with pytest.raises(RuntimeError):
+        route(dict(request, question='break'), ('codex-lead-1', 'own'))
+
+
+def test_a_mapper_refusal_is_one_counted_refusal_and_another_error_is_named(driver):
+    class Refusal(Exception):
+        pass
+
+    def refusing(**arguments):
+        raise Refusal('x')
+
+    def breaking(**arguments):
+        raise KeyError('x')
+
+    item = driver.synthetic_sets()[0][0]['questions'][0]
+    assert driver.ask(driver.MapperRoute(refusing, None, Refusal), item, 'codex-lead-1')[:2] == (
+        'REFUSED', 'mapper_refused')
+    assert driver.ask(driver.MapperRoute(breaking, None, Refusal), item, 'codex-lead-1')[:2] == (
+        'REFUSED', 'route_raised_KeyError')
+
+
+@pytest.mark.parametrize('arguments', [(None, None, Exception), (len, None, 'Exception'), (len, None, object)])
+def test_mapper_route_refuses_unusable_arguments(driver, arguments):
+    with pytest.raises(driver.DriverError):
+        driver.MapperRoute(*arguments)

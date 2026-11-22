@@ -172,7 +172,7 @@ def test_local_manifest_query_timeout_during_anchor_never_prepares_or_launches(m
 
 
 @pytest.mark.parametrize('lane,scope', [
-    ('codex-lead-1', 'own'), ('codex-tools-1', 'own'), ('fable-5', 'own'),
+    ('codex-lead-1', 'shared'), ('codex-tools-1', 'shared'), ('fable-5', 'shared'),
     ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
 def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, tmp_path, lane, scope, synthetic_local_admission):

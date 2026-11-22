@@ -1454,7 +1454,7 @@ raise SystemExit(result)
 
 
 @pytest.mark.parametrize(('lane', 'scope'), [
-    ('codex-lead-1', 'own'), ('codex-tools-1', 'own'), ('fable-5', 'own'),
+    ('codex-lead-1', 'shared'), ('codex-tools-1', 'shared'), ('fable-5', 'shared'),
     ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
 def test_startup_scope_is_fixed_by_recognized_lane(lane, scope):

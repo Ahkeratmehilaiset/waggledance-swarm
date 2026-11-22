@@ -206,12 +206,17 @@ def test_under_shared_visibility_a_row_of_another_lane_is_in_reach_and_a_first_h
     assert problems == []
     _, rows = driver.run(driver.SyntheticOwner(), driver.synthetic_sets(), driver.LANES)
     classes = {row['id']: row['class'] for row in rows}
-    # A5 and A6 ask a build lane for a row another lane wrote: out of reach under the earlier table.
-    assert classes['A5'] == classes['A6'] == 'HIT_FIRST'
-    assert all(row['scope'] == 'shared' and row['in_reach'] is not False for row in rows)
-    assert card['all']['answerable_asks_in_reach'] == 10
+    # A5 asks a build lane for a row another build lane wrote: out of reach under the earlier table.
+    assert classes['A5'] == 'HIT_FIRST'
+    # A6 asks for a row a reviewer lane wrote. Mind admits no such row: out of reach under every table.
+    assert classes['A6'] == 'OUT_OF_REACH_WITH_CANDIDATES'
+    assert all(row['scope'] == 'shared' for row in rows)
+    assert [row['id'] for row in rows if row['in_reach'] is False] == ['A6']
+    assert [row['id'] for row in rows if row['gold_admitted'] is False] == ['A6']
+    assert card['all']['answerable_asks_in_reach'] == 9
+    assert card['all']['answerable_asks_without_admitted_gold'] == 1
     assert card['all']['classes']['OUT_OF_REACH_NO_CANDIDATES'] == 0
-    assert card['all']['classes']['OUT_OF_REACH_WITH_CANDIDATES'] == 0
+    assert card['all']['classes']['OUT_OF_REACH_WITH_CANDIDATES'] == 1
 
 
 def test_using_scope_restores_the_table_and_refuses_a_bad_table(driver):
@@ -226,3 +231,71 @@ def test_using_scope_restores_the_table_and_refuses_a_bad_table(driver):
             with driver.using_scope(bad):
                 pass
     assert driver.SCOPE == before
+
+
+def _reviewer_row(driver):
+    authors = [agent for agent, _ in driver.SyntheticOwner.ROWS]
+    assert [agent for agent in authors if agent not in driver.BUILD_LANES] == ['claude-rco-1']
+    return authors.index('claude-rco-1')
+
+
+@pytest.mark.parametrize('table', ['product', 'earlier'])
+def test_the_stand_in_never_serves_the_row_of_a_reviewer_lane(driver, table):
+    owner, index = driver.SyntheticOwner(), _reviewer_row(driver)
+    with driver.using_scope(driver.PRODUCT_SCOPE if table == 'product' else driver.EARLIER_SCOPE):
+        for lane in driver.LANES:
+            # The question is the text of the reviewer row itself: the best possible match.
+            reply = owner(driver.build_request(owner.ROWS[index][1], lane, driver.SCOPE[lane]))
+            assert owner.row_hash(index) not in [row['source_event_sha256'] for row in reply['candidates']]
+
+
+def test_a_served_row_of_a_reviewer_lane_is_outside_scope_for_every_lane(driver):
+    index = _reviewer_row(driver)
+    item = {question['id']: question for document, _ in driver.synthetic_sets()
+            for question in document['questions']}['A6']
+    assert [row['agent'] for row in item['gold']] == ['claude-rco-1']
+    for lane in driver.LANES:
+        assert driver.SCOPE[lane] == 'shared'
+        assert driver.ask(driver._FixedOwner(index), item, lane)[0] == 'SERVED_OUTSIDE_SCOPE'
+        assert driver.ask(driver._FixedOwner(), item, lane)[0] == 'OUT_OF_REACH_NO_CANDIDATES'
+        assert driver.in_reach(item, lane) is False and driver.gold_admitted(item) is False
+
+
+def test_scope_cases_cover_the_reviewer_row(driver):
+    cases = driver.scope_regression_cases()
+    assert cases == driver.EXPECTED_SCOPE_CASES and len(cases) == 17
+    assert sum('reviewer' in name for name in cases) == 6
+
+
+def test_a_question_with_a_lone_surrogate_is_refused_before_any_route(driver):
+    broken = 'synthetic amber ' + chr(0xD800) + ' valve'
+    assert driver.is_text('synthetic amber valve') and not driver.is_text(broken)
+    document = json.loads(json.dumps(driver.synthetic_sets()[0][0]))
+    document['questions'][0]['question'] = broken
+    with pytest.raises(driver.DriverError):
+        driver.check_set(document)
+    request = dict(driver.build_request('synthetic amber valve', 'claude-rco-1', 'shared'), question=broken)
+    with pytest.raises(driver.DriverError):
+        driver.SyntheticOwner()(request)
+
+
+def test_evaluation_output_is_confined_to_a_private_folder(driver, tmp_path):
+    if driver.PRIVATE_FOLDER in tmp_path.resolve().parts:
+        pytest.skip('the temporary folder of this run is itself below a private folder')
+    private = tmp_path / driver.PRIVATE_FOLDER / 'run-1'
+    assert driver.private_target(private) == private.resolve()
+    for bad in (tmp_path / 'run-1', tmp_path / driver.PRIVATE_FOLDER,
+                tmp_path / '.agent-bridge' / driver.PRIVATE_FOLDER / 'x'):
+        with pytest.raises(driver.DriverError):
+            driver.private_target(bad)
+    set_path = tmp_path / driver.PRIVATE_FOLDER / 'set.json'
+    set_path.parent.mkdir()
+    set_path.write_bytes(json.dumps(driver.synthetic_sets()[0][0]).encode('utf-8'))
+    with pytest.raises(driver.DriverError):
+        driver.main(['run', '--route', 'synthetic', '--out', str(tmp_path / 'open'), str(set_path)])
+    assert not (tmp_path / 'open').exists()
+    assert driver.main(['run', '--route', 'synthetic', '--out', str(private), str(set_path)]) == 0
+    assert sorted(path.name for path in private.iterdir()) == ['card.json', 'rows.private.json']
+    with pytest.raises(driver.DriverError):
+        driver.convert_v1(str(set_path), str(tmp_path / 'converted.json'))
+    assert not (tmp_path / 'converted.json').exists()

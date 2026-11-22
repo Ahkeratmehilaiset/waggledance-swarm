@@ -1,4 +1,4 @@
-"""Question-test driver for a Mind free-question route (fable-5, draft 5, 2026-11-22).
+"""Question-test driver for a Mind free-question route (fable-5, draft 6, 2026-11-22).
 
 DRAFT for the second Mind change. This file holds NO question and NO answer: the question sets it
 reads are private evaluation material and are never committed, posted or indexed.
@@ -25,6 +25,16 @@ set knows to be written by another lane is classed SERVED_OUTSIDE_SCOPE before a
 when the answer mixes own and foreign rows. EARLIER_SCOPE (the table of the base a30bbb62, build lanes own)
 is kept only for the self test of those classes. A served row whose author no loaded set knows cannot be
 judged here: the scope filter itself needs its own product tests.
+
+ADMISSION RULE. Mind admits rows written by the build lanes only (BUILD_LANES; _BUILD_LANES at line 625 of
+tools/wd_mind_content_query_readonly.py at the base). A gold row written by any other lane can never be
+served: it is not reachable gold for any lane under any scope, and an answerable question whose gold holds
+no admitted row is OUT OF REACH for everyone and is counted (answerable_asks_without_admitted_gold). A
+served row that a loaded set knows to be written by a lane outside BUILD_LANES is classed
+SERVED_OUTSIDE_SCOPE under every scope.
+
+PRIVATE OUTPUT. convert-v1 and run write only below a folder named .codex-audit (ignored by Git), never
+below .agent-bridge; any other target is refused before anything is written.
 
 ROUTES. A route is called as route(request, caller): caller is the trusted (lane, scope) of the asking
 lane, handed over by the driver beside the request and never read out of the request object; the draft
@@ -58,6 +68,8 @@ sys.dont_write_bytecode = True
 
 BASE_COMMIT = 'a30bbb625c3fa7c382524e7e51f94efb887e01fe'
 LANES = ('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
+BUILD_LANES = ('codex-lead-1', 'codex-tools-1', 'fable-5')  # the only lanes whose rows Mind admits
+PRIVATE_FOLDER = '.codex-audit'
 # The scope each lane asks with. PRODUCT_SCOPE mirrors the two product helpers of this revision.
 PRODUCT_SCOPE = {lane: 'shared' for lane in LANES}
 # The table of the base a30bbb62. Kept only so that the self test still exercises the own-scope classes.
@@ -89,6 +101,23 @@ def sha(data):
 
 def is_hex(value):
     return type(value) is str and HEX64.fullmatch(value) is not None
+
+
+def is_text(value):
+    """False for text that cannot be written as UTF-8, such as a lone surrogate."""
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def private_target(path):
+    """Evaluation output goes only below a folder named .codex-audit; never to the bridge folder."""
+    resolved = Path(path).resolve()
+    if PRIVATE_FOLDER not in resolved.parts[:-1] or '.agent-bridge' in resolved.parts:
+        raise DriverError('output_not_private')
+    return resolved
 
 
 # ---------------------------------------------------------------- request and response (proposed v3)
@@ -155,7 +184,8 @@ def validate_response(response, request):
 # ---------------------------------------------------------------- routes
 
 class SyntheticOwner:
-    """A toy stand-in, NOT Mind: share of the question's words found in a row, six invented rows."""
+    """A toy stand-in, NOT Mind: share of the question's words found in a row, six invented rows.
+    One row is written by a reviewer lane and is never served, as Mind admits rows of build lanes only."""
     name = 'synthetic'
     THRESHOLD = 0.5
     ROWS = (('codex-lead-1', 'the synthetic amber valve was replaced on tuesday'),
@@ -181,7 +211,8 @@ class SyntheticOwner:
                 or not is_hex(request['nonce']) or request['lane'] not in LANES
                 or request['scope'] != SCOPE[request['lane']]
                 or not 1 <= len(request['question']) <= MAX_QUESTION_CHARS
-                or any(ord(char) < 32 for char in request['question'])):
+                or any(ord(char) < 32 for char in request['question'])
+                or not is_text(request['question'])):
             raise DriverError('synthetic_owner_refused')
         # Mirrors the draft mapper: a trusted caller identity must equal the lane and scope of the request.
         if caller is not None and (type(caller) is not tuple or caller != (request['lane'], request['scope'])):
@@ -191,7 +222,7 @@ class SyntheticOwner:
             raise DriverError('synthetic_owner_refused')
         scored = []
         for index, (agent, text) in enumerate(self.ROWS):
-            if request['scope'] == 'own' and agent != request['lane']:
+            if agent not in BUILD_LANES or (request['scope'] == 'own' and agent != request['lane']):
                 continue
             score = len(asked & self.words(text)) / len(asked)
             if score >= self.THRESHOLD:
@@ -267,7 +298,7 @@ def check_set(document):
             raise DriverError('question_id')
         seen.add(ident)
         text = item.get('question')
-        if type(text) is not str or not text.strip():
+        if type(text) is not str or not text.strip() or not is_text(text):
             raise DriverError('question_text:' + ident)
         if item.get('expect') not in ('ANSWER', 'ABSTAIN'):
             raise DriverError('question_expect:' + ident)
@@ -294,6 +325,7 @@ def check_set(document):
 def convert_v1(source, target):
     """My usefulness test set v1 (2026-11-14) into this driver's format; both language forms of a question
     become two entries. The output is evaluation material and stays private."""
+    target = private_target(target)
     old = json.loads(Path(source).read_bytes().decode('utf-8-sig'))
     if old.get('event_id_kind') != GOLD_KIND:
         raise DriverError('v1_event_id_kind')
@@ -339,12 +371,15 @@ def ask(route, item, lane, authors=None):
     known = dict(authors or {})
     for row in item['gold']:
         known.setdefault(row['source_event_sha256'], row['agent'])
+    # Mind admits rows of build lanes only: other gold can never be served, and a served row known to
+    # be written by a lane outside the build lanes is outside what any lane may be given.
+    admitted = [row for row in item['gold'] if row['agent'] in BUILD_LANES]
+    foreign = {reference for reference, agent in known.items() if agent not in BUILD_LANES}
     if scope == 'own':
-        gold = {row['source_event_sha256'] for row in item['gold'] if row['agent'] == lane}
-        foreign = {reference for reference, agent in known.items() if agent != lane}
+        gold = {row['source_event_sha256'] for row in admitted if row['agent'] == lane}
+        foreign |= {reference for reference, agent in known.items() if agent != lane}
     else:
-        gold = {row['source_event_sha256'] for row in item['gold']}
-        foreign = set()
+        gold = {row['source_event_sha256'] for row in admitted}
     request = build_request(item['question'], lane, scope)
     frozen = dict(request)
     started = time.perf_counter()
@@ -383,7 +418,15 @@ def in_reach(item, lane):
     """None for a negative control; else whether the asking lane can be served a gold row at all."""
     if item['expect'] == 'ABSTAIN':
         return None
-    return SCOPE[lane] == 'shared' or any(row['agent'] == lane for row in item['gold'])
+    admitted = [row['agent'] for row in item['gold'] if row['agent'] in BUILD_LANES]
+    return bool(admitted) if SCOPE[lane] == 'shared' else lane in admitted
+
+
+def gold_admitted(item):
+    """None for a negative control; else whether any gold row was written by a lane Mind admits."""
+    if item['expect'] == 'ABSTAIN':
+        return None
+    return any(row['agent'] in BUILD_LANES for row in item['gold'])
 
 
 def summarize(rows):
@@ -394,6 +437,7 @@ def summarize(rows):
     negatives = sum(1 for row in rows if row['expect'] == 'ABSTAIN')
     return {'asks': len(rows), 'classes': {name: counts[name] for name in CLASSES},
             'answerable_asks_in_reach': reach,
+            'answerable_asks_without_admitted_gold': sum(1 for row in rows if row.get('gold_admitted') is False),
             'in_reach_and_answered_by_route': sum(counts[name] for name in JUDGED),
             'hit_first_rate': rate(counts['HIT_FIRST'], reach),
             'hit_within_three_rate': rate(counts['HIT_FIRST'] + counts['HIT_WITHIN_THREE'], reach),
@@ -411,6 +455,7 @@ def run(route, sets, lanes, mine='fable-5'):
                 rows.append({'set': document['set_id'], 'author': document['author'], 'id': item['id'],
                              'language': item['language'], 'category': item['category'], 'lane': lane,
                              'scope': SCOPE[lane], 'expect': item['expect'], 'in_reach': in_reach(item, lane),
+                             'gold_admitted': gold_admitted(item),
                              'class': kind, 'reason': reason, 'candidates': served,
                              'milliseconds': round(seconds * 1000, 3)})
     if not rows:
@@ -487,15 +532,18 @@ EXPECTED_SELFTEST = {
                'hit_first_rate': 0.75, 'hit_within_three_rate': 0.75, 'negative_controls': 2},
     'refusal_reasons': {'synthetic_owner_refused': 1}}
 
-# The same twelve asks under PRODUCT_SCOPE, worked out by hand before the first run. A5 and A6 ask for a
-# row another lane wrote: out of reach under the earlier table, a first hit under shared visibility.
+# The same twelve asks under PRODUCT_SCOPE, worked out by hand before the run. A5 asks a build lane for a
+# row another build lane wrote: out of reach under the earlier table, a first hit under shared visibility.
+# A6 asks for a row a reviewer lane wrote: Mind admits no such row, so it stays out of reach for everyone
+# (draft 5 wrongly worked it out as a first hit; RCO2 named the error on 2026-11-22).
 EXPECTED_PRODUCT = {
-    'per_ask': dict(EXPECTED_SELFTEST['per_ask'], A5='HIT_FIRST', A6='HIT_FIRST'),
-    'all': {'asks': 12, 'answerable_asks_in_reach': 10, 'in_reach_and_answered_by_route': 9,
-            'hit_first_rate': 0.6, 'hit_within_three_rate': 0.7, 'negative_controls': 2,
-            'negative_pass_rate': 0.5},
-    'mine': {'asks': 6, 'answerable_asks_in_reach': 6, 'in_reach_and_answered_by_route': 6,
-             'hit_first_rate': 0.5, 'hit_within_three_rate': 0.6667, 'negative_controls': 0},
+    'per_ask': dict(EXPECTED_SELFTEST['per_ask'], A5='HIT_FIRST'),
+    'all': {'asks': 12, 'answerable_asks_in_reach': 9, 'answerable_asks_without_admitted_gold': 1,
+            'in_reach_and_answered_by_route': 8, 'hit_first_rate': 0.5556, 'hit_within_three_rate': 0.6667,
+            'negative_controls': 2, 'negative_pass_rate': 0.5},
+    'mine': {'asks': 6, 'answerable_asks_in_reach': 5, 'answerable_asks_without_admitted_gold': 1,
+             'in_reach_and_answered_by_route': 5, 'hit_first_rate': 0.4, 'hit_within_three_rate': 0.6,
+             'negative_controls': 0},
     'others': EXPECTED_SELFTEST['others'],
     'refusal_reasons': {'synthetic_owner_refused': 1}}
 
@@ -557,7 +605,14 @@ EXPECTED_SCOPE_CASES = {
     'own_gold_and_peer_row_known_from_another_question': 'SERVED_OUTSIDE_SCOPE',
     'own_gold_and_row_of_unknown_author': 'MISS_WITH_CANDIDATES',
     'negative_control_and_known_peer_row_served': 'SERVED_OUTSIDE_SCOPE',
-    'shared_scope_peer_row_is_a_hit': 'HIT_FIRST'}
+    'shared_scope_peer_row_is_a_hit': 'HIT_FIRST',
+    # Invented row 3 is written by a reviewer lane, which Mind never admits.
+    'shared_scope_reviewer_row_served': 'SERVED_OUTSIDE_SCOPE',
+    'shared_scope_peer_gold_then_reviewer_row_served': 'SERVED_OUTSIDE_SCOPE',
+    'shared_scope_reviewer_gold_only_is_out_of_reach': 'OUT_OF_REACH_WITH_CANDIDATES',
+    'shared_scope_reviewer_gold_only_and_nothing_served': 'OUT_OF_REACH_NO_CANDIDATES',
+    'shared_scope_mixed_gold_with_reviewer_row_peer_served': 'HIT_FIRST',
+    'own_scope_reviewer_gold_only_is_out_of_reach': 'OUT_OF_REACH_NO_CANDIDATES'}
 
 
 def scope_regression_cases():
@@ -572,10 +627,13 @@ def scope_regression_cases():
     negative = dict(mixed, id='M3', expect='ABSTAIN', gold=[])
     authors = {SyntheticOwner.row_hash(index): agent for index, (agent, _) in enumerate(SyntheticOwner.ROWS)}
     with using_scope(EARLIER_SCOPE):  # these cases are about a lane that asks with scope own
-        return _scope_cases(mixed, own_only, peer_only, negative, authors, lead, reviewer)
+        extra = (dict(mixed, id='M5', gold=gold(3), ask_as=[reviewer]),
+                 dict(mixed, id='M6', gold=gold(2, 3), ask_as=[reviewer]))
+        return _scope_cases(mixed, own_only, peer_only, negative, authors, lead, reviewer, extra)
 
 
-def _scope_cases(mixed, own_only, peer_only, negative, authors, lead, reviewer):
+def _scope_cases(mixed, own_only, peer_only, negative, authors, lead, reviewer, extra):
+    reviewer_gold, peer_and_reviewer_gold = extra
     return {
         'mixed_gold_only_peer_row_served': ask(_FixedOwner(2), mixed, lead)[0],
         'mixed_gold_own_then_peer_served': ask(_FixedOwner(0, 2), mixed, lead)[0],
@@ -587,7 +645,15 @@ def _scope_cases(mixed, own_only, peer_only, negative, authors, lead, reviewer):
         'own_gold_and_peer_row_known_from_another_question': ask(_FixedOwner(4), own_only, lead, authors)[0],
         'own_gold_and_row_of_unknown_author': ask(_FixedOwner(4), own_only, lead)[0],
         'negative_control_and_known_peer_row_served': ask(_FixedOwner(2), negative, lead, authors)[0],
-        'shared_scope_peer_row_is_a_hit': ask(_FixedOwner(2), dict(mixed, ask_as=[reviewer]), reviewer)[0]}
+        'shared_scope_peer_row_is_a_hit': ask(_FixedOwner(2), dict(mixed, ask_as=[reviewer]), reviewer)[0],
+        'shared_scope_reviewer_row_served': ask(_FixedOwner(3), reviewer_gold, reviewer)[0],
+        'shared_scope_peer_gold_then_reviewer_row_served':
+            ask(_FixedOwner(2, 3), peer_and_reviewer_gold, reviewer)[0],
+        'shared_scope_reviewer_gold_only_is_out_of_reach': ask(_FixedOwner(2), reviewer_gold, reviewer)[0],
+        'shared_scope_reviewer_gold_only_and_nothing_served': ask(_FixedOwner(), reviewer_gold, reviewer)[0],
+        'shared_scope_mixed_gold_with_reviewer_row_peer_served':
+            ask(_FixedOwner(2), peer_and_reviewer_gold, reviewer)[0],
+        'own_scope_reviewer_gold_only_is_out_of_reach': ask(_FixedOwner(), reviewer_gold, lead)[0]}
 
 
 def response_fault_cases():
@@ -651,7 +717,7 @@ def product_table_problems():
                 problems.append(('product_' + name, key, part[key], want))
     if card['refusal_reasons'] != EXPECTED_PRODUCT['refusal_reasons']:
         problems.append(('product_refusal_reasons', card['refusal_reasons']))
-    if set(SCOPE.values()) != {'shared'} or card['all']['classes']['OUT_OF_REACH_NO_CANDIDATES']:
+    if set(SCOPE.values()) != {'shared'}:
         problems.append(('product_table_is_not_shared_for_all', dict(SCOPE)))
     return problems, card
 
@@ -761,7 +827,7 @@ def main(argv):
                 or any(lane not in LANES for lane in lanes) or len(set(lanes)) != len(lanes)):
             raise DriverError('usage')
         sets = [load_set(path) for path in paths]
-        out = Path(options['--out'])
+        out = private_target(options['--out'])
         out.mkdir(parents=True, exist_ok=False)
         card, rows = run(ROUTES[options['--route']](), sets, lanes)
         (out / 'card.json').write_bytes(json.dumps(card, indent=1).encode('utf-8'))

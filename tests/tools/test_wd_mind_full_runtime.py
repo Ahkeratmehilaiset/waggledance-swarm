@@ -1361,8 +1361,11 @@ def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle, l
 # Five-lane visibility: the child gives every recognized lane the shared scope. The rows that must stay
 # out (written by a reviewer lane, addressed to a reviewer lane, wrong sender identity) are checked for
 # every lane in the case below.
+# The one admitted synthetic row is written by codex-lead-1, so the fable-5 and codex-tools-1 cases are a
+# build lane receiving a row of another build lane through the real child role.
 @pytest.mark.parametrize(('lane_name', 'expected_scope'), [
-    ('codex-lead-1', 'shared'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
+    ('codex-lead-1', 'shared'), ('fable-5', 'shared'), ('codex-tools-1', 'shared'),
+    ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
 def test_gate_on_owner_child_role_runs_in_separate_synthetic_process(
         synthetic_bundle, lane_name, expected_scope, synthetic_startup_query_gate_on):

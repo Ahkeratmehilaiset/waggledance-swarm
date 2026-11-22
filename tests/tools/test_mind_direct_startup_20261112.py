@@ -699,6 +699,25 @@ throw 'owned_junction_mismatch'
 
 
 @WINDOWS
+def test_second_startup_publishes_a_new_receipt(tmp_path):
+    bundle, pin = _package(tmp_path)
+    worktree = tmp_path / 'owned-worktree'
+    worktree.mkdir()
+    audit = worktree / '.codex-audit'
+    target = audit / 'wd-mind-startup-view.json'
+    first = _run(bundle, pin, worktree=worktree)
+    assert first['record_written'] is True
+    previous = json.loads(target.read_bytes())
+
+    second = _run(bundle, pin, worktree=worktree)
+    assert second['outcome'] == 'success' and second['record_written'] is True
+    current = json.loads(target.read_bytes())
+    assert current['observed_utc'] != previous['observed_utc']
+    assert current['view_sha256'] == second['view_sha256']
+    assert list(audit.iterdir()) == [target]
+
+
+@WINDOWS
 @pytest.mark.parametrize('location', ['view', 'binding'])
 def test_discarded_duplicate_fields_never_reach_context(tmp_path, location):
     # JSON decoders keep the last duplicate value; validating that object does

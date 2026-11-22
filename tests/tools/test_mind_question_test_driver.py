@@ -5,6 +5,7 @@ synthetic stand-in of six invented rows. Question sets are private evaluation ma
 """
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -279,23 +280,117 @@ def test_a_question_with_a_lone_surrogate_is_refused_before_any_route(driver):
         driver.SyntheticOwner()(request)
 
 
-def test_evaluation_output_is_confined_to_a_private_folder(driver, tmp_path):
-    if driver.PRIVATE_FOLDER in tmp_path.resolve().parts:
-        pytest.skip('the temporary folder of this run is itself below a private folder')
-    private = tmp_path / driver.PRIVATE_FOLDER / 'run-1'
-    assert driver.private_target(private) == private.resolve()
-    for bad in (tmp_path / 'run-1', tmp_path / driver.PRIVATE_FOLDER,
-                tmp_path / '.agent-bridge' / driver.PRIVATE_FOLDER / 'x'):
-        with pytest.raises(driver.DriverError):
-            driver.private_target(bad)
-    set_path = tmp_path / driver.PRIVATE_FOLDER / 'set.json'
-    set_path.parent.mkdir()
-    set_path.write_bytes(json.dumps(driver.synthetic_sets()[0][0]).encode('utf-8'))
-    with pytest.raises(driver.DriverError):
-        driver.main(['run', '--route', 'synthetic', '--out', str(tmp_path / 'open'), str(set_path)])
-    assert not (tmp_path / 'open').exists()
-    assert driver.main(['run', '--route', 'synthetic', '--out', str(private), str(set_path)]) == 0
-    assert sorted(path.name for path in private.iterdir()) == ['card.json', 'rows.private.json']
-    with pytest.raises(driver.DriverError):
-        driver.convert_v1(str(set_path), str(tmp_path / 'converted.json'))
-    assert not (tmp_path / 'converted.json').exists()
+def _private_root(tmp_path):
+    root = tmp_path / '.codex-audit'
+    root.mkdir()
+    return root
+
+
+def _set_file(driver, folder):
+    path = folder / 'set.json'
+    path.write_bytes(json.dumps(driver.synthetic_sets()[0][0]).encode('utf-8'))
+    return path
+
+
+def test_output_is_accepted_only_strictly_inside_the_declared_private_root(driver, tmp_path):
+    root = _private_root(tmp_path)
+    for good in (root / 'run-1', root / 'a' / 'b' / 'out.json', root / 'a' / '..' / 'run-2'):
+        assert driver.private_target(good, root) == good.resolve()
+        assert driver.private_target(str(good), str(root)) == good.resolve()
+    (tmp_path / '.codex-audit-other').mkdir()
+    for bad in (root, root.parent, tmp_path / 'open', root / '..' / 'open', root / 'a' / '..' / '..' / 'x',
+                tmp_path / '.codex-audit-other' / 'x', None, ''):
+        with pytest.raises(driver.DriverError, match='output_not_private'):
+            driver.private_target(bad, root)
+
+
+@pytest.mark.parametrize('name', ['.agent-bridge', '.Agent-Bridge', '.AGENT-BRIDGE', '.agent-bridge.',
+                                  '.agent-bridge ', '.Agent-Bridge. .'])
+def test_a_bridge_folder_is_refused_the_windows_way_even_inside_the_private_root(driver, tmp_path, name):
+    root = _private_root(tmp_path)
+    assert driver.same_folder_name(name, driver.BRIDGE_FOLDER)
+    for bad in (root / name, root / name / 'x', root / 'a' / name / 'b' / 'x'):
+        with pytest.raises(driver.DriverError, match='output_not_private'):
+            driver.private_target(bad, root)
+    for good in ('agent-bridge', '.agent-bridge-2', 'x.agent-bridge'):
+        assert not driver.same_folder_name(good, driver.BRIDGE_FOLDER)
+        assert driver.private_target(root / good / 'x', root) == (root / good / 'x').resolve()
+
+
+def test_the_private_root_must_be_an_existing_folder_with_the_private_name(driver, tmp_path):
+    root = _private_root(tmp_path)
+    (tmp_path / 'private').mkdir()
+    (tmp_path / '.codex-audit-other').mkdir()
+    (tmp_path / '.Agent-Bridge' / '.codex-audit').mkdir(parents=True)
+    (root / 'file.txt').write_bytes(b'x')
+    for bad_root in (tmp_path, tmp_path / 'private', tmp_path / '.codex-audit-other',
+                     tmp_path / 'missing' / '.codex-audit', root / 'file.txt', root / 'not-yet' / '.codex-audit',
+                     tmp_path / '.Agent-Bridge' / '.codex-audit', None, '', 7):
+        with pytest.raises(driver.DriverError, match='private_root'):
+            driver.private_target(root / 'run-1', bad_root)
+    nested = root / 'inner' / '.codex-audit'
+    nested.mkdir(parents=True)
+    assert driver.private_target(nested / 'x', nested) == (nested / 'x').resolve()
+    with pytest.raises(driver.DriverError, match='output_not_private'):
+        driver.private_target(root / 'run-1', nested)
+
+
+def test_a_link_inside_the_private_root_that_leads_outside_is_refused(driver, tmp_path):
+    root = _private_root(tmp_path)
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    link = root / 'link'
+    if os.name == 'nt':
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(link))
+    else:
+        os.symlink(outside, link, target_is_directory=True)
+    assert (link / 'x').resolve() == (outside / 'x').resolve()
+    with pytest.raises(driver.DriverError, match='output_not_private'):
+        driver.private_target(link / 'x', root)
+    set_path = _set_file(driver, root)
+    with pytest.raises(driver.DriverError, match='output_not_private'):
+        driver.main(['run', '--route', 'synthetic', '--private-root', str(root), '--out', str(link / 'run'),
+                     str(set_path)])
+    assert list(outside.iterdir()) == []
+
+
+def test_run_writes_only_inside_the_declared_private_root(driver, tmp_path, capsys):
+    root = _private_root(tmp_path)
+    set_path = _set_file(driver, root)
+    base = ['run', '--route', 'synthetic', '--private-root', str(root)]
+    for bad in (tmp_path / 'open', root / '.Agent-Bridge' / 'run', root):
+        before = sorted(path.name for path in root.iterdir())
+        with pytest.raises(driver.DriverError, match='output_not_private'):
+            driver.main(base + ['--out', str(bad), str(set_path)])
+        assert not (tmp_path / 'open').exists() and sorted(path.name for path in root.iterdir()) == before
+    with pytest.raises(driver.DriverError, match='usage'):   # no private root named at all
+        driver.main(['run', '--route', 'synthetic', '--out', str(root / 'run-0'), str(set_path)])
+    with pytest.raises(driver.DriverError, match='private_root'):
+        driver.main(['run', '--route', 'synthetic', '--private-root', str(tmp_path), '--out',
+                     str(root / 'run-0'), str(set_path)])
+    assert not (root / 'run-0').exists()
+    assert driver.main(base + ['--out', str(root / 'run-1'), str(set_path)]) == 0
+    assert sorted(path.name for path in (root / 'run-1').iterdir()) == ['card.json', 'rows.private.json']
+    assert 'synthetic amber' not in capsys.readouterr().out
+
+
+def test_convert_writes_only_inside_the_declared_private_root(driver, tmp_path, capsys):
+    root = _private_root(tmp_path)
+    source = root / 'v1.json'
+    source.write_bytes(json.dumps({
+        'event_id_kind': driver.GOLD_KIND, 'as_of': {'log_prefix_sha256': 'a' * 64},
+        'questions': [{'id': 'S1', 'q_en': 'synthetic amber valve', 'q_fi': 'synteettinen amber valve',
+                       'expect': 'ANSWER', 'category': 'synthetic', 'split': 'dev', 'lane': 'any',
+                       'gold': [{'event_id': 'b' * 64, 'agent': 'codex-lead-1'}]}]}).encode('utf-8'))
+    for bad in (tmp_path / 'converted.json', root / '.agent-bridge.' / 'converted.json'):
+        with pytest.raises(driver.DriverError, match='output_not_private'):
+            driver.convert_v1(str(source), str(bad), str(root))
+        assert not bad.exists() and not (tmp_path / 'converted.json').exists()
+    with pytest.raises(driver.DriverError, match='usage'):   # the earlier form without a private root
+        driver.main(['convert-v1', str(source), str(root / 'converted.json')])
+    assert not (root / 'converted.json').exists()
+    assert driver.main(['convert-v1', '--private-root', str(root), str(source), str(root / 'converted.json')]) == 0
+    document, _ = driver.load_set(str(root / 'converted.json'))
+    assert [item['id'] for item in document['questions']] == ['S1.en', 'S1.fi']
+    assert 'synthetic amber' not in capsys.readouterr().out

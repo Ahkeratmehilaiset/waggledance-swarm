@@ -1,4 +1,4 @@
-"""Question-test driver for a Mind free-question route (fable-5, draft 6, 2026-11-22).
+"""Question-test driver for a Mind free-question route (fable-5, draft 7, 2026-11-22).
 
 DRAFT for the second Mind change. This file holds NO question and NO answer: the question sets it
 reads are private evaluation material and are never committed, posted or indexed.
@@ -33,8 +33,11 @@ no admitted row is OUT OF REACH for everyone and is counted (answerable_asks_wit
 served row that a loaded set knows to be written by a lane outside BUILD_LANES is classed
 SERVED_OUTSIDE_SCOPE under every scope.
 
-PRIVATE OUTPUT. convert-v1 and run write only below a folder named .codex-audit (ignored by Git), never
-below .agent-bridge; any other target is refused before anything is written.
+PRIVATE OUTPUT. convert-v1 and run take the private evaluation root as an argument (--private-root): an
+existing folder whose own name on disk is .codex-audit (ignored by Git) and that does not lie below a bridge
+folder. Output is written only strictly inside that root, judged after links are resolved, and never into a
+folder named .agent-bridge. Names are compared the Windows way: letter case and trailing dots or spaces do
+not make another folder. Any other target is refused before anything is written.
 
 ROUTES. A route is called as route(request, caller): caller is the trusted (lane, scope) of the asking
 lane, handed over by the driver beside the request and never read out of the request object; the draft
@@ -50,8 +53,9 @@ This driver prints and saves cards (counts), ids, classes and hashes only, never
 MODES (run with the fleet-pinned Python 3.13, flags -I -B):
   selftest                         synthetic sets through the synthetic route; must print SELFTEST MATCH
   check SET.json [...]             validate private question set files; prints counts and file hashes
-  convert-v1 V1.json OUT.json      my usefulness test set v1 -> this driver's set format (stays private)
-  run --route synthetic --lanes a,b --out DIR SET.json [...]
+  convert-v1 --private-root ROOT V1.json OUT.json
+                                   my usefulness test set v1 -> this driver's set format (stays private)
+  run --route synthetic --lanes a,b --private-root ROOT --out DIR SET.json [...]
 """
 import contextlib
 import hashlib
@@ -70,6 +74,7 @@ BASE_COMMIT = 'a30bbb625c3fa7c382524e7e51f94efb887e01fe'
 LANES = ('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
 BUILD_LANES = ('codex-lead-1', 'codex-tools-1', 'fable-5')  # the only lanes whose rows Mind admits
 PRIVATE_FOLDER = '.codex-audit'
+BRIDGE_FOLDER = '.agent-bridge'
 # The scope each lane asks with. PRODUCT_SCOPE mirrors the two product helpers of this revision.
 PRODUCT_SCOPE = {lane: 'shared' for lane in LANES}
 # The table of the base a30bbb62. Kept only so that the self test still exercises the own-scope classes.
@@ -112,10 +117,35 @@ def is_text(value):
     return True
 
 
-def private_target(path):
-    """Evaluation output goes only below a folder named .codex-audit; never to the bridge folder."""
+def same_folder_name(part, name):
+    """Windows path comparison: letter case and trailing dots or spaces do not make another folder."""
+    return part.rstrip(' .').casefold() == name.casefold()
+
+
+def private_root(root):
+    """The declared private evaluation root: an existing folder whose own name on disk is .codex-audit
+    and that does not lie below a bridge folder."""
+    if not isinstance(root, (str, Path)) or not str(root):
+        raise DriverError('private_root')
+    resolved = Path(root).resolve()
+    if (not resolved.is_dir() or resolved.name != PRIVATE_FOLDER
+            or any(same_folder_name(part, BRIDGE_FOLDER) for part in resolved.parts)):
+        raise DriverError('private_root')
+    return resolved
+
+
+def private_target(path, root):
+    """Evaluation output goes only strictly inside the declared private root, judged after links are
+    resolved, and never into a bridge folder."""
+    base = private_root(root)
+    if not isinstance(path, (str, Path)) or not str(path):
+        raise DriverError('output_not_private')
     resolved = Path(path).resolve()
-    if PRIVATE_FOLDER not in resolved.parts[:-1] or '.agent-bridge' in resolved.parts:
+    try:
+        inside = resolved.relative_to(base).parts
+    except ValueError:
+        raise DriverError('output_not_private') from None
+    if not inside or any(same_folder_name(part, BRIDGE_FOLDER) for part in inside):
         raise DriverError('output_not_private')
     return resolved
 
@@ -322,10 +352,10 @@ def check_set(document):
     return document
 
 
-def convert_v1(source, target):
+def convert_v1(source, target, root):
     """My usefulness test set v1 (2026-11-14) into this driver's format; both language forms of a question
     become two entries. The output is evaluation material and stays private."""
-    target = private_target(target)
+    target = private_target(target, root)
     old = json.loads(Path(source).read_bytes().decode('utf-8-sig'))
     if old.get('event_id_kind') != GOLD_KIND:
         raise DriverError('v1_event_id_kind')
@@ -809,25 +839,26 @@ def main(argv):
                               'gold_authors': dict(Counter(row['agent'] for item in questions
                                                            for row in item['gold']))}))
         return 0
-    if argv[:1] == ['convert-v1'] and len(argv) == 3:
-        document, digest = convert_v1(argv[1], argv[2])
+    if argv[:2] == ['convert-v1', '--private-root'] and len(argv) == 5:
+        document, digest = convert_v1(argv[3], argv[4], argv[2])
         print(json.dumps({'written': 'private set file', 'file_sha256': digest,
                           'questions': len(document['questions'])}))
         return 0
     if argv[:1] == ['run']:
         options, paths, rest = {}, [], argv[1:]
         while rest:
-            if rest[0] in ('--route', '--lanes', '--out') and len(rest) > 1:
+            if rest[0] in ('--route', '--lanes', '--out', '--private-root') and len(rest) > 1:
                 options[rest[0]], rest = rest[1], rest[2:]
             else:
                 paths.append(rest[0])
                 rest = rest[1:]
         lanes = tuple(options.get('--lanes', ','.join(LANES)).split(','))
         if (options.get('--route') not in ROUTES or not paths or '--out' not in options
+                or '--private-root' not in options
                 or any(lane not in LANES for lane in lanes) or len(set(lanes)) != len(lanes)):
             raise DriverError('usage')
         sets = [load_set(path) for path in paths]
-        out = private_target(options['--out'])
+        out = private_target(options['--out'], options['--private-root'])
         out.mkdir(parents=True, exist_ok=False)
         card, rows = run(ROUTES[options['--route']](), sets, lanes)
         (out / 'card.json').write_bytes(json.dumps(card, indent=1).encode('utf-8'))

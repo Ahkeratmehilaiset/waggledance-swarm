@@ -1,4 +1,4 @@
-"""Question-test driver for a Mind free-question route (fable-5, draft 2, 2026-11-22).
+"""Question-test driver for a Mind free-question route (fable-5, draft 3, 2026-11-22).
 
 DRAFT for the second Mind change. This file holds NO question and NO answer: the question sets it
 reads are private evaluation material and are never committed, posted or indexed.
@@ -23,8 +23,11 @@ that any loaded set knows to be written by another lane is classed SERVED_OUTSID
 awarded, also when the answer mixes own and foreign rows. A served row whose author no loaded set knows
 cannot be judged here: the scope filter itself needs its own product tests.
 
-ROUTES. Only the synthetic stand-in exists here. It is NOT Mind: a word-overlap toy over six invented rows,
-used to prove the driver. The route pipe-v3 refuses until it is bound to an exact commit on Lead's yes.
+ROUTES. A route is called as route(request, caller): caller is the trusted (lane, scope) of the asking
+lane, handed over by the driver beside the request and never read out of the request object; the draft
+mapper takes it as free_question_binding and refuses a request whose lane or scope differs from it.
+Only the synthetic stand-in exists here. It is NOT Mind: a word-overlap toy over six invented rows,
+used to exercise the driver. The route pipe-v3 refuses until it is bound to an exact commit on Lead's yes.
 
 HANDLING. Question texts and gold rows are evaluation material: they stay in private files on this machine.
 This driver prints and saves cards (counts), ids, classes and hashes only, never a question text.
@@ -144,7 +147,7 @@ class SyntheticOwner:
     def words(text):
         return set(re.findall(r'[a-z0-9]+', text.lower()))
 
-    def __call__(self, request):
+    def __call__(self, request, caller=None):
         if (type(request) is not dict
                 or set(request) != {'schema', 'query_id', 'nonce', 'lane', 'scope', 'question'}
                 or any(type(value) is not str for value in request.values())
@@ -153,6 +156,9 @@ class SyntheticOwner:
                 or request['scope'] != SCOPE[request['lane']]
                 or not 1 <= len(request['question']) <= MAX_QUESTION_CHARS
                 or any(ord(char) < 32 for char in request['question'])):
+            raise DriverError('synthetic_owner_refused')
+        # Mirrors the draft mapper: a trusted caller identity must equal the lane and scope of the request.
+        if caller is not None and (type(caller) is not tuple or caller != (request['lane'], request['scope'])):
             raise DriverError('synthetic_owner_refused')
         asked = self.words(request['question'])
         if not asked:
@@ -173,7 +179,7 @@ class SyntheticOwner:
 class PipeV3NotBound:
     name = 'pipe-v3'
 
-    def __call__(self, request):
+    def __call__(self, request, caller=None):
         raise DriverError('route_not_bound: no free-question route exists at %s; bind to an exact commit '
                           'on the yes of Lead before any real ask' % BASE_COMMIT[:8])
 
@@ -294,7 +300,9 @@ def ask(route, item, lane, authors=None):
     frozen = dict(request)
     started = time.perf_counter()
     try:
-        response = route(request)
+        # The second argument is the trusted caller identity: the driver's own lane and scope, handed
+        # over beside the request and never read back out of the request object.
+        response = route(request, (lane, scope))
         elapsed = time.perf_counter() - started
         if request != frozen:
             raise DriverError('request_changed_by_route')
@@ -434,7 +442,7 @@ EXPECTED_SELFTEST = {
 class _OwnerIgnoringScope(SyntheticOwner):
     """Fault stand-in: serves a build lane rows written by others."""
 
-    def __call__(self, request):
+    def __call__(self, request, caller=None):
         reply = SyntheticOwner.__call__(self, dict(request, lane='claude-rco-1', scope='shared'))
         return dict(reply, lane=request['lane'], scope=request['scope'])
 
@@ -442,16 +450,23 @@ class _OwnerIgnoringScope(SyntheticOwner):
 class _OwnerChangingRequest(SyntheticOwner):
     """Fault stand-in: alters the caller's request object."""
 
-    def __call__(self, request):
-        reply = SyntheticOwner.__call__(self, request)
+    def __call__(self, request, caller=None):
+        reply = SyntheticOwner.__call__(self, request, caller)
         request['question'] = 'x'
         return reply
+
+
+class _RouteGivingAnotherCaller(SyntheticOwner):
+    """Fault stand-in: the caller identity handed to the owner is not the lane of the request."""
+
+    def __call__(self, request, caller=None):
+        return SyntheticOwner.__call__(self, request, ('codex-tools-1', 'own'))
 
 
 class _OwnerRaising(SyntheticOwner):
     """Fault stand-in: fails with an error the driver does not know."""
 
-    def __call__(self, request):
+    def __call__(self, request, caller=None):
         raise RuntimeError('synthetic')
 
 
@@ -461,7 +476,7 @@ class _FixedOwner(SyntheticOwner):
     def __init__(self, *indexes):
         self._indexes = indexes
 
-    def __call__(self, request):
+    def __call__(self, request, caller=None):
         rows = [{'ref_sha256': sha(b'ref-%d' % index), 'doc_id_sha256': sha(b'doc-%d' % index),
                  'source_event_sha256': self.row_hash(index)} for index in self._indexes]
         return {'schema': RESPONSE_SCHEMA, 'nonce': request['nonce'], 'lane': request['lane'],
@@ -583,10 +598,12 @@ def selftest():
     route_faults = {
         'owner_ignoring_scope': ask(_OwnerIgnoringScope(), item['A5'], 'codex-lead-1')[:2],
         'owner_changing_request': ask(_OwnerChangingRequest(), item['A1'], 'codex-lead-1')[:2],
-        'owner_raising': ask(_OwnerRaising(), item['A1'], 'codex-lead-1')[:2]}
+        'owner_raising': ask(_OwnerRaising(), item['A1'], 'codex-lead-1')[:2],
+        'caller_identity_of_another_lane': ask(_RouteGivingAnotherCaller(), item['A1'], 'codex-lead-1')[:2]}
     wanted = {'owner_ignoring_scope': ('SERVED_OUTSIDE_SCOPE', ''),
               'owner_changing_request': ('REFUSED', 'request_changed_by_route'),
-              'owner_raising': ('REFUSED', 'route_raised_RuntimeError')}
+              'owner_raising': ('REFUSED', 'route_raised_RuntimeError'),
+              'caller_identity_of_another_lane': ('REFUSED', 'synthetic_owner_refused')}
     if route_faults != wanted:
         problems.append(('route_faults', route_faults))
     scope_cases = scope_regression_cases()

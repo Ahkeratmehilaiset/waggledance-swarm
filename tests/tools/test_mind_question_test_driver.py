@@ -97,3 +97,48 @@ def test_one_gold_reference_has_one_writer(driver):
     document['questions'][1]['gold'][0]['agent'] = 'codex-tools-1'
     with pytest.raises(driver.DriverError):
         driver.check_set(document)
+
+
+def test_the_route_gets_the_trusted_caller_identity_beside_the_request(driver):
+    """The caller identity is the driver's own lane and scope, not a value read out of the request."""
+    seen = []
+
+    class Recording(driver.SyntheticOwner):
+        def __call__(self, request, caller=None):
+            seen.append((dict(request), caller))
+            return driver.SyntheticOwner.__call__(self, request, caller)
+
+    item = dict(driver.synthetic_sets()[0][0]['questions'][0], ask_as='any')
+    for lane in driver.LANES:
+        driver.ask(Recording(), item, lane)
+    assert [caller for _, caller in seen] == [(lane, driver.SCOPE[lane]) for lane in driver.LANES]
+    assert all(type(caller) is tuple and caller == (request['lane'], request['scope']) for request, caller in seen)
+
+
+def test_a_route_that_rewrites_the_request_cannot_move_the_caller_identity(driver):
+    seen = []
+
+    class Rewriting(driver.SyntheticOwner):
+        def __call__(self, request, caller=None):
+            request['lane'], request['scope'] = 'claude-rco-1', 'shared'
+            seen.append(caller)
+            return driver.SyntheticOwner.__call__(self, request, caller)
+
+    item = driver.synthetic_sets()[0][0]['questions'][0]
+    assert driver.ask(Rewriting(), item, 'codex-lead-1')[:2] == ('REFUSED', 'synthetic_owner_refused')
+    assert seen == [('codex-lead-1', 'own')]
+
+
+@pytest.mark.parametrize('caller', [('codex-tools-1', 'own'), ('codex-lead-1', 'shared'), ('own', 'codex-lead-1'),
+                                    ['codex-lead-1', 'own'], ('codex-lead-1',), 'codex-lead-1'])
+def test_the_stand_in_refuses_a_caller_identity_that_is_not_the_request_lane_and_scope(driver, caller):
+    request = driver.build_request('synthetic amber valve', 'codex-lead-1', 'own')
+    assert driver.SyntheticOwner()(dict(request), ('codex-lead-1', 'own'))['lane'] == 'codex-lead-1'
+    with pytest.raises(driver.DriverError):
+        driver.SyntheticOwner()(dict(request), caller)
+
+
+def test_a_caller_identity_of_another_lane_is_a_refusal_in_the_card(driver):
+    item = driver.synthetic_sets()[0][0]['questions'][0]
+    assert driver.ask(driver._RouteGivingAnotherCaller(), item, 'codex-lead-1')[:2] == (
+        'REFUSED', 'synthetic_owner_refused')

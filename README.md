@@ -1,6 +1,16 @@
 # WaggleDance
 
-> A local-first AI runtime that routes deterministically and grows new solvers on its own — without leaking your data to the cloud. Two-topology hex routing (7-cell agent map + 8-cell solver retrieval — see [`docs/architecture/HEX_TOPOLOGIES.md`](docs/architecture/HEX_TOPOLOGIES.md)), six-family auto-growth lane, MAGMA-audited provenance.
+**WaggleDance is a local-first AI runtime for developers who want deterministic solvers to answer first and a local language model (Ollama) only as a fallback, with data kept on their own machine by default (cloud use is opt-in).**
+
+```bash
+git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git && cd waggledance-swarm
+pip install -r requirements.txt
+python -m waggledance.adapters.cli.start_runtime --stub   # stub mode: no Ollama or ChromaDB needed
+```
+
+More options (Docker, Ollama-backed runtime, capsule presets): [Quick start](#quick-start) and [`docs/ENTRYPOINTS.md`](docs/ENTRYPOINTS.md). Licence: Apache-2.0 and BUSL-1.1, see [License](#license).
+
+> Details: two-topology hex routing (7-cell agent map + 8-cell solver retrieval — see [`docs/architecture/HEX_TOPOLOGIES.md`](docs/architecture/HEX_TOPOLOGIES.md)), six-family auto-growth lane, MAGMA-audited provenance.
 
 ## What's measured (same machine, same snapshots)
 

@@ -1,0 +1,50 @@
+Proposed GitHub repository description and topics for Ahkeratmehilaiset/waggledance-swarm
+=========================================================================================
+
+Status: PROPOSAL ONLY. Nothing here has been applied. Changing the GitHub "About"
+text or the topic list is an operator action (docs/github/REPOSITORY_PRESENTATION.md
+records that the currently applied description is retained until the operator asks
+for a change). The repository owner runs the command below by hand if approved.
+
+Why: the current description is a list of benchmark numbers and internal terms. A
+first-time visitor should learn in one line what the project is and for whom; the
+numbers stay in the README under "What's measured".
+
+Proposed description (one line):
+
+  Local-first AI runtime: deterministic solvers answer first, a local LLM (Ollama) only as fallback. Your data stays on your machine by default.
+
+Proposed topics (8; all lowercase, GitHub allows up to 20):
+
+  local-first, ai-runtime, solver-first, ollama, llm, python, privacy, multi-agent
+
+Topics currently applied that this proposal removes (15 of the 20 applied):
+
+  iot, autonomous-learning, chromadb, finnish-nlp, mqtt, opentelemetry, prometheus,
+  pytorch, sklearn, smart-home, agent-bridge, busl-license, autogrowth,
+  autonomy-fabric, hexagonal-topology
+
+  (chromadb is an optional extra, not part of the default install; finnish-nlp,
+  smart-home, iot and mqtt describe capsules and legacy integrations rather than
+  the runtime; the swarm and governance terms are internal.)
+
+Command (read-only check first, then apply only with owner approval):
+
+  gh repo view Ahkeratmehilaiset/waggledance-swarm --json description,repositoryTopics
+
+  gh repo edit Ahkeratmehilaiset/waggledance-swarm \
+    --description "Local-first AI runtime: deterministic solvers answer first, a local LLM (Ollama) only as fallback. Your data stays on your machine by default." \
+    --remove-topic iot --remove-topic autonomous-learning --remove-topic chromadb \
+    --remove-topic finnish-nlp --remove-topic mqtt --remove-topic opentelemetry \
+    --remove-topic prometheus --remove-topic pytorch --remove-topic sklearn \
+    --remove-topic smart-home --remove-topic agent-bridge --remove-topic busl-license \
+    --remove-topic autogrowth --remove-topic autonomy-fabric --remove-topic hexagonal-topology \
+    --add-topic llm --add-topic python --add-topic privacy
+
+  (local-first, ai-runtime, solver-first, ollama and multi-agent are already applied
+  and are kept.)
+
+Non-claims kept from REPOSITORY_PRESENTATION.md: no wording that implies AGI,
+consciousness, raw model superiority or cross-vendor ranking.
+
+Proposed by fable-5 on 2026-10-29 from the outsider-review brief (item 1).

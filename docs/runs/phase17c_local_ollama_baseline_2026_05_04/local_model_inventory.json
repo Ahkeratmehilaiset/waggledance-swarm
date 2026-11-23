@@ -2,7 +2,7 @@
   "phase": "phase17c",
   "captured_utc": "2026-05-04T21:35:00Z",
   "ollama_version": "0.22.1",
-  "ollama_path": "/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama",
+  "ollama_path": "<user-home>/AppData/Local/Programs/Ollama/ollama",
   "selection_rule": "rule_14_preference_order",
   "preference_order": [
     "gemma4:e4b",

@@ -36,7 +36,7 @@
     "head_phase": "Phase 17A post-release docs (PR #72)"
   },
   "p0_baseline_ollama": {
-    "binary_path": "/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama",
+    "binary_path": "<user-home>/AppData/Local/Programs/Ollama/ollama",
     "version": "0.22.1",
     "models_present_count": 9,
     "models_for_baseline_consideration": [

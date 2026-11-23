@@ -997,6 +997,7 @@ def _current_binding(bundle_root, manifest_sha256):
             or doc.get('final_commit') != commit or str(doc.get('final_manifest_sha256', '')).lower() != pin.lower()
             or type(manifest_sha256) is not str or manifest_sha256.lower() != pin.lower()):
         raise ReservationAdminRefused('current_pointer_invalid')
+    pin = pin.lower()
     expected = _BUNDLE_STORE / commit
     if (os.path.normcase(os.path.abspath(bundle_root)) != os.path.normcase(str(expected))
             or os.path.normcase(os.path.abspath(str(doc.get('active_bundle', '')))) != os.path.normcase(str(expected))):

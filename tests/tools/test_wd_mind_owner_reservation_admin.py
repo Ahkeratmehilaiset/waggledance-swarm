@@ -1800,11 +1800,16 @@ def _synthetic_installed_binding(tmp_path, monkeypatch):
     pin = hashlib.sha256(raw).hexdigest()
     pointer = tmp_path / 'pointer.json'
     pointer.write_text(json.dumps({'source_commit': commit, 'final_commit': commit,
-        'manifest_sha256': pin, 'final_manifest_sha256': pin, 'active_bundle': str(bundle)}))
+        'manifest_sha256': pin.upper(), 'final_manifest_sha256': pin.upper(), 'active_bundle': str(bundle)}))
     monkeypatch.setattr(admin, '_CURRENT_POINTER', pointer)
     monkeypatch.setattr(admin, '_BUNDLE_STORE', store)
     monkeypatch.setattr(admin.os.path, 'samefile', lambda a, b: True)
-    monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', lambda **kw: {'interpreter_root': 'synthetic'})
+    def resolve_location(*, enabled, bundle_root, expected_manifest_sha256):
+        assert runtime.reader._hex(expected_manifest_sha256)
+        assert expected_manifest_sha256 == pin
+        return {'interpreter_root': 'synthetic'}
+
+    monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', resolve_location)
     return bundle, pin, pointer, source
 
 

@@ -7,30 +7,49 @@ Operator 10:47Z (relayed by RCO1): the Mind must be aware of usage limits. RCO1 
 collectors that already exist): read the installed capacity observer each live cycle instead of building one.
 ``Get-WdCapacityStatus.ps1 -Json`` is the installed read-only locator: it verifies its own pins and runs the
 observer's collector in ``--status`` mode over its own observation store; it never collects, starts or repairs
-anything, and it reads no bridge log and no credentials. This hook adds nothing to that: it keeps the raw status
-in the cycle dir and publishes two short lens files.
+anything, and it reads no bridge log and no credentials. This hook adds nothing to that: it writes the lens view
+to the cycle dir and publishes two short lens files. The raw status is never written anywhere (it carries account,
+plan, token-count, rate-limit payload and model catalog fields); the view keeps the sha256 of its raw bytes as the
+source digest, and nothing of the status reaches a file but the figures and labels named here.
 
-* ``LIMITS``: per provider and window, each thread's used percent and the observed reset time (UTC and minutes
-  left). Same-provider threads may share one pool, so they are listed, never summed. A window with no observed
-  reset says UNKNOWN; nothing estimates a reset or a run-out time it did not observe. Threads whose resets differ
-  get each their own; a reset at or before the status time says it passed (the figure may predate it); a missing,
-  non-finite or unrepresentable percent, reset or age is UNKNOWN (null in the view), never a crash. Each line
-  ends with the observer's own labels for its figures, never dropped: freshness, quota state and the oldest
-  observation's age (the installed observer labels every Claude figure provider_timestamp_unknown, so its quota
-  state is unknown). A provider whose collection never succeeded says so with the observer's own state.
-* ``ACTIVITY``: per native thread, the observer's activity state, the last successful turn and the first error.
+* ``LIMITS``: per provider and window, each observation's used percent and the observed reset time (UTC and
+  minutes left), with no thread identifier. Same-provider observations may share one pool, so they are listed,
+  never summed. A window with no observed reset says UNKNOWN; nothing estimates a reset or a run-out time it did not
+  observe. Observations whose resets differ get each their own; a reset at or before the status time says it
+  passed (the figure may predate it); a missing, non-finite or unrepresentable percent, reset or age is UNKNOWN
+  (null in the view), never a crash. Each line ends with the observer's own labels for its figures, never
+  dropped: freshness, quota state and the oldest observation's age (the installed observer labels every Claude
+  figure provider_timestamp_unknown, so its quota state is unknown). A provider whose collection never succeeded
+  says so with the observer's own state.
+* ``COLLECTION``: per provider the observer collects (and per failed provider), one health word from the observer's
+  own figures: FAILED (collection state failed, or a failed provider), NO_SUCCESS (no successful collection), STALE
+  (an attempt after the last success, or a last success older than the observer's own freshness TTL), UNKNOWN (no
+  usable TTL: the age is shown, staleness is not judged) or OK; then the state, the last success and its age, the
+  last attempt and the TTL. ``ALERTS``: the observer's alerts counted by provider and state; no alert id, thread or
+  time is kept.
+* ``ACTIVITY``: per provider, never per thread: the number of native threads, their activity and availability
+  states counted, the latest successful turn and its age, and the errors counted by type with the earliest first
+  error.
 
 A status the lens cannot read whole is refused whole with a fixed reason (``refused: status_...``) and nothing is
 written: one that json.loads refuses (not UTF-8 JSON, nested too deep, or an int literal longer than the
 interpreter's int digit limit: 4300 digits unless -X int_max_str_digits or PYTHONINTMAXSTRDIGITS sets another, 0
 for none), one that is not the observer's object, and one with a list, row or time of the wrong shape anywhere
 (false, a string or one object where a list belongs; a row that is not an object; a window without a string name; a
-time that is not an ISO time string, or one the lens shows that has no UTC time). An absent or null list, collection
-or time is one the observer did not give; the status time is required. Every time the lens shows is in UTC. A status
-run that times out, raises an OSError or exits nonzero is refused the same way.
+failed provider that is not a string; a time that is not an ISO time string, or one the lens shows that has no UTC
+time). An absent or null list, collection or time is one the observer did not give; the status time is required.
+Every time the lens shows is in UTC. A status run that times out, raises an OSError or exits nonzero is refused the
+same way.
 
-Threads are named by their first 8 hex digits. A lane name appears only when ``--declared`` gives one, labelled
-"declared" (the observer binds no thread to a lane). Never writes a bridge event, never runs gate code.
+No thread identifier, alert id, account, plan, token count or provider payload reaches a written or published
+byte. Every observer string the lens copies is a known provider (claude, codex) or a short safe label (lowercase
+words of up to 16 letters joined by underscores, at most six words); anything else, an e-mail, a path, a token or
+an unknown provider, reads UNKNOWN, so labels that differ only there are merged. The header gives the age of the
+whole status against the lens's own UTC clock: FRESH up to 120 s (the status comes from the call the lens just
+made, with a 60 s deadline), STALE beyond, and FUTURE (invalid) when the status time is after the clock.
+A lane name appears only when ``--declared`` gives one for an observation's thread (by its first 8 hex
+digits), labelled "declared" (the observer binds no thread to a lane); the thread id itself is never written.
+Never writes a bridge event, never runs gate code.
 """
 
 import argparse
@@ -39,6 +58,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -50,10 +70,17 @@ from tools import wd_bridge_mind as core  # noqa: E402
 
 STATUS_SCHEMA = "wd.capacity-status.v1"
 LENS_SCHEMA = "wd.bridge-mind-capacity-lens.v1"
-OLD_IDLE_MIN = 12 * 60  # idle, error-free threads older than this fold into one ACTIVITY line
+PROVIDERS = frozenset({"claude", "codex"})
+SAFE_LABEL = re.compile(r"[a-z]{1,16}(?:_[a-z]{1,16}){0,5}")
+STATUS_MAX_AGE_S = 120  # the status comes from the call the lens just made (60 s deadline)
 NOTE = ("reset times are recheck times, not readiness promises; same-provider threads may share one pool and are "
         "never summed; thread to lane binding unverified unless declared; each line keeps the observer's own "
         "freshness and quota labels and the age of its oldest figure")
+
+
+def clock():
+    """The lens's own UTC clock; the status age is measured against it (tests inject a fixed one)."""
+    return dt.datetime.now(dt.timezone.utc)
 
 
 def utc(value):
@@ -147,6 +174,21 @@ def number(value):
         return False
 
 
+def given_text(value):
+    """A label the observer gave as a short safe label, else UNKNOWN: never an e-mail, a path or a token."""
+    return value if isinstance(value, str) and SAFE_LABEL.fullmatch(value) else ws.UNKNOWN
+
+
+def provider_label(value):
+    """A provider the lens knows, else UNKNOWN."""
+    return value if isinstance(value, str) and value in PROVIDERS else ws.UNKNOWN
+
+
+def given_label(value):
+    """given_text() of a label the observer gave, None when it gave none (absent or null)."""
+    return None if value is None else given_text(value)
+
+
 def reset_time(value):
     """An observed reset as a UTC time; None when it is absent, not a number or not a representable epoch second."""
     if not number(value):
@@ -159,47 +201,88 @@ def reset_time(value):
 
 def project(status, declared):
     now = parse_time(status["observed_at"]).astimezone(dt.timezone.utc)  # one with no UTC time stops here
-    name = {thread: f"thread {thread} ({lane}, declared)" for thread, lane in declared.items()}
-
-    def label(thread):
-        short = str(thread or "")[:8]
-        return name.get(short, f"thread {short or ws.UNKNOWN}")
-
     limits = {}
     for observation in rows(status.get("observations")):
-        provider = str(observation.get("provider"))
+        provider = provider_label(observation.get("provider"))
         # The observer's own labels for this observation's figures, as it gave them (None when it gave none).
-        labels = {key: observation.get(key) if isinstance(observation.get(key), str) else None
-                  for key in ("freshness", "quota_state")}
+        labels = {key: given_label(observation.get(key)) for key in ("freshness", "quota_state")}
         age = observation.get("observation_age_seconds")
         for window in windows(observation):
             used, reset_at = window.get("used_percent"), reset_time(window.get("resets_at"))
-            limits.setdefault((provider, window["name"]), []).append({
-                "thread": label(observation.get("native_thread_id")),
+            limits.setdefault((provider, given_text(window["name"])), []).append({
+                "lane": declared.get(str(observation.get("native_thread_id") or "")[:8]),
                 "used_percent": used if number(used) else None,
                 "reset_utc": None if reset_at is None else utc(reset_at),
                 "minutes_left": None if reset_at is None else round((reset_at - now).total_seconds() / 60),
                 "reset_passed": None if reset_at is None else reset_at <= now,
                 "observation_age_s": age if number(age) and age >= 0 else None, **labels})
-    silent = {}
-    for provider, row in given(status.get("collection"), dict).items():
+    failed = given(status.get("failed_providers"), list)
+    if not all(isinstance(provider, str) for provider in failed):
+        raise TypeError("a failed provider is not a string")
+    failed = {provider_label(provider) for provider in failed}
+    collection = {provider_label(provider): row for provider, row in given(status.get("collection"), dict).items()}
+    health = {}
+    for provider in sorted(set(collection) | set(failed)):
+        row = collection.get(provider, {})
         if not isinstance(row, dict):
             raise TypeError("a collection row is not an object")
         success, attempt = given_time(row.get("last_success")), given_time(row.get("last_attempt"))
-        if success is None:
-            silent[provider] = {"collection_state": row.get("collection_state"),
-                                "last_attempt_utc": None if attempt is None else utc(attempt)}
-    activity = []
+        state = given_label(row.get("collection_state"))
+        ttl = row.get("freshness_ttl_seconds")
+        ttl = ttl if number(ttl) and ttl > 0 else None
+        after = None if attempt is None or success is None else attempt > success
+        if state == "failed" or provider in failed:
+            word = "FAILED"
+        elif success is None:
+            word = "NO_SUCCESS"
+        elif after or (ttl is not None and (now - success).total_seconds() > ttl):
+            word = "STALE"
+        else:
+            word = "UNKNOWN" if ttl is None else "OK"
+        health[provider] = {"health": word, "collection_state": state, "freshness_ttl_s": ttl,
+                            "last_success_utc": None if success is None else utc(success),
+                            "minutes_since_success": (None if success is None
+                                                      else round((now - success).total_seconds() / 60)),
+                            "last_attempt_utc": None if attempt is None else utc(attempt),
+                            "attempt_after_success": after, "failed_provider": provider in failed}
+    counted = {}
+    for alert in rows(status.get("alerts")):
+        key = (provider_label(alert.get("provider")), given_text(alert.get("state")))
+        counted[key] = counted.get(key, 0) + 1
+    alerts = [{"provider": provider, "state": state, "count": count}
+              for (provider, state), count in sorted(counted.items())]
+    groups = {}
     for row in rows(status.get("native_activity")):
         last, first_error = given_time(row.get("last_successful_turn_at")), given_time(row.get("first_error_at"))
-        activity.append({"thread": label(row.get("native_thread_id")), "provider": row.get("provider"),
-                         "activity_state": row.get("activity_state"),
-                         "availability_state": row.get("availability_state"),
-                         "last_successful_turn_utc": None if last is None else utc(last),
-                         "minutes_since_success": None if last is None else round((now - last).total_seconds() / 60),
-                         "error_type": row.get("error_type"),
-                         "first_error_utc": None if first_error is None else utc(first_error)})
-    return now, limits, silent, activity
+        group = groups.setdefault(provider_label(row.get("provider")), {"threads": 0, "activity_states": {},
+                                                                    "availability_states": {}, "latest": None,
+                                                                    "errors": {}})
+        group["threads"] += 1
+        for key, field in (("activity_states", "activity_state"), ("availability_states", "availability_state")):
+            state = given_text(row.get(field))
+            group[key][state] = group[key].get(state, 0) + 1
+        if last is not None and (group["latest"] is None or last > group["latest"]):
+            group["latest"] = last
+        if row.get("error_type") not in (None, ""):
+            count, first = group["errors"].get(given_text(row.get("error_type")), (0, None))
+            if first_error is not None and (first is None or first_error < first):
+                first = first_error
+            group["errors"][given_text(row.get("error_type"))] = (count + 1, first)
+    activity = [{"provider": provider, "threads": group["threads"],
+                 **{key: [{"state": state, "count": count} for state, count in sorted(group[key].items())]
+                    for key in ("activity_states", "availability_states")},
+                 "latest_success_utc": None if group["latest"] is None else utc(group["latest"]),
+                 "minutes_since_latest_success": (None if group["latest"] is None
+                                                  else round((now - group["latest"]).total_seconds() / 60)),
+                 "errors": [{"error_type": kind, "count": count,
+                             "first_error_utc": None if first is None else utc(first)}
+                            for kind, (count, first) in sorted(group["errors"].items())]}
+                for provider, group in sorted(groups.items())]
+    checked = clock()
+    age_s = (checked - now).total_seconds()
+    age = {"checked_utc": utc(checked), "age_s": age_s,
+           "state": "FUTURE" if age_s < 0 else "STALE" if age_s > STATUS_MAX_AGE_S else "FRESH"}
+    return now, limits, health, activity, alerts, age
 
 
 def readable(status, declared):
@@ -208,10 +291,10 @@ def readable(status, declared):
     what project() kept, so the catch covers project() alone: an error in the lens's own text is never shown as a
     status of the wrong shape."""
     try:
-        now, limits, silent, activity = project(status, declared)
+        now, limits, health, activity, alerts, age = project(status, declared)
     except (KeyError, OverflowError, TypeError, ValueError):  # each one a test case reaches
         raise LensRefused("status_shape_unexpected") from None
-    return now, limits, silent, activity, text_lines(now, limits, silent, activity)
+    return now, limits, health, activity, alerts, age, text_lines(now, limits, health, activity, alerts, age)
 
 
 def percent(value):
@@ -239,13 +322,40 @@ def observer_text(rows):
     return f"observer {freshness}, quota {quota}, {age}"
 
 
-def text_lines(now, limits, silent, activity):
-    lines = [f"capacity (installed observer, read-only) observed {utc(now)}; {NOTE}"]
+def collection_text(provider, row):
+    success = (f"last success {row['last_success_utc'][:16]}Z ({row['minutes_since_success']} min ago)"
+               if row["last_success_utc"] else "no successful collection")
+    attempt = (f"last attempt {row['last_attempt_utc'][:16]}Z" + (" (after the last success)"
+                                                                  if row["attempt_after_success"] else "")
+               if row["last_attempt_utc"] else "no attempt recorded")
+    ttl = (f"observer TTL {row['freshness_ttl_s']} s" if row["freshness_ttl_s"] is not None
+           else "no observer TTL (staleness not judged)")
+    failed = "; failed provider" if row["failed_provider"] else ""
+    return (f"COLLECTION {provider}: {row['health']}; state {row['collection_state'] or ws.UNKNOWN}; {success}; "
+            f"{attempt}; {ttl}{failed}")
+
+
+def figure(row):
+    """One observation's percent, after its declared lane when one was given; never a thread id."""
+    return (f"{row['lane']} (declared) " if row["lane"] else "") + percent(row["used_percent"])
+
+
+def minutes(seconds):
+    return "under 1 min" if seconds < 60 else f"{round(seconds / 60)} min"
+
+
+def age_text(age):
+    if age["state"] == "FUTURE":
+        return f"status time {minutes(-age['age_s'])} ahead of the lens clock, FUTURE (invalid)"
+    return f"status age {minutes(age['age_s'])}, {age['state']}"
+
+
+def text_lines(now, limits, health, activity, alerts, age):
+    lines = [f"capacity (installed observer, read-only) observed {utc(now)} ({age_text(age)}); {NOTE}"]
     for (provider, window), rows in sorted(limits.items()):
-        used = ", ".join(f"{row['thread'][len('thread '):]} {percent(row['used_percent'])}" for row in rows)
-        if len({row["reset_utc"] for row in rows}) > 1:  # one thread's reset is never implied for another
-            when = "resets differ by thread: " + ", ".join(
-                f"{row['thread'][len('thread '):]} {reset_text(row)}" for row in rows)
+        used = ", ".join(figure(row) for row in rows)
+        if len({row["reset_utc"] for row in rows}) > 1:  # one observation's reset is never implied for another
+            when = "resets differ by observation: " + ", ".join(f"{figure(row)} {reset_text(row)}" for row in rows)
         elif rows[0]["reset_utc"] is None:
             when = "reset UNKNOWN (no readable reset observed)"
         else:
@@ -253,19 +363,22 @@ def text_lines(now, limits, silent, activity):
         top = max((row["used_percent"] for row in rows if row["used_percent"] is not None), default=None)
         risk = " RISK" if top is not None and top >= 80 else ""
         lines.append(f"LIMITS {provider} {window}:{risk} {used}; {when}; {observer_text(rows)}")
-    for provider, row in sorted(silent.items()):
-        lines.append(f"LIMITS {provider}: UNKNOWN (observer has no successful collection; state "
-                     f"{row['collection_state']}, last attempt {str(row['last_attempt_utc'])[:16]})")
-    old = [row for row in activity if row["error_type"] is None and row["activity_state"] == "idle_observed"
-           and isinstance(row["minutes_since_success"], int) and row["minutes_since_success"] > OLD_IDLE_MIN]
-    for row in sorted((row for row in activity if row not in old), key=lambda item: item["thread"]):
-        since = (f"last success {row['last_successful_turn_utc'][11:16]}Z ({row['minutes_since_success']} min ago)"
-                 if row["last_successful_turn_utc"] else "no successful turn observed")
-        error = f"; error {row['error_type']} since {str(row['first_error_utc'])[:16]}" if row["error_type"] else ""
-        lines.append(f"ACTIVITY {row['provider']} {row['thread']}: {row['activity_state']}; {since}{error}")
-    if old:
-        lines.append(f"ACTIVITY: {len(old)} more threads idle with no error, last success over "
-                     f"{OLD_IDLE_MIN // 60} h ago (oldest {max(row['minutes_since_success'] for row in old) // 60} h)")
+    for provider, row in sorted(health.items()):
+        if row["last_success_utc"] is None:
+            lines.append(f"LIMITS {provider}: UNKNOWN (observer has no successful collection; state "
+                         f"{row['collection_state']}, last attempt {str(row['last_attempt_utc'])[:16]})")
+    lines.extend(collection_text(provider, row) for provider, row in sorted(health.items()))
+    if alerts:
+        lines.append(f"ALERTS: {sum(row['count'] for row in alerts)} ("
+                     + ", ".join(f"{row['provider']} {row['state']} x{row['count']}" for row in alerts) + ")")
+    for row in activity:
+        states = ", ".join(f"{item['state']} x{item['count']}" for item in row["activity_states"])
+        since = (f"latest success {row['latest_success_utc'][:16]}Z ({row['minutes_since_latest_success']} min ago)"
+                 if row["latest_success_utc"] else "no successful turn observed")
+        errors = "".join(f"; error {item['error_type']} x{item['count']}"
+                         + (f" since {item['first_error_utc'][:16]}" if item["first_error_utc"] else "")
+                         for item in row["errors"])
+        lines.append(f"ACTIVITY {row['provider']}: threads {row['threads']}; {states}; {since}{errors}")
     return lines
 
 
@@ -291,23 +404,27 @@ def main():
         declared[thread] = lane
     try:
         raw, status = read_status(args.status_script)
-        now, limits, silent, activity, lines = readable(status, declared)
+        now, limits, health, activity, alerts, age, lines = readable(status, declared)
     except LensRefused as exc:
         raise SystemExit(f"refused: {exc}") from None
     view = {"schema": LENS_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
-            "observed_utc": utc(now), "status_sha256": hashlib.sha256(raw).hexdigest(),
-            "limits": [{"provider": provider, "window": window, "threads": rows}
+            "observed_utc": utc(now), "status_age": age, "status_sha256": hashlib.sha256(raw).hexdigest(),
+            "limits": [{"provider": provider, "window": window, "observations": rows}
                        for (provider, window), rows in sorted(limits.items())],
-            "collection_silent": sorted(silent), "activity": activity, "note": NOTE}
+            "collection_silent": sorted(provider for provider, row in health.items()
+                                        if row["last_success_utc"] is None),
+            "collection": [dict(row, provider=provider) for provider, row in sorted(health.items())],
+            "failed_providers": sorted(provider for provider, row in health.items() if row["failed_provider"]),
+            "alerts": alerts, "activity": activity, "note": NOTE}
     ws.guard_object(view)
     ws.guard_object(lines)
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    (args.out_dir / "capacity-status.json").write_bytes(raw)
     body = json.dumps(view, indent=1, sort_keys=True).encode("ascii")
     (args.out_dir / "capacity-lens.json").write_bytes(body)
     publish(args.publish_dir, "capacity-lens.json", body)
     publish(args.publish_dir, "lens-limits.txt", ("\n".join(lines) + "\n").encode("ascii", "replace"))
-    print(json.dumps({"lines": len(lines), "limits": len(view["limits"]), "activity": len(activity)}))
+    print(json.dumps({"lines": len(lines), "limits": len(view["limits"]), "collection": len(health),
+                      "activity": len(activity)}))
     return 0
 
 

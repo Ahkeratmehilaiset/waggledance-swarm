@@ -50,7 +50,7 @@ def test_operator_exception_preserves_real_gates_and_apply_recheck(tmp_path, mon
         result = original_runner(command)
         if command[:3] == ["gh", "pr", "diff"]:
             result.stdout = diff
-        elif command[:2] == ["gh", "api"] and "/git/ref/heads/" not in command[4]:
+        elif command[:2] == ["gh", "api"] and "/pulls/" in command[4] and command[4].endswith("/files"):
             result.stdout = json.dumps([dict(filename=path, status="modified")])
         elif command[:3] == ["gh", "pr", "view"] and failure == "ci":
             payload = json.loads(result.stdout)
@@ -964,6 +964,22 @@ def _runner(
         nonlocal snapshot_view_count
         call = list(command)
         calls.append(call)
+        if call[:2] == ["gh", "api"]:
+            endpoint = call[4]
+            body = None
+            if endpoint.endswith("/protection/required_status_checks"):
+                body = {"strict": True, "contexts": ["unified"],
+                        "checks": [{"context": "unified", "app_id": 15368}]}
+            elif "/rules/branches/" in endpoint:
+                body = []
+            elif endpoint.endswith("/check-runs"):
+                observed_head = (payload_to_use if snapshot_view_count <= 2 else apply_payload_to_use)["headRefOid"]
+                body = {"total_count": 1, "check_runs": [{"id": 101, "name": "unified",
+                        "head_sha": observed_head, "app": {"id": 15368}, "check_suite": {"id": 201},
+                        "status": "completed", "conclusion": "success",
+                        "url": "https://api.github.com/repos/example/repo/check-runs/101"}]}
+            if body is not None:
+                return SimpleNamespace(returncode=0, stdout=json.dumps(body), stderr="")
         if call[:3] == ["gh", "pr", "view"]:
             if (
                 "number,state,mergeCommit,headRefOid,headRefName,baseRefName"

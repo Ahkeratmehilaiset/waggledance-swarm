@@ -1,0 +1,244 @@
+{
+  "schema": "wd.fable5-carry-real-callers.v1",
+  "corpus_head": "4d7eb1c7b78718e16d5c83b68d8f2b3de86a498b",
+  "callers_read_at": "23564ad4c0494b659bb726f1ed4c57cbbfbac1ba",
+  "request": "codex-lead-1 2026-11-09T07:51:27.4852688Z lead-carry-real-callers-fable-20261109-v1",
+  "failure_classes": {
+    "missing_api": "failure text starts with 'RED: missing API:'; the opt-in carry parameter of a real caller does not exist yet; never counted as verified behaviour",
+    "behaviour": "any other failure; the real caller behaved differently from the expectation recorded here",
+    "missing_wiring": "failure text starts with 'RED: missing wiring:'; the API exists but the real gate or merge path does not consume strict required-CI evidence yet; never counted as verified behaviour"
+  },
+  "opt_in": {
+    "parameter": {
+      "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate": "carry_forward",
+      "tools.merge_with_bridge_receipt:merge_with_bridge_receipt": "carry_forward"
+    },
+    "value": "mapping with approved_head, approved_base_sha and repo_root (pathlib.Path of the checkout holding both heads); built only by _carry_opt_in() in the test file, the single adaptation point once Tools publishes the wired names",
+    "default": "absent or None means exact-head behaviour, unchanged",
+    "published_at": "be79431efd4f2c36bfcb333cd97e26b25eb929c4: evaluate_auto_merge_gate(carry_forward=request) with the request fields approved_head, approved_base_sha (assertion), repo_root; merge_with_bridge_receipt publishes no carry opt-in and evaluate_auto_merge_gate refuses carry with apply=True until the semantic receipt consumer exists (intentionally unavailable)"
+  },
+  "non_opt_in_consumers": {
+    "tools/bridge_loop_tick.py": [
+      "check_rco_pass_present",
+      "verify_bridge_consensus"
+    ],
+    "tools/check_promotion_eligible.py": [
+      "check_rco_pass_present",
+      "verify_bridge_consensus"
+    ]
+  },
+  "carry_record_fields": [
+    "approved_head",
+    "proposed_head",
+    "approved_base_sha",
+    "proposed_base_sha",
+    "patch_id",
+    "approved_diff_sha256",
+    "proposed_diff_sha256",
+    "carried",
+    "build_author_slot_waivers"
+  ],
+  "cases": {
+    "valid_carry_end_to_end": {
+      "history": "legit_rebase",
+      "expect": "carry",
+      "layers": [
+        "gate",
+        "receipt_writer",
+        "apply"
+      ],
+      "note": "approvals only at the approved head; content identical; CI green at the proposed head; queue complete"
+    },
+    "content_change": {
+      "history": "content_changing_rebase",
+      "expect": "refuse",
+      "reason": "(?i)content"
+    },
+    "old_head_objection_under_descriptive_task": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)block|veto|objection|finding",
+      "note": "recognized RCO objection bound only by the approved head under a descriptive task id (map bypass 3)",
+      "shapes": {
+        "no_pr": "payload has only the structured head: invisible to both shared checks at the proposed head today (probe v3 case F)",
+        "with_pr": "payload also names the pr: the consensus block scope matches it by PR today (probe v2 case B)"
+      },
+      "reason_published": "(?i)block|veto|objection|finding|original head has no valid Rule9a consensus",
+      "reason_published_note": "be79431e refuses in the factory consensus check at the approved head and names the consensus, not the objection; the test also asserts the same carry without the objection is not refused for consensus"
+    },
+    "incomplete_queue": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)queue"
+    },
+    "ci_pending_at_proposed_head": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)check|ci"
+    },
+    "ci_failed_at_proposed_head": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)check|ci"
+    },
+    "snapshot_head_is_the_approved_head": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)head",
+      "note": "stale snapshot: pr_status still names the approved head while the caller expects the proposed head"
+    },
+    "fresh_apply_after_objection_append": {
+      "history": "legit_rebase",
+      "expect": "refuse_at_apply",
+      "note": "objection appended between receipt write and apply; the fresh gate must refuse and gh pr merge must never run",
+      "shapes": {
+        "no_pr": "refuse at apply",
+        "with_pr": "refuse at apply",
+        "benign_message": "an unrelated ledger message appended between receipt and apply must NOT refuse; the merge runs with --match-head-commit=<proposed head> (Tools 08:00:29Z full-ledger digest concern)"
+      }
+    },
+    "match_head_commit_is_the_proposed_head": {
+      "history": "legit_rebase",
+      "expect": "carry",
+      "note": "the merge command carries --match-head-commit=<proposed head> and never the approved head"
+    }
+  },
+  "probe_observations_today": {
+    "source": "exact-head code at main 23564ad4 (identical in this branch), audit probes probe_real_callers_v1..v3",
+    "consensus_sees_descriptive_task_objection_bound_by_structured_head": "verify_bridge_consensus refuses at the exact head it names (cases G, H)",
+    "rco_check_misses_descriptive_task_objection": "check_rco_pass_present returns rco_pass_present at the exact head even with a recognized-RCO objection bound to that head under a descriptive task id (cases D, G, H); only matters where bridge consensus is not required",
+    "old_head_objection_without_pr_invisible_at_new_head": "both shared checks pass at the proposed head (case F): the carry path must scan the approved head explicitly"
+  },
+  "mutant_runs": {
+    "M0_no_op": "parameter accepted and ignored: the three positive carry tests and the reason-specific refusals fail",
+    "M1_naive_rebind": "old-head approvals rebound to the proposed head without content or objection checks: content change, no-pr objection, no-pr late objection and content-change merge tests fail; plan-ready gate still fails on the missing carry record"
+  },
+  "strict_ci": {
+    "request": "codex-lead-1 2026-11-09T08:40:02.4592582Z lead-carry-strict-ci-callers-fable-20261109-v1",
+    "api": "tools.pr_status_snapshot:build_pr_status_snapshot(require_ci_evidence=True), published by Tools at 556118c161dc92a19c70882fb1ae84189ba0aa4f",
+    "synthetic_github": "FakeGitHub of tests/tools/test_consensus_carry_forward_ci_snapshot.py loaded by path and parameterized with this harness's real git heads; case setups reused from ci_snapshot_cases.json",
+    "rollup_isolation": "carry cases only: statusCheckRollup stays all-SUCCESS so a carry refusal can only come from the strict evidence the carry route reads",
+    "wiring_expectation": "a wired legacy path refuses, and never issues gh pr merge, when a required check of the bound app is absent at the exact head or the required set cannot be read completely; failed, pending and apply drift are refused today by the rollup rule",
+    "cases": {
+      "control_exact_head_success_feeds_the_real_gate": {
+        "expect": "ready",
+        "class": "green_control"
+      },
+      "non_green_refused_today": {
+        "expect": "refuse at the gate and at the merge driver, no gh pr merge",
+        "reason": "(?i)status checks not green",
+        "ci_cases": [
+          "failed_required_check",
+          "pending_required_check"
+        ],
+        "class": "green_control_refused_today"
+      },
+      "capture_refuses": {
+        "expect": "PrStatusSnapshotError with the ci_snapshot_cases decision",
+        "ci_cases": [
+          "stale_row_for_another_head",
+          "rules_requirement_on_page_two_missing_run",
+          "rules_page_two_read_fails"
+        ]
+      },
+      "capture_refuses_snapshot_at_the_old_head": {
+        "expect": "refuse"
+      },
+      "absent_required_check": {
+        "expect": "refuse, no gh pr merge",
+        "ci_cases": [
+          "stale_row_for_another_head",
+          "rules_requirement_on_page_two_missing_run",
+          "missing_required_check",
+          "wrong_app_only"
+        ],
+        "shapes": {
+          "stale_row_for_another_head": "the required run exists only on an older head",
+          "rules_requirement_on_page_two_missing_run": "a ruleset-required check never ran",
+          "missing_required_check": "the required check never ran",
+          "wrong_app_only": "only a same-named run from another app"
+        },
+        "class": "legacy_blind_spot",
+        "until_wired": "missing_wiring",
+        "practical_note": "main requires six app-bound checks with strict and enforce_admins (Lead read-only 10:09:19Z); GitHub is then the only layer; no server bypass is claimed"
+      },
+      "requirements_unreadable": {
+        "expect": "refuse, no gh pr merge",
+        "ci_cases": [
+          "rules_page_two_read_fails"
+        ],
+        "class": "fail_closed_expectation",
+        "until_wired": "missing_wiring",
+        "note": "not a bypass by itself: the six runs are green; a wired path fails closed"
+      },
+      "control_apply_without_drift_merges": {
+        "expect": "merge_executed_after_receipt",
+        "class": "green_control"
+      },
+      "apply_drift_refused_today": {
+        "expect": "refuse, no gh pr merge",
+        "drift": "bound app unified run turns failed before the apply snapshot",
+        "reason": "(?i)drift",
+        "class": "green_control_refused_today"
+      },
+      "carry_success_at_proposed_head": {
+        "expect": "ready with carry record",
+        "until_wired": "missing_api"
+      },
+      "carry_non_green_at_proposed_head": {
+        "expect": "refuse",
+        "reason": "(?i)ci|check",
+        "ci_cases": [
+          "failed_required_check",
+          "pending_required_check"
+        ],
+        "until_wired": "missing_api"
+      },
+      "carry_snapshot_at_the_approved_head": {
+        "expect": "refuse",
+        "until_wired": "missing_api"
+      },
+      "carry_apply_drift": {
+        "expect": "refuse, no gh pr merge",
+        "until_wired": "missing_api"
+      }
+    },
+    "rollup_consistency": "non-carry legacy cases: statusCheckRollup is derived from the exact-head check runs (name, status, conclusion; no app), as GitHub derives it (fable-5 investigation 2026-11-09T10:08:03Z, Lead correction 10:09:20Z)"
+  },
+  "carry_record_fields_published": {
+    "approved_diff_sha256": "old_diff_sha256",
+    "proposed_diff_sha256": "new_diff_sha256",
+    "approved_base_sha": "approved_base_sha",
+    "proposed_base_sha": "proposed_base_sha",
+    "patch_id": "patch_id"
+  },
+  "be79_adaptations": [
+    "every carry gate call passes the synthetic strict GitHub runner (the factory reads the live PR itself; never a live gh call)",
+    "original votes carry the reviewed basis (direct route) derived independently from git with the pinned diff command",
+    "test checkouts name https://github.com/example/repo.git as origin and the PR change set is the real git path",
+    "CI pending and failed at the proposed head are set in the strict check-run inventory, not the rollup",
+    "carry record fields are read from the published receipt and its content_identity (names mapped in carry_record_fields_published)",
+    "the legit history changes the allowlisted CHANGED_PATH (the carry gate reads the live change set, which must equal git)",
+    "old_head_objection reason accepts the published consensus wording, guarded by a no-objection differential"
+  ],
+  "strict_ci_refinement": {
+    "request": "codex-lead-1 2026-11-09T10:09:34.3875168Z lead-carry-legacy-ci-corpus-fable-20261109-v1",
+    "superseded": {
+      "non_green_with_green_rollup": "non_green_refused_today",
+      "merge_refuses_capture_failure": "absent_required_check + requirements_unreadable",
+      "apply_drift_refuses_merge": "apply_drift_refused_today"
+    },
+    "why": "the green-rollup isolation modelled a world GitHub does not produce for non-carry legacy cases"
+  },
+  "apply211_adaptations": {
+    "tools_head": "211490de981a43e2cf64c86297c4ca2b3b37bc20",
+    "request": "codex-lead-1 2026-11-09T11:28:00.0777536Z lead-carry-apply211-fable-20261109-v1",
+    "changes": [
+      "opt_in.parameter of merge_with_bridge_receipt renamed approval_carry_forward -> carry_forward (published name)",
+      "_carry_opt_in adds accepted_queue_checker (synthetic complete queue) for the merge executor (published parameter)",
+      "carry merge tests use basis-bound original votes (_carry_events), the same be79 adaptation the gate carry tests already carry",
+      "carry merge tests use the synthetic strict GitHub (_carry_merge_gh) because the carry merge executor reads strict required-CI evidence; the content-change test keeps the allowlisted changed path so only content can refuse",
+      "verdicts unchanged"
+    ]
+  }
+}

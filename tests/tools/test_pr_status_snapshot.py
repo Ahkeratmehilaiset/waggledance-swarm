@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -16,6 +18,183 @@ from tools.pr_status_snapshot import (
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
+
+CI_REPO = "Ahkeratmehilaiset/waggledance-swarm"
+
+
+def _ci_inputs():
+    protection = dict(strict=True, contexts=["unit"], checks=[dict(context="unit", app_id=15368)])
+    rules = [dict(type="required_status_checks", parameters=dict(
+        strict_required_status_checks_policy=True,
+        required_status_checks=[dict(context="lint", integration_id=15368)]))]
+    runs = [dict(id=i, name=name, head_sha=HEAD, app=dict(id=15368),
+                 check_suite=dict(id=100 + i), status="completed", conclusion="success",
+                 url=f"https://api.github.com/repos/{CI_REPO}/check-runs/{i}")
+            for i, name in enumerate(("unit", "lint"), 1)]
+    return protection, rules, runs
+
+
+def _ci_runner(protection=None, rules=None, runs=None, *, total=None, fail_endpoint="", drift=""):
+    defaults = _ci_inputs()
+    protection = copy.deepcopy(defaults[0] if protection is None else protection)
+    rules = copy.deepcopy(defaults[1] if rules is None else rules)
+    runs = copy.deepcopy(defaults[2] if runs is None else runs)
+    calls, base_runner = _runner(payload=_gh_payload(url=f"https://github.com/{CI_REPO}/pull/479"))
+    reads = {}
+
+    def run(command):
+        if command[:2] != ["gh", "api"]:
+            return base_runner(command)
+        endpoint = command[4]
+        kind = ("protection" if endpoint.endswith("/protection/required_status_checks") else
+                "rules" if "/rules/branches/" in endpoint else
+                "runs" if endpoint.endswith("/check-runs") else None)
+        if kind is None:
+            return base_runner(command)
+        calls.append(list(command))
+        if kind == fail_endpoint:
+            return SimpleNamespace(returncode=1, stdout="", stderr="PRIVATE_MARKER")
+        page = next((int(s.split("=", 1)[1]) for s in command if s.startswith("page=")), 1)
+        reads[kind] = reads.get(kind, 0) + (page == 1)
+        if kind == "protection":
+            payload = copy.deepcopy(protection)
+            if drift == kind and reads[kind] > 1:
+                payload["strict"] = not payload["strict"]
+        elif kind == "rules":
+            payload = copy.deepcopy(rules[(page - 1) * 100:page * 100])
+            if drift == kind and reads[kind] > 1:
+                payload.append(dict(type="update"))
+        else:
+            payload = dict(total_count=len(runs) if total is None else total,
+                           check_runs=copy.deepcopy(runs[(page - 1) * 100:page * 100]))
+            if drift == kind and reads[kind] > 1 and payload["check_runs"]:
+                payload["check_runs"][0]["id"] += 200
+                payload["check_runs"][0]["url"] += "200"
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+    return calls, run
+
+
+def _ci_snapshot(run, **kwargs):
+    return build_pr_status_snapshot(pr_number=479, repo=CI_REPO, expected_base_sha=BASE,
+                                    require_ci_evidence=True, runner=run, **kwargs)
+
+
+def test_required_ci_evidence_reads_all_requirements_and_exact_run_origins():
+    calls, run = _ci_runner()
+    snapshot = _ci_snapshot(run)
+    ci = snapshot["ci_evidence"]
+    assert ci["schema"] == "wd.github-required-ci.v1"
+    assert ci["repository"] == CI_REPO and ci["head_sha"] == HEAD
+    assert ci["base_sha"] == BASE and ci["pr_number"] == 479
+    assert ci["required"] == [dict(name=name, app_id=15368) for name in ("lint", "unit")]
+    assert {row["id"] for row in ci["runs"]} == {1, 2}
+    assert all(row["head_sha"] == HEAD and row["app_id"] == 15368 for row in ci["runs"])
+    assert ci["all_required_success"] is True
+    assert len(ci["sources"]) == 3
+    assert all(len(source["response_sha256"]) == 64 for source in ci["sources"])
+    expected_sha = hashlib.sha256(json.dumps(_ci_inputs()[0], sort_keys=True,
+                                            separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+    assert next(s for s in ci["sources"] if "/protection/" in s["endpoint"])["response_sha256"] == expected_sha
+    api_calls = [c for c in calls if c[:2] == ["gh", "api"]]
+    assert all(c[c.index("--hostname") + 1] == "github.com" for c in api_calls)
+    assert all(c[c.index("--repo") + 1] == "github.com/" + CI_REPO for c in calls if c[:2] == ["gh", "pr"])
+    assert sum("/protection/" in c[4] for c in api_calls) == 2
+    assert sum(c[4].endswith("/check-runs") for c in api_calls) == 2
+
+
+@pytest.mark.parametrize("fault", ["missing_run", "old_head", "wrong_app", "duplicate_run", "duplicate_id",
+                                  "run_id_boolean", "run_id_missing", "suite_missing", "run_wrong_repo",
+                                  "total_count_wrong", "total_count_boolean", "unbound_app", "legacy_context_only",
+                                  "contexts_mismatch", "empty_requirements", "unknown_rule", "workflow_rule"])
+def test_required_ci_evidence_refuses_unproven_coverage_or_origin(fault):
+    protection, rules, runs = _ci_inputs()
+    total = None
+    if fault == "missing_run":
+        runs.pop()
+    elif fault == "old_head":
+        runs[0]["head_sha"] = "0" * 40
+    elif fault == "wrong_app":
+        runs[0]["app"]["id"] = 123
+    elif fault == "duplicate_run":
+        other = copy.deepcopy(runs[0]); other["id"] = 3
+        other["url"] = f"https://api.github.com/repos/{CI_REPO}/check-runs/3"
+        runs.append(other)
+    elif fault == "duplicate_id":
+        runs[1]["id"] = runs[0]["id"]
+        runs[1]["url"] = runs[0]["url"]
+    elif fault == "run_id_boolean":
+        runs[0]["id"] = True
+    elif fault == "run_id_missing":
+        del runs[0]["id"]
+    elif fault == "suite_missing":
+        del runs[0]["check_suite"]
+    elif fault == "run_wrong_repo":
+        runs[0]["url"] = "https://api.github.com/repos/other/repo/check-runs/1"
+    elif fault in {"total_count_wrong", "total_count_boolean"}:
+        total = 3 if fault == "total_count_wrong" else True
+    elif fault == "unbound_app":
+        protection["checks"][0]["app_id"] = None
+    elif fault == "legacy_context_only":
+        del protection["checks"]
+    elif fault == "contexts_mismatch":
+        protection["contexts"].append("unreported")
+    elif fault == "empty_requirements":
+        protection.update(contexts=[], checks=[]); rules.clear()
+    else:
+        rules.append(dict(type="workflows" if fault == "workflow_rule" else "future_unknown_ci"))
+    _, run = _ci_runner(protection, rules, runs, total=total)
+    with pytest.raises(PrStatusSnapshotError):
+        _ci_snapshot(run)
+
+
+@pytest.mark.parametrize("status,conclusion", [("in_progress", None), ("completed", "failure"),
+                                               ("completed", "neutral"), ("completed", "skipped")])
+def test_required_ci_evidence_does_not_call_pending_failed_or_skipped_runs_green(status, conclusion):
+    protection, rules, runs = _ci_inputs()
+    runs[0].update(status=status, conclusion=conclusion)
+    _, run = _ci_runner(protection, rules, runs)
+    assert _ci_snapshot(run)["ci_evidence"]["all_required_success"] is False
+
+
+@pytest.mark.parametrize("source", ["protection", "rules", "runs"])
+def test_required_ci_evidence_failure_and_drift_never_fall_back_to_rollup(source):
+    for kwargs in (dict(fail_endpoint=source), dict(drift=source)):
+        _, run = _ci_runner(**kwargs)
+        with pytest.raises(PrStatusSnapshotError) as exc:
+            _ci_snapshot(run)
+        assert "PRIVATE_MARKER" not in str(exc.value)
+
+
+def test_required_ci_evidence_pages_both_rules_and_run_inventory():
+    protection, rules, runs = _ci_inputs()
+    rules = [dict(type="update") for _ in range(100)] + rules
+    for i in range(3, 102):
+        runs.append(dict(id=i, name=f"nonrequired-{i}", head_sha=HEAD, app=dict(id=15368),
+                         check_suite=dict(id=1000 + i), status="completed", conclusion="success",
+                         url=f"https://api.github.com/repos/{CI_REPO}/check-runs/{i}"))
+    calls, run = _ci_runner(protection, rules, runs)
+    ci = _ci_snapshot(run)["ci_evidence"]
+    assert ci["all_required_success"] is True
+    assert {row["name"] for row in ci["required"]} == {"unit", "lint"}
+    for fragment in ("/rules/branches/", "/check-runs"):
+        assert sum(fragment in c[4] and "page=2" in c for c in calls if c[:2] == ["gh", "api"]) == 2
+
+
+def test_required_ci_evidence_option_is_typed_and_requires_explicit_repository():
+    for value in (None, 1, "true"):
+        with pytest.raises(PrStatusSnapshotError):
+            build_pr_status_snapshot(pr_number=479, require_ci_evidence=value,
+                                     runner=lambda _: pytest.fail("invalid input reached gh"))
+    with pytest.raises(PrStatusSnapshotError):
+        build_pr_status_snapshot(pr_number=479, require_ci_evidence=True,
+                                 runner=lambda _: pytest.fail("unknown repository reached gh"))
+
+
+def test_required_ci_evidence_is_explicit_and_legacy_snapshot_stays_unchanged():
+    calls, run = _runner()
+    result = build_pr_status_snapshot(pr_number=479, runner=run, require_ci_evidence=False)
+    assert "ci_evidence" not in result
+    assert not any("/protection/" in c[4] for c in calls if c[:2] == ["gh", "api"])
 
 
 def _base_ref_payload(sha: str = BASE) -> dict:

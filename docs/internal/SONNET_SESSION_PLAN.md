@@ -813,7 +813,7 @@ cd dashboard && npx vite build
 
 ### F4: Päivitä MEMORY.md
 
-Tiedosto: `C:\Users\mfi0jjko\.claude\projects\U--project2\memory\MEMORY.md`
+Tiedosto: `<user-home>\.claude\projects\U--project2\memory\MEMORY.md`
 
 Päivitä:
 - `waggle_backup.py` — "32 test suites" → "35 test suites"

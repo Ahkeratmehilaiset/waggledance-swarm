@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from tools.work_queue import main
+from waggledance.core.bridge_resource_scope import _unalias
 from waggledance.core.work_queue import claim_task
 
 _IDENTITY_ENV = (
@@ -26,6 +29,35 @@ def _hermetic_owner_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "test-session")
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "test-token")
+
+
+@pytest.fixture
+def _fixture_repo_cwd(monkeypatch):
+    """Owned test data outside every repository; never consult the checkout's Git admin dir."""
+    temp_root = Path(tempfile.gettempdir()).absolute()
+    audit_root = temp_root / ".codex-audit"
+    parent = Path(os.environ.get("WD_TEST_REPO_PARENT", str(audit_root)))
+    try:
+        if not parent.is_absolute() or not parent.is_relative_to(audit_root):
+            raise ValueError("fixture parent must be under the existing temp audit root")
+        _unalias(parent)  # The real guard rejects links, reparse points and ambiguous aliases.
+        if not parent.resolve().is_relative_to(audit_root.resolve()):
+            raise ValueError("fixture parent escapes the existing temp audit root")
+        for ancestor in (parent, *parent.parents):
+            try:
+                (ancestor / ".git").lstat()
+            except FileNotFoundError:
+                continue
+            raise ValueError("fixture parent is inside a repository")
+    except (OSError, ValueError):
+        pytest.fail("synthetic repo parent must be a nonnested, unaliased temp path", pytrace=False)
+    parent.mkdir(parents=True, exist_ok=True)
+    repo = Path(tempfile.mkdtemp(prefix="wd-repo-cwd-", dir=parent))
+    for name in ("objects", "refs"):
+        (repo / ".git" / name).mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    return repo  # Retained as budgeted evidence; no automatic deletion.
 
 
 def _run(capsys, *args: str) -> tuple[int, dict]:
@@ -173,7 +205,7 @@ def test_write_claim_requires_scope_and_returns_error(tmp_path: Path, capsys) ->
     assert "write claims require" in report["errors"][0]
 
 
-def test_claim_splits_comma_separated_write_scope(tmp_path: Path, capsys) -> None:
+def test_claim_splits_comma_separated_write_scope(tmp_path: Path, capsys, _fixture_repo_cwd) -> None:
     bridge = tmp_path / ".agent-bridge"
     exit_code, report = _run(
         capsys,
@@ -202,7 +234,7 @@ def test_claim_splits_comma_separated_write_scope(tmp_path: Path, capsys) -> Non
     ]
 
 
-def test_check_overlap_reports_conflicting_write_claim(tmp_path: Path, capsys) -> None:
+def test_check_overlap_reports_conflicting_write_claim(tmp_path: Path, capsys, _fixture_repo_cwd) -> None:
     bridge = tmp_path / ".agent-bridge"
     _run(
         capsys,
@@ -237,6 +269,7 @@ def test_check_overlap_reports_conflicting_write_claim(tmp_path: Path, capsys) -
 def test_check_overlap_splits_comma_separated_write_scope(
     tmp_path: Path,
     capsys,
+    _fixture_repo_cwd,
 ) -> None:
     bridge = tmp_path / ".agent-bridge"
     _run(
@@ -273,6 +306,7 @@ def test_check_overlap_splits_comma_separated_write_scope(
 def test_check_overlap_normalizes_legacy_literal_comma_claim_scope(
     tmp_path: Path,
     capsys,
+    _fixture_repo_cwd,
 ) -> None:
     bridge = tmp_path / ".agent-bridge"
     claims_dir = bridge / "work_queue" / "claims"

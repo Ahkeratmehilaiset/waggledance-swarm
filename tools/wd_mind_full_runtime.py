@@ -381,7 +381,7 @@ class FullRuntimeRefused(ValueError):
 
 
 class _EagerSourceBudgetRefused(FullRuntimeRefused):
-    """The local source exceeds the effective eager projection limit (256 MiB)."""
+    """The local source exceeds the effective eager projection limit (640 MiB)."""
 
 
 class _CacheCapacityRefused(FullRuntimeRefused):

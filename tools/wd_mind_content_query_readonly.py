@@ -608,11 +608,14 @@ _ALL_TASK_MAX_PREFIX_BYTES = 1024 * 1024 * 1024
 _COMPLETE_SOURCE_PREFIX_BYTES = 10 * 1024**3
 # The eager path retains parsed rows and screened projections. This estimate
 # is not an RSS guarantee. It was 40 (a rounded ~36x dense synthetic input).
-# On the real log the installed owner peaked near 5.5x the source (about
-# 1192 MiB at about 218 MB, 2026-11-24), about 11x with an old and a new index
-# alive during a refresh; 16 keeps margin over that and gives a 640 MiB source
-# limit (2026-11-26, Mind train 2 item 3). Denser input than the real log can
-# exceed the estimate; a measured runtime memory check is a later item.
+# Measured on the real log: the installed owner's first start to ready on
+# 2026-11-25 peaked at 1455.6 MB commit against about 218.5 MB of source,
+# about 6.7x (operator run record 2185-run01, observer recording; the model
+# worker's memory is separate and does not scale with the source). Rule:
+# twice the larger measured peak. 16 covers the first start (13.4); a
+# refresh, with an old and a new index alive, is estimated, not measured.
+# Limit 640 MiB (2026-11-26, Mind train 2 item 3). Denser input than the real
+# log can exceed the estimate; a measured runtime memory check is a later item.
 _EAGER_MEMORY_BUDGET_BYTES = 10 * 1024**3
 _EAGER_MEMORY_BYTES_PER_SOURCE_BYTE = 16
 _ALL_TASK_MAX_RECORDS = 65536

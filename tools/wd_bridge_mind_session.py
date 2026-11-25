@@ -166,6 +166,15 @@ class _SelectedEagerSourceBudgetRefused(MindContentSessionRefused):
     """Startup requires an owner capable of building this frozen prefix."""
 
 
+class _SelectedPipeRefused(MindContentSessionRefused):
+    """The local owner pipe gave no candidate frame; the reason is a fixed token."""
+
+
+# Fixed tokens for the owner pipe outcome only. They name a stage, never content.
+_PIPE_REFUSAL_REASONS = {'REFUSED': 'PIPE_REFUSED', 'TIMEOUT': 'PIPE_TIMEOUT', 'HOLD': 'PIPE_TIMEOUT',
+                         'ABSTAIN': 'NO_CANDIDATES'}
+
+
 def _pin_flat_session(bundle_root, expected_manifest_sha256):
     """Check this module's actual file against a separately supplied anchor."""
     from tools import wd_mind_absent_generation_prefix_readonly as absent
@@ -1633,6 +1642,11 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 if (received.get('status') != 'CANDIDATES' or received.get('authority') != 'none'
                         or received.get('sender_authentication') != 'UNKNOWN'
                         or received.get('source_verification') != 'UNVERIFIED'):
+                    token = _PIPE_REFUSAL_REASONS.get(received.get('status'))
+                    if token is not None:
+                        with state['result_lock']:
+                            if not state['abandoned'] and time.monotonic() < deadline:
+                                state['reason'] = token
                     raise ValueError('candidate')
                 if controlled:
                     # READY carries only a one-use nonce. No source text is
@@ -1691,6 +1705,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 raise _SelectedEagerSourceBudgetRefused('SOURCE_BUDGET')
             if state['reason'] == 'SOURCE_PREFIX_BUDGET':
                 raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget')
+            if state['reason'] in _PIPE_REFUSAL_REASONS.values():
+                raise _SelectedPipeRefused(state['reason'])
             raise ValueError('refused')
         if output.write(state['result']) != len(state['result']):
             raise ValueError('output_write')
@@ -1705,6 +1721,10 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_PREFIX_BUDGET","authority":"none"}\n')
             elif type(exc) is _SelectedEagerSourceBudgetRefused and deadline is not None and time.monotonic() < deadline:
                 error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_BUDGET","authority":"none"}\n')
+            elif (type(exc) is _SelectedPipeRefused and deadline is not None and time.monotonic() < deadline
+                    and exc.args and exc.args[0] in _PIPE_REFUSAL_REASONS.values()):
+                error.write(b'{"error":"mind_session_content_refused","reason":"' + exc.args[0].encode('ascii')
+                            + b'","authority":"none"}\n')
             else:
                 error.write(b'{"error":"mind_session_content_refused","authority":"none"}\n')
             error.flush()

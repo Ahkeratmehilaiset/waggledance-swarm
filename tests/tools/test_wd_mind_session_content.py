@@ -676,6 +676,57 @@ def test_local_candidate_cli_preserves_uncertain_query_owner(monkeypatch, tmp_pa
     session._LOCAL_CANDIDATE_PENDING.remove(pending)
 
 
+@pytest.mark.parametrize('status, token', [('REFUSED', b'PIPE_REFUSED'), ('TIMEOUT', b'PIPE_TIMEOUT'),
+                                           ('HOLD', b'PIPE_TIMEOUT'), ('ABSTAIN', b'NO_CANDIDATES')])
+def test_local_candidate_cli_names_the_pipe_outcome_with_a_fixed_token(monkeypatch, tmp_path, status, token):
+    # A lane read that fails at the owner pipe says which stage failed, with a
+    # fixed token only; no frame, row or policy byte reaches stderr.
+    from tools import wd_mind_runtime_process as process
+    query = SimpleNamespace(start=lambda: None,
+                            wait=lambda **_: {'status':status, 'authority':'none', 'sender_authentication':'UNKNOWN',
+                                              'source_verification':'UNVERIFIED', 'candidate_frame':None},
+                            status=lambda: {'state':'STOPPED'})
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: object())
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **_: query)
+    policy = b'{"private":"synthetic-only"}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    before = {id(pending) for pending in session._LOCAL_CANDIDATE_PENDING}
+    try:
+        code = session._local_candidate_entry(_local_client_args(policy_path, policy),
+            out, err, str(Path.cwd()), 'a'*64)
+        assert code == 2 and out.getvalue() == b''
+        assert err.getvalue() == (b'{"error":"mind_session_content_refused","reason":"' + token
+                                  + b'","authority":"none"}\n')
+        assert policy not in err.getvalue()
+    finally:
+        for pending in [p for p in session._LOCAL_CANDIDATE_PENDING if id(p) not in before]:
+            session._LOCAL_CANDIDATE_PENDING.remove(pending)
+
+
+def test_local_candidate_cli_keeps_generic_refusal_for_a_malformed_pipe_status(monkeypatch, tmp_path):
+    from tools import wd_mind_runtime_process as process
+    query = SimpleNamespace(start=lambda: None,
+                            wait=lambda **_: {'status':'SOMETHING_ELSE', 'candidate_frame':None},
+                            status=lambda: {'state':'STOPPED'})
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: object())
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **_: query)
+    policy = b'{}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    before = {id(pending) for pending in session._LOCAL_CANDIDATE_PENDING}
+    try:
+        code = session._local_candidate_entry(_local_client_args(policy_path, policy),
+            out, err, str(Path.cwd()), 'a'*64)
+        assert code == 2 and out.getvalue() == b''
+        assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+    finally:
+        for pending in [p for p in session._LOCAL_CANDIDATE_PENDING if id(p) not in before]:
+            session._LOCAL_CANDIDATE_PENDING.remove(pending)
+
+
 def test_local_candidate_cli_subprocess_fails_closed_with_unpinned_bundle(tmp_path):
     policy = b'{"private":"synthetic-only"}'
     policy_path = tmp_path / 'policy.json'

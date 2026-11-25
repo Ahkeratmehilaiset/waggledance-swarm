@@ -1543,7 +1543,28 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                                     object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
             if reader._serialized(projection) != frozen['projection_bytes']:
                 raise ValueError('projection_changed')
-            watcher.start(frozen, report)
+
+            def source_unchanged():
+                # Background form of the source check. The full re-derivation
+                # is minutes of interpreter work on a real log; run back to
+                # back in the watcher thread it starved this thread until the
+                # worker launch outlived its bound (first real start,
+                # 2026-11-24). The projection is a pure function of the
+                # anchored prefix and the pinned controls, so the pins plus
+                # byte identity of the on-disk prefix state the same thing.
+                # The full re-derivation still runs before the watcher starts
+                # and again after it has ended.
+                controls = dict(frozen)
+                controls.pop('projection_bytes')
+                controls.pop('projection_sha256')
+                current = reader._inputs(controls, complete_source=True)
+                if (current['decision_sha256'] != report['decision_sha256']
+                        or dict(current['decision']['source_prefix']) != report['source_prefix']):
+                    raise ValueError('source_changed')
+                if package._immutable_prefix(current, retain=False) is not None:
+                    raise ValueError('prefix_retained')
+
+            watcher.start(frozen, report, source_unchanged)
             records = projection['messages']['records']
             by_id = {record['record_id']: record for record in records}
             if not records or len(by_id) != len(records):

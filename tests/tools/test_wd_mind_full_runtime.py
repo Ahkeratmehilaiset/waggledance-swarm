@@ -3295,13 +3295,21 @@ try:
             checks, batch_checks = {'main':0}, []
             original_verify = reader._verified_complete
             entered, release = threading.Event(), threading.Event()
+            background = {'full':0}
             def counted(*args, **kwargs):
-                if threading.current_thread().name == 'mind-source-verifier' and mode == 'package_owner_build_hold':
-                    entered.set()
-                    if not release.wait(10): raise RuntimeError('test watcher deadline')
+                if threading.current_thread().name == 'mind-source-verifier': background['full'] += 1
                 if threading.current_thread() is threading.main_thread(): checks['main'] += 1
                 return original_verify(*args, **kwargs)
             reader._verified_complete = counted
+            original_prefix = package._immutable_prefix
+            def watched_prefix(*args, **kwargs):
+                # The background verifier of the owner build streams the prefix
+                # hash; it no longer re-derives the projection.
+                if threading.current_thread().name == 'mind-source-verifier' and mode == 'package_owner_build_hold':
+                    entered.set()
+                    if not release.wait(10): raise RuntimeError('test watcher deadline')
+                return original_prefix(*args, **kwargs)
+            package._immutable_prefix = watched_prefix
             if mode == 'package_owner_build_hold':
                 package._WATCH_INTERVAL_SECONDS, package._WATCH_JOIN_TIMEOUT_SECONDS = .001, .01
             class Adapter:
@@ -3340,6 +3348,7 @@ try:
                 if watcher is not None and watcher.thread is not None:
                     watcher.thread.join(10)
             result['released'] = lease._held() is False
+            result['background_full'] = background['full']
             print(json.dumps(result)); sys.exit(0)
         if mode.startswith('handler'):
             import threading
@@ -3784,6 +3793,29 @@ try:
                     audit['joined'] = True
                     path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
                 package._SourceWatcher.stop = changed_after_join
+        if mode == 'package_immutable_background_quiet':
+            import threading
+            package = binding._snapshot_support()
+            package._WATCH_INTERVAL_SECONDS = .001
+            quiet = {'full':0, 'streamed':0, 'retained':False, 'failed':None}
+            passes = threading.Semaphore(0)
+            quiet_verify, quiet_prefix = reader._verified_complete, package._immutable_prefix
+            def counted_full(*args, **kwargs):
+                if threading.current_thread().name == 'mind-source-verifier': quiet['full'] += 1
+                return quiet_verify(*args, **kwargs)
+            def counted_prefix(*args, **kwargs):
+                value = quiet_prefix(*args, **kwargs)
+                if threading.current_thread().name == 'mind-source-verifier':
+                    quiet['streamed'] += 1
+                    quiet['retained'] = quiet['retained'] or value is not None
+                    passes.release()
+                return value
+            reader._verified_complete, package._immutable_prefix = counted_full, counted_prefix
+            def passage(texts):
+                for _ in range(3):
+                    if not passes.acquire(timeout=10): raise RuntimeError('test watcher made no pass')
+                quiet['failed'] = package._WATCHER_REGISTRY['owner'].failed.is_set()
+                return row * len(texts)
         if mode in ('package_immutable_hold', 'package_immutable_cancel_hold',
                     'package_immutable_generator_hold', 'package_immutable_async_hold',
                     'package_immutable_group_hold', 'package_immutable_oversized_group_hold',
@@ -3791,12 +3823,14 @@ try:
             import asyncio, threading
             package = binding._snapshot_support()
             entered, release = threading.Event(), threading.Event()
-            original = reader._verified_complete
+            # The background verifier of the immutable build streams the prefix
+            # hash, so the test retains it there.
+            original = package._immutable_prefix
             def blocked(*args, **kwargs):
                 if threading.current_thread().name == 'mind-source-verifier':
                     entered.set(); release.wait(10)
                 return original(*args, **kwargs)
-            reader._verified_complete = blocked
+            package._immutable_prefix = blocked
             package._WATCH_INTERVAL_SECONDS = .001
             options['watcher_join_timeout_seconds'] = .01
             lease = None
@@ -3855,6 +3889,9 @@ try:
             raise
         if mode == 'package_immutable_multibatch':
             print(json.dumps({'result':'ok', 'records':len(product.ids), 'full_checks':full_checks['main']})); sys.exit(0)
+        if mode == 'package_immutable_background_quiet':
+            print(json.dumps({'result':'ok', 'failed':quiet['failed'], 'full':quiet['full'],
+                              'streamed':quiet['streamed'] >= 3, 'retained':quiet['retained']})); sys.exit(0)
         def encode_query(text):
             mutate('query')
             if mode == 'package_orthogonal': return (0.0, 1.0) + (0.0,) * 382
@@ -4349,6 +4386,7 @@ def test_owner_build_uses_immutable_prefix_with_bounded_full_checks(synthetic_bu
     assert len(result['batch_checks']) >= 3 and result['same_vectors'] is True
     assert len(set(result['batch_checks'])) == 1
     assert result['default_join'] == 600.0 and result['held'] is False and result['released'] is True
+    assert result['background_full'] == 0
 
 
 @pytest.mark.parametrize('scenario', ['package_owner_build_mutation', 'package_owner_build_control', 'package_owner_build_hold'])
@@ -4402,6 +4440,14 @@ def test_immutable_snapshot_refuses_synthetic_source_or_provider_fault(synthetic
 def test_immutable_snapshot_background_failure_refuses(synthetic_bundle):
     result = invoke(synthetic_bundle, 'package_immutable_background')
     assert result == {'result':'refused', 'detected':True, 'joined':False}
+
+
+def test_immutable_snapshot_background_check_streams_prefix_without_full_rederivation(synthetic_bundle):
+    # First real start, 2026-11-24: back-to-back full re-derivations in the
+    # verifier thread starved the building thread until the worker launch
+    # outlived its bound. The background check must stay a streamed prefix hash.
+    result = invoke(synthetic_bundle, 'package_immutable_background_quiet')
+    assert result == {'result':'ok', 'failed':False, 'full':0, 'streamed':True, 'retained':False}
 
 
 def test_immutable_snapshot_final_verification_follows_verifier_join(synthetic_bundle):

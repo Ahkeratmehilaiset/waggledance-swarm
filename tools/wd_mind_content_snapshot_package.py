@@ -169,8 +169,16 @@ def _unchanged(original, frozen, report, *, complete=False):
         raise ValueError("source_changed")
 
 
-def _immutable_prefix(context):
-    """Capture bytes from the same identity and SHA anchor as complete verification."""
+def _immutable_prefix(context, *, retain=True):
+    """Capture bytes from the same identity and SHA anchor as complete verification.
+
+    ``retain=False`` is the streaming form for a background verifier: the same
+    fences, identity checks and SHA anchor, but the prefix is hashed block by
+    block and nothing is kept. The block reads and digest updates release the
+    interpreter lock, so the building thread is not starved.
+    """
+    if type(retain) is not bool:
+        raise ValueError("invalid_retain")
     messages, anchor = context["messages"], context["decision"]["source_prefix"]
     cursor = messages["end_cursor"]
     source, sidecar = Path(messages["source_path"]), Path(messages["generation_path"])
@@ -196,14 +204,23 @@ def _immutable_prefix(context):
         if bridge._file_identity(stream) != cursor.file_identity or size < cursor.offset:
             raise ValueError("source_changed")
         parts, remaining = [], cursor.offset
+        streamed, last = (None if retain else hashlib.sha256()), b""
         while remaining:
             part = stream.read(min(1024 * 1024, remaining))
             if not part:
                 raise ValueError("source_truncated")
-            parts.append(part)
+            if retain:
+                parts.append(part)
+            else:
+                streamed.update(part)
+                last = part[-1:]
             remaining -= len(part)
-        raw = b"".join(parts)
-        if (raw[-1:] != b"\n" or not reader.hmac.compare_digest(reader._sha(raw), anchor["sha256"])
+        raw = b"".join(parts) if retain else None
+        if retain:
+            last, observed = raw[-1:], reader._sha(raw)
+        else:
+            observed = streamed.hexdigest()
+        if (last != b"\n" or not reader.hmac.compare_digest(observed, anchor["sha256"])
                 or bridge._file_identity(stream) != cursor.file_identity
                 or os.fstat(stream.fileno()).st_size < size):
             raise ValueError("source_changed")
@@ -224,10 +241,22 @@ class _SourceWatcher:
         self.thread = None
         self.join_attempted = False
 
-    def start(self, frozen, report):
+    def start(self, frozen, report, verify=None):
+        """Run the full re-derivation, or the caller's ``verify``, until asked to end.
+
+        ``verify`` must raise on any difference. It exists because the full
+        re-derivation is minutes of interpreter work on a real log and, run
+        back to back in this thread, starves the building thread.
+        """
+        if verify is not None and not callable(verify):
+            raise ValueError("invalid_verify")
+
         def run():
             try:
                 while not self.stop_event.wait(_WATCH_INTERVAL_SECONDS):
+                    if verify is not None:
+                        verify()
+                        continue
                     _, _, observed = reader._verified_complete(frozen)
                     if observed != report:
                         raise ValueError("source_changed")

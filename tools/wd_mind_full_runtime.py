@@ -4003,7 +4003,9 @@ def _order_selected(selected, query):
     floor = ordered[0][1] - _STARTUP_RELEVANCE_BAND
     band = [item for item in ordered if item[1] >= floor]
     band.sort(key=lambda item: (-item[3].timestamp(), -item[1], -item[2], item[0]))
-    return band
+    # A narrow band must not shrink the answer: rows below it follow in the
+    # old cosine order, so a lane still gets up to three rows.
+    return band + [item for item in ordered if item[1] < floor]
 
 
 def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_locations=False):

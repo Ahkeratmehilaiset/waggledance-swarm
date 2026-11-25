@@ -22,8 +22,7 @@ def test_startup_question_prefers_newest_rows_inside_the_band():
     rows = [_row('old-best', 0.880, 18), _row('old-2', 0.875, 108), _row('fresh', 0.840, 0.01),
             _row('recent', 0.860, 2), _row('below-band', 0.820, 0.001)]
     ordered = runtime._order_selected(rows, runtime._STARTUP_PIPE_QUERY)
-    assert [item[0] for item in ordered] == ['fresh', 'recent', 'old-best', 'old-2']
-    assert 'below-band' not in [item[0] for item in ordered]
+    assert [item[0] for item in ordered] == ['fresh', 'recent', 'old-best', 'old-2', 'below-band']
 
 
 def test_band_edge_is_inclusive_and_relative_to_the_best_score():
@@ -31,7 +30,13 @@ def test_band_edge_is_inclusive_and_relative_to_the_best_score():
     edge = best - runtime._STARTUP_RELEVANCE_BAND
     rows = [_row('best', best, 30), _row('edge', edge, 1), _row('under', edge - 1e-9, 0)]
     ordered = runtime._order_selected(rows, runtime._STARTUP_PIPE_QUERY)
-    assert [item[0] for item in ordered] == ['edge', 'best']
+    assert [item[0] for item in ordered] == ['edge', 'best', 'under']
+
+
+def test_rows_below_a_narrow_band_fill_the_answer_in_cosine_order():
+    rows = [_row('best', 0.95, 40), _row('low-new', 0.70, 0.01), _row('low-higher', 0.80, 90)]
+    ordered = runtime._order_selected(rows, runtime._STARTUP_PIPE_QUERY)
+    assert [item[0] for item in ordered][:3] == ['best', 'low-higher', 'low-new']
 
 
 def test_other_queries_keep_cosine_then_lexical_then_time_order():

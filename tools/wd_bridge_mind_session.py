@@ -171,7 +171,7 @@ class _SelectedPipeRefused(MindContentSessionRefused):
 
 
 # Fixed tokens for the owner pipe outcome only. They name a stage, never content.
-_PIPE_REFUSAL_REASONS = {'REFUSED': 'PIPE_REFUSED', 'TIMEOUT': 'PIPE_TIMEOUT', 'HOLD': 'PIPE_TIMEOUT',
+_PIPE_REFUSAL_REASONS = {'REFUSED': 'PIPE_REFUSED', 'TIMEOUT': 'PIPE_TIMEOUT', 'HOLD': 'PIPE_START_UNCERTAIN',
                          'ABSTAIN': 'NO_CANDIDATES'}
 
 
@@ -1645,7 +1645,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                     token = _PIPE_REFUSAL_REASONS.get(received.get('status'))
                     if token is not None:
                         with state['result_lock']:
-                            if not state['abandoned'] and time.monotonic() < deadline:
+                            # Never replace an earlier, more specific reason.
+                            if state['reason'] is None and not state['abandoned'] and time.monotonic() < deadline:
                                 state['reason'] = token
                     raise ValueError('candidate')
                 if controlled:

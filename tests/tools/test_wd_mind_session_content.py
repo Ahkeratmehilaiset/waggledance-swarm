@@ -677,7 +677,7 @@ def test_local_candidate_cli_preserves_uncertain_query_owner(monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize('status, token', [('REFUSED', b'PIPE_REFUSED'), ('TIMEOUT', b'PIPE_TIMEOUT'),
-                                           ('HOLD', b'PIPE_TIMEOUT'), ('ABSTAIN', b'NO_CANDIDATES')])
+                                           ('HOLD', b'PIPE_START_UNCERTAIN'), ('ABSTAIN', b'NO_CANDIDATES')])
 def test_local_candidate_cli_names_the_pipe_outcome_with_a_fixed_token(monkeypatch, tmp_path, status, token):
     # A lane read that fails at the owner pipe says which stage failed, with a
     # fixed token only; no frame, row or policy byte reaches stderr.

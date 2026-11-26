@@ -4029,7 +4029,8 @@ def _first_three(selected, records, query):
             break
         task = records[item[0]]['meta'].get('task_id')
         if task in tasks:
-            later.append(item)
+            if len(later) < 2:
+                later.append(item)
         else:
             tasks.add(task)
             chosen.append(item)

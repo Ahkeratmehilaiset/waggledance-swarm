@@ -1828,7 +1828,7 @@ def query_flat_memory(*, enabled=False, memory=None, lane=None, own_lane_only=Fa
                     lexical = len(tokens & set(reader._Q4_TOKEN.findall(reader.decode_text(record['stored_text']).lower())))
                     selected.append((record_id, score, lexical, reader._utc(record['time_utc'])))
             selected = _order_selected(selected, query)
-        selected = selected[:3]
+        selected = _first_three(selected, records, query)
         requested = [{'ref_sha256': reader._sha(records[key]['provenance']['event_ref'].encode()),
                       'doc_id_sha256': reader._sha(key.encode()), 'ref_kind': 'sha256_of_projected_metadata',
                       'canonical_event': False} for key, _, _, _ in selected]
@@ -1909,7 +1909,7 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
                     lexical = len(tokens & set(reader._Q4_TOKEN.findall(reader.decode_text(record['stored_text']).lower())))
                     selected.append((record_id, score, lexical, reader._utc(record['time_utc'])))
             selected = _order_selected(selected, query)
-        selected = selected[:3]
+        selected = _first_three(selected, records, query)
         requested = [{'ref_sha256': reader._sha(records[key]['provenance']['event_ref'].encode()),
                       'doc_id_sha256': reader._sha(key.encode()), 'ref_kind': 'sha256_of_projected_metadata',
                       'canonical_event': False} for key, _, _, _ in selected]
@@ -2142,7 +2142,7 @@ class _RetainedFlatQueryState:
                     lexical = len(tokens & set(reader._Q4_TOKEN.findall(reader.decode_text(record['stored_text']).lower())))
                     selected.append((record_id, score, lexical, reader._utc(record['time_utc'])))
             selected = _order_selected(selected, query)
-        selected = selected[:3]
+        selected = _first_three(selected, records, query)
         proposals = [{'ref_sha256':reader._sha(records[key]['provenance']['event_ref'].encode()),
                       'doc_id_sha256':reader._sha(key.encode()),
                       'source_event_sha256':records[key]['provenance']['source_event_ref']}
@@ -4006,6 +4006,72 @@ def _order_selected(selected, query):
     # A narrow band must not shrink the answer: rows below it follow in the
     # old cosine order, so a lane still gets up to three rows.
     return band + [item for item in ordered if item[1] < floor]
+
+
+
+# Default message of Write-BridgeTaskReply and Reply-ToRequest when no -Message
+# is given; the reply content then lives only in the payload.
+_GENERIC_REPLY_TEXT = 'Task result supplied; see validation scope and evidence.'
+
+
+def _first_three(selected, records, query):
+    """Cut ordered rows to three; the startup question takes one row per task first.
+
+    Measured 2026-11-26 on the real log (aggregates only): with the band alone
+    a startup answer covered 2.26 distinct tasks on average and 14 % of
+    answers held a near-duplicate pair; one row per task gave 3.0 tasks.
+    Tasks keep the rank order of their best row, but each task is shown by
+    its NEWEST eligible row, so a later correction or decision on the same
+    task is never hidden behind an older, higher-scoring row (Grok and Lead
+    on PR 2192). Further rows of the chosen tasks, newest first, fill the
+    answer only if fewer than three tasks are eligible, so it never shrinks.
+    The reader refuses events without a task_id, so every record has one; a
+    missing key would group such rows under None. Rows whose text is the
+    default bound-reply line neither rank nor represent a task, and come last
+    within it (RCO1 on PR 2192); a task with only such rows is shown by its
+    newest one. Text is decoded only for rows that matter.
+    """
+    if query != _STARTUP_PIPE_QUERY:
+        return selected[:3]
+    by_task, generic = {}, {}
+
+    def is_generic(item):
+        if item[0] not in generic:
+            text = reader.decode_text(records[item[0]]['stored_text']).strip()
+            generic[item[0]] = text == _GENERIC_REPLY_TEXT
+        return generic[item[0]]
+
+    for item in selected:
+        by_task.setdefault(records[item[0]]['meta'].get('task_id'), []).append(item)
+    # A task takes its rank from its best useful row; tasks whose rows are all
+    # default bound-reply lines come only after every other task (RCO1).
+    tasks, only_generic = [], []
+    for item in selected:
+        task = records[item[0]]['meta'].get('task_id')
+        if task in tasks:
+            continue
+        if not is_generic(item):
+            tasks.append(task)
+            if len(tasks) == 3:
+                break
+        elif task not in only_generic:
+            only_generic.append(task)
+    if len(tasks) < 3:
+        tasks += [task for task in only_generic
+                  if task not in tasks and all(is_generic(item) for item in by_task[task])][:3 - len(tasks)]
+    for task in tasks:
+        rows = sorted(by_task[task], key=lambda item: (-item[3].timestamp(), -item[1], -item[2], item[0]))
+        # Useful rows newest first, then default-reply rows newest first; a task
+        # with only default replies is therefore shown by its newest one (Grok).
+        by_task[task] = ([item for item in rows if not is_generic(item)]
+                         + [item for item in rows if is_generic(item)])
+    chosen = [by_task[task][0] for task in tasks]
+    for task in tasks:
+        for item in by_task[task][1:]:
+            if len(chosen) == 3:
+                return chosen
+            chosen.append(item)
+    return chosen
 
 
 def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_locations=False):

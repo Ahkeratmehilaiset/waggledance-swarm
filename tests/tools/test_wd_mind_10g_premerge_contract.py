@@ -117,7 +117,8 @@ def test_assembly_checks_actual_frozen_offset_before_collecting_rows(tmp_path, m
 
 
 def test_complete_projection_rejects_before_source_collection(monkeypatch):
-    assert reader._max_eager_source_bytes() == 256 * 1024**2
+    assert reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE == 16
+    assert reader._max_eager_source_bytes() == 640 * 1024**2
     context = {"messages": {"end_cursor": SimpleNamespace(offset=reader._max_eager_source_bytes() + 1)}}
     def forbid(*args, **kwargs):
         pytest.fail("projection opened a dependency before its memory preflight")
@@ -134,8 +135,11 @@ def over_eager_prefix(tmp_path, monkeypatch, request):
     shared = tmp_path / "runtime" / "shared"
     shared.mkdir(parents=True)
     source = shared / "events.jsonl"
+    # Keep the on-disk fixture at 256 MiB + 1: the limit is scaled down here, the
+    # real 640 MiB value is pinned in the projection test above.
+    monkeypatch.setattr(reader, "_EAGER_MEMORY_BUDGET_BYTES", 256 * 1024**2 * reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE)
     with source.open("wb") as out:
-        out.seek(256 * 1024**2 + 1 - 4)
+        out.seek(reader._max_eager_source_bytes() + 1 - 4)
         out.write(b"\n{}\n")
     bundle = tmp_path / "bundle"
     bundle.mkdir()

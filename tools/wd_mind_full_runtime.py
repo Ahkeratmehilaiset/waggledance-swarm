@@ -4027,30 +4027,44 @@ def _first_three(selected, records, query):
     answer only if fewer than three tasks are eligible, so it never shrinks.
     The reader refuses events without a task_id, so every record has one; a
     missing key would group such rows under None. Rows whose text is the
-    default bound-reply line come last within their task (RCO1 on PR 2192).
+    default bound-reply line neither rank nor represent a task, and come last
+    within it (RCO1 on PR 2192); text is decoded only for rows that matter.
     """
     if query != _STARTUP_PIPE_QUERY:
         return selected[:3]
-    by_task, order = {}, []
+    by_task, generic = {}, {}
+
+    def is_generic(item):
+        if item[0] not in generic:
+            text = reader.decode_text(records[item[0]]['stored_text']).strip()
+            generic[item[0]] = text == _GENERIC_REPLY_TEXT
+        return generic[item[0]]
+
+    for item in selected:
+        by_task.setdefault(records[item[0]]['meta'].get('task_id'), []).append(item)
+    # A task takes its rank from its best useful row; tasks whose rows are all
+    # default bound-reply lines come only after every other task (RCO1).
+    tasks, only_generic = [], []
     for item in selected:
         task = records[item[0]]['meta'].get('task_id')
-        if task not in by_task:
-            by_task[task] = []
-            order.append(task)
-        by_task[task].append(item)
-    tasks = order[:3]
+        if task in tasks:
+            continue
+        if not is_generic(item):
+            tasks.append(task)
+            if len(tasks) == 3:
+                break
+        elif task not in only_generic:
+            only_generic.append(task)
+    if len(tasks) < 3:
+        tasks += [task for task in only_generic
+                  if task not in tasks and all(is_generic(item) for item in by_task[task])][:3 - len(tasks)]
     for task in tasks:
         best = by_task[task][0]
-        by_task[task].sort(key=lambda item: (-item[3].timestamp(), -item[1], -item[2], item[0]))
-        # A bound reply written with the default text carries its content in
-        # the payload, which Mind does not index (RCO1 on PR 2192). Such a row
-        # never represents a task; if a task has only those, its best row does.
-        generic = {item[0] for item in by_task[task]
-                   if reader.decode_text(records[item[0]]['stored_text']).strip() == _GENERIC_REPLY_TEXT}
-        useful = [item for item in by_task[task] if item[0] not in generic]
+        rows = sorted(by_task[task], key=lambda item: (-item[3].timestamp(), -item[1], -item[2], item[0]))
+        useful = [item for item in rows if not is_generic(item)]
         head = useful if useful else [best]
         shown = {item[0] for item in head}
-        by_task[task] = head + [item for item in by_task[task] if item[0] not in shown]
+        by_task[task] = head + [item for item in rows if item[0] not in shown]
     chosen = [by_task[task][0] for task in tasks]
     for task in tasks:
         for item in by_task[task][1:]:

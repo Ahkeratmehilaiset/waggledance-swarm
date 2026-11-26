@@ -95,6 +95,21 @@ def test_generic_rows_fill_after_useful_rows():
     assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a1', 'a2', 'a_ack']
 
 
+def test_generic_best_row_does_not_rank_its_task():
+    """RCO1: a bare acknowledgement must not win a slot for its task."""
+    rows = [('a_ack', 0.95, 0, NOW - dt.timedelta(days=1)), ('b', 0.9, 0, NOW - dt.timedelta(days=1)),
+            ('c', 0.85, 0, NOW - dt.timedelta(days=1)), ('d', 0.8, 0, NOW - dt.timedelta(days=1)),
+            ('a_weak', 0.6, 0, NOW - dt.timedelta(days=2))]
+    records = _records({'a_ack': runtime._GENERIC_REPLY_TEXT}, a_ack='A', b='B', c='C', d='D', a_weak='A')
+    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['b', 'c', 'd']
+
+
+def test_generic_only_task_fills_after_useful_tasks():
+    rows = [('a_ack', 0.95, 0, NOW - dt.timedelta(days=1)), ('b', 0.9, 0, NOW - dt.timedelta(days=1))]
+    records = _records({'a_ack': runtime._GENERIC_REPLY_TEXT}, a_ack='A', b='B')
+    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['b', 'a_ack']
+
+
 def test_generic_text_matches_both_bridge_writers():
     for name in ('Write-BridgeTaskReply.ps1', 'Reply-ToRequest.ps1'):
         text = (ROOT / '.agent-bridge' / 'bin' / name).read_text(encoding='utf-8-sig')

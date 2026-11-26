@@ -27,7 +27,7 @@
 - **79× faster** 10 000-descriptor build (147.25 s → 1.86 s, R21.2 transaction batching)
 - **+52.4 pp absolute lift** on Axis B routing quality (0.5 → 0.7619 on hex-aligned oracle, R22.2)
 - **221 ms** agent-coordination latency (down from 270 s+ pull-only worst-case, R23.0 wake-on-event substrate)
-- **7016 tests across 394 files**, BUSL source-available
+- **34,634 tests passed in CI** (Python 3.13, both CI scopes, release v3.13.0 — exact commit, command and run in the release notes), BUSL source-available
 
 **Profiles**:
 
@@ -294,6 +294,18 @@ Subprocess invocation is gated for human review by default. The CLI emits an `ad
 ## Development agent bridge
 
 This repository is developed by a fleet of agents that coordinate through an append-only bridge event log (`.agent-bridge/`): Codex Lead and Tools lanes, Claude review (RCO1, RCO2) and implementation (Fable) lanes, and an advisory Grok lane. Every change lands through a pull request, and the merge gate decides which review route applies. The gate's default (legacy) route needs, among other conditions, Lead and Tools build votes, an independent RCO pass bound to the exact head, green required CI, no unretracted RCO veto, and an explicit operator signature for off-allowlist changes ([`CLAUDE.md`](CLAUDE.md), Rule 9a). When the Rule 12 review policy is selected, best-available consensus applies instead: one approval from the model family opposite to the implementer, an RCO pass from every eligible recognized RCO (with a Grok fallback), green required CI, no unretracted veto or finding from any recognized RCO, the charter checks, and a MAGMA receipt naming every slot holder ([`CLAUDE.md`](CLAUDE.md), Rule 12).
+
+What the bridge enforces in code, not only in instructions:
+
+- **One append-only log.** Every lane reads and writes the same event log; each reply is bound to the request it answers, so work can be followed across sessions.
+- **Head-exact approval.** Approvals bind to the exact commit SHA; any re-push needs new approvals. A recognized reviewer's veto blocks the merge, and silence never approves.
+- **Audit trail.** Every merge leaves the PR and its bridge approvals; the gate's autonomous merge route also writes a MAGMA receipt with the approving identities and the head SHA (`tools/idle_consensus_auto_merge.py`).
+
+### Mind: the swarm's local memory (in production since 2026-11-25)
+
+Mind is a local, read-only index of the bridge work log, embedded with `multilingual-e5-small`. It makes no cloud calls and changes no code or model weights. When a lane starts, Mind answers one fixed question with at most three recent, relevant rows, so a restart, a compaction or a broken session does not lose the thread. Its source limit is 640 MiB, set from a measured owner peak of about 6.7× the source size, with a 2× margin.
+
+Not built yet: free-text questions, incremental refresh, and self-scoring. Mind is recall, not self-learning. Code: `tools/wd_mind_*.py`, startup read in `ops/windows/reboot/`.
 
 After a reboot the operator restores the fleet from the installed reboot bundle with `start-wd-all.ps1 -Auto` ([`ops/windows/reboot/BOOT_AFTER_REBOOT.md`](ops/windows/reboot/BOOT_AFTER_REBOOT.md)). Bridge changes are recorded in [`CHANGELOG.md`](CHANGELOG.md); the last bridge release tag is `bridge-2026.09.27-bridge-final-acceptance`.
 

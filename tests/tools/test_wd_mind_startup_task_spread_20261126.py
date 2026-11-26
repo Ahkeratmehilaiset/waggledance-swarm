@@ -54,10 +54,20 @@ def test_short_and_empty_inputs():
     assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a1', 'a2']
 
 
-def test_does_not_read_records_after_three_tasks():
-    rows = _rows('a1', 'b1', 'c1', 'missing')
-    records = _records(a1='A', b1='B', c1='C')
-    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a1', 'b1', 'c1']
+def test_newer_row_of_a_chosen_task_is_never_hidden():
+    """Grok and Lead on PR 2192: old top three [A_old, A_new, B] must not become [A_old, B, C]."""
+    rows = [('A_old', 0.91, 0, NOW - dt.timedelta(days=3)), ('A_new', 0.84, 0, NOW - dt.timedelta(hours=1)),
+            ('B', 0.80, 0, NOW - dt.timedelta(days=1)), ('C', 0.77, 0, NOW - dt.timedelta(days=2))]
+    records = _records(A_old='A', A_new='A', B='B', C='C')
+    ordered = runtime._order_selected(rows, Q)
+    assert [item[0] for item in runtime._first_three(ordered, records, Q)] == ['A_new', 'B', 'C']
+
+
+def test_fill_rows_come_newest_first_within_a_task():
+    rows = [('a_best', 0.9, 0, NOW - dt.timedelta(days=5)), ('a_mid', 0.85, 0, NOW - dt.timedelta(days=2)),
+            ('a_new', 0.7, 0, NOW - dt.timedelta(hours=2))]
+    records = _records(a_best='A', a_mid='A', a_new='A')
+    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a_new', 'a_mid', 'a_best']
 
 
 def test_every_flat_query_path_uses_the_shared_cut():

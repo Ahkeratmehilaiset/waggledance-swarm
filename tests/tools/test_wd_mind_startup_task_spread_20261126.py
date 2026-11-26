@@ -8,6 +8,7 @@ import ast
 import datetime as dt
 from pathlib import Path
 
+from tools import wd_mind_content_query_readonly as reader
 from tools import wd_mind_full_runtime as runtime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,8 +20,11 @@ def _rows(*names):
     return [(name, 0.9 - index * 0.001, 0, NOW - dt.timedelta(minutes=index)) for index, name in enumerate(names)]
 
 
-def _records(**tasks):
-    return {name: {'meta': {'agent': 'codex-lead-1', 'task_id': task}} for name, task in tasks.items()}
+def _records(texts=None, **tasks):
+    texts = texts or {}
+    return {name: {'meta': {'agent': 'codex-lead-1', 'task_id': task},
+                   'stored_text': reader.encode_text(texts.get(name, 'row ' + name))}
+            for name, task in tasks.items()}
 
 
 def test_one_row_per_task_first():
@@ -68,6 +72,33 @@ def test_fill_rows_come_newest_first_within_a_task():
             ('a_new', 0.7, 0, NOW - dt.timedelta(hours=2))]
     records = _records(a_best='A', a_mid='A', a_new='A')
     assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a_new', 'a_mid', 'a_best']
+
+
+def test_generic_reply_row_never_represents_a_task():
+    rows = [('a_old', 0.9, 0, NOW - dt.timedelta(days=2)), ('a_ack', 0.85, 0, NOW - dt.timedelta(minutes=5)),
+            ('b', 0.8, 0, NOW - dt.timedelta(days=1)), ('c', 0.79, 0, NOW - dt.timedelta(days=1))]
+    records = _records({'a_ack': runtime._GENERIC_REPLY_TEXT}, a_old='A', a_ack='A', b='B', c='C')
+    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a_old', 'b', 'c']
+
+
+def test_task_with_only_generic_rows_keeps_its_best_row_and_fills_last():
+    rows = [('a1', 0.9, 0, NOW - dt.timedelta(days=2)), ('a2', 0.85, 0, NOW - dt.timedelta(minutes=5))]
+    generic = runtime._GENERIC_REPLY_TEXT
+    records = _records({'a1': generic, 'a2': generic}, a1='A', a2='A')
+    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a1', 'a2']
+
+
+def test_generic_rows_fill_after_useful_rows():
+    rows = [('a1', 0.9, 0, NOW - dt.timedelta(days=2)), ('a_ack', 0.85, 0, NOW - dt.timedelta(minutes=5)),
+            ('a2', 0.8, 0, NOW - dt.timedelta(days=3))]
+    records = _records({'a_ack': runtime._GENERIC_REPLY_TEXT}, a1='A', a_ack='A', a2='A')
+    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a1', 'a2', 'a_ack']
+
+
+def test_generic_text_matches_both_bridge_writers():
+    for name in ('Write-BridgeTaskReply.ps1', 'Reply-ToRequest.ps1'):
+        text = (ROOT / '.agent-bridge' / 'bin' / name).read_text(encoding='utf-8-sig')
+        assert "'" + runtime._GENERIC_REPLY_TEXT + "'" in text
 
 
 def test_every_flat_query_path_uses_the_shared_cut():

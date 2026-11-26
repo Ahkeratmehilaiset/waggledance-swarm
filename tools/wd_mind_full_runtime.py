@@ -4009,6 +4009,11 @@ def _order_selected(selected, query):
 
 
 
+# Default message of Write-BridgeTaskReply and Reply-ToRequest when no -Message
+# is given; the reply content then lives only in the payload.
+_GENERIC_REPLY_TEXT = 'Task result supplied; see validation scope and evidence.'
+
+
 def _first_three(selected, records, query):
     """Cut ordered rows to three; the startup question takes one row per task first.
 
@@ -4021,7 +4026,8 @@ def _first_three(selected, records, query):
     on PR 2192). Further rows of the chosen tasks, newest first, fill the
     answer only if fewer than three tasks are eligible, so it never shrinks.
     The reader refuses events without a task_id, so every record has one; a
-    missing key would group such rows under None.
+    missing key would group such rows under None. Rows whose text is the
+    default bound-reply line come last within their task (RCO1 on PR 2192).
     """
     if query != _STARTUP_PIPE_QUERY:
         return selected[:3]
@@ -4034,7 +4040,17 @@ def _first_three(selected, records, query):
         by_task[task].append(item)
     tasks = order[:3]
     for task in tasks:
+        best = by_task[task][0]
         by_task[task].sort(key=lambda item: (-item[3].timestamp(), -item[1], -item[2], item[0]))
+        # A bound reply written with the default text carries its content in
+        # the payload, which Mind does not index (RCO1 on PR 2192). Such a row
+        # never represents a task; if a task has only those, its best row does.
+        generic = {item[0] for item in by_task[task]
+                   if reader.decode_text(records[item[0]]['stored_text']).strip() == _GENERIC_REPLY_TEXT}
+        useful = [item for item in by_task[task] if item[0] not in generic]
+        head = useful if useful else [best]
+        shown = {item[0] for item in head}
+        by_task[task] = head + [item for item in by_task[task] if item[0] not in shown]
     chosen = [by_task[task][0] for task in tasks]
     for task in tasks:
         for item in by_task[task][1:]:

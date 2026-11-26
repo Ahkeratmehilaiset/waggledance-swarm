@@ -607,9 +607,17 @@ _ALL_TASK_ROUTE_SCOPE = "wd.mind-all-task-projected-events.v1"
 _ALL_TASK_MAX_PREFIX_BYTES = 1024 * 1024 * 1024
 _COMPLETE_SOURCE_PREFIX_BYTES = 10 * 1024**3
 # The eager path retains parsed rows and screened projections. This estimate
-# rounds up a ~36x dense-input measurement and is not an RSS guarantee.
+# is not an RSS guarantee. It was 40 (a rounded ~36x dense synthetic input).
+# Measured on the real log: the installed owner's first start to ready on
+# 2026-11-25 peaked at 1455.6 MB commit against about 218.5 MB of source,
+# about 6.7x (operator run record 2185-run01, observer recording; the model
+# worker's memory is separate and does not scale with the source). Rule:
+# twice the larger measured peak. 16 covers the first start (13.4); a
+# refresh, with an old and a new index alive, is estimated, not measured.
+# Limit 640 MiB (2026-11-26, Mind train 2 item 3). Denser input than the real
+# log can exceed the estimate; a measured runtime memory check is a later item.
 _EAGER_MEMORY_BUDGET_BYTES = 10 * 1024**3
-_EAGER_MEMORY_BYTES_PER_SOURCE_BYTE = 40
+_EAGER_MEMORY_BYTES_PER_SOURCE_BYTE = 16
 _ALL_TASK_MAX_RECORDS = 65536
 # Separate from the serialized-projection and semantic-query limits below.
 # The bounded increase covers the 35,195,141-byte wide-policy diagnostic;

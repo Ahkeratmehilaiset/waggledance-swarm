@@ -27,7 +27,7 @@
 - **79× faster** 10 000-descriptor build (147.25 s → 1.86 s, R21.2 transaction batching)
 - **+52.4 pp absolute lift** on Axis B routing quality (0.5 → 0.7619 on hex-aligned oracle, R22.2)
 - **221 ms** agent-coordination latency (down from 270 s+ pull-only worst-case, R23.0 wake-on-event substrate)
-- **34,634 tests passed in CI** (Python 3.13, both CI scopes, release v3.13.0 — exact commit, command and run in the release notes), BUSL source-available
+- **34,634 tests passed, 2,983 skipped in CI** (Linux, Python 3.13, both CI scopes; Windows-only tests are among the skipped; exact commit, command and run in the v3.13.0 release notes), BUSL source-available
 
 **Profiles**:
 
@@ -303,7 +303,9 @@ What the bridge enforces in code, not only in instructions:
 
 ### Mind: the swarm's local memory (in production since 2026-11-25)
 
-Mind is a local, read-only index of the bridge work log, embedded with `multilingual-e5-small`. It makes no cloud calls and changes no code or model weights. When a lane starts, Mind answers one fixed question with at most three recent, relevant rows, so a restart, a compaction or a broken session does not lose the thread. Its source limit is 640 MiB, set from a measured owner peak of about 6.7× the source size, with a 2× margin.
+Mind is a local, read-only index of the bridge work log, embedded with `multilingual-e5-small`. It makes no cloud calls and changes no code or model weights. The code on main lets Mind answer one fixed question at lane startup with at most three relevant rows, the newest first within a relevance band, which helps a lane pick up the thread after a restart, a compaction or a broken session.
+
+Installed state: the owner and the index run on the operator's host since 2026-11-25. Startup delivery to the lanes, newest-first ordering and the 640 MiB source limit arrive with the next installation. The 640 MiB limit rests on a measured first start (owner peak about 6.7× the source size, with a 2× margin); the refresh peak is not measured yet and must be measured before the source passes 256 MiB.
 
 Not built yet: free-text questions, incremental refresh, and self-scoring. Mind is recall, not self-learning. Code: `tools/wd_mind_*.py`, startup read in `ops/windows/reboot/`.
 

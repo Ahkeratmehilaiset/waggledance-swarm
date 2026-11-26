@@ -27,7 +27,7 @@
 - **79× faster** 10 000-descriptor build (147.25 s → 1.86 s, R21.2 transaction batching)
 - **+52.4 pp absolute lift** on Axis B routing quality (0.5 → 0.7619 on hex-aligned oracle, R22.2)
 - **221 ms** agent-coordination latency (down from 270 s+ pull-only worst-case, R23.0 wake-on-event substrate)
-- **34,634 tests passed, 2,983 skipped in CI** (Linux, Python 3.13, both CI scopes; Windows-only tests are among the skipped; exact commit, command and run in the v3.13.0 release notes), BUSL source-available
+- **34,646 tests passed, 2,984 skipped in CI** (Linux, Python 3.13, both CI scopes; Windows-only tests are among the skipped; exact commit, command and run in the v3.13.0 release notes), BUSL source-available
 
 **Profiles**:
 

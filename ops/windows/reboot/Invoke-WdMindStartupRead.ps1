@@ -427,7 +427,7 @@ function Invoke-WdMindStartupRead {
             Assert-WdMindReceiptTarget $path
             # File APIs cannot reinterpret a directory target as a destination
             # folder, unlike Move-Item. Replace atomically only for a plain file.
-            if ([IO.File]::Exists($path)) { [IO.File]::Replace($temp,$path,$null) }
+            if ([IO.File]::Exists($path)) { [IO.File]::Replace($temp,$path,[NullString]::Value) }
             else { [IO.File]::Move($temp,$path) }
             $result.record_written=$true
         } catch {

@@ -1827,7 +1827,7 @@ def query_flat_memory(*, enabled=False, memory=None, lane=None, own_lane_only=Fa
                     record = records[record_id]
                     lexical = len(tokens & set(reader._Q4_TOKEN.findall(reader.decode_text(record['stored_text']).lower())))
                     selected.append((record_id, score, lexical, reader._utc(record['time_utc'])))
-            selected.sort(key=lambda item: (-item[1], -item[2], -item[3].timestamp(), item[0]))
+            selected = _order_selected(selected, query)
         selected = selected[:3]
         requested = [{'ref_sha256': reader._sha(records[key]['provenance']['event_ref'].encode()),
                       'doc_id_sha256': reader._sha(key.encode()), 'ref_kind': 'sha256_of_projected_metadata',
@@ -1908,7 +1908,7 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
                     record = records[record_id]
                     lexical = len(tokens & set(reader._Q4_TOKEN.findall(reader.decode_text(record['stored_text']).lower())))
                     selected.append((record_id, score, lexical, reader._utc(record['time_utc'])))
-            selected.sort(key=lambda item: (-item[1], -item[2], -item[3].timestamp(), item[0]))
+            selected = _order_selected(selected, query)
         selected = selected[:3]
         requested = [{'ref_sha256': reader._sha(records[key]['provenance']['event_ref'].encode()),
                       'doc_id_sha256': reader._sha(key.encode()), 'ref_kind': 'sha256_of_projected_metadata',
@@ -2141,7 +2141,7 @@ class _RetainedFlatQueryState:
                     record = records[record_id]
                     lexical = len(tokens & set(reader._Q4_TOKEN.findall(reader.decode_text(record['stored_text']).lower())))
                     selected.append((record_id, score, lexical, reader._utc(record['time_utc'])))
-            selected.sort(key=lambda item: (-item[1], -item[2], -item[3].timestamp(), item[0]))
+            selected = _order_selected(selected, query)
         selected = selected[:3]
         proposals = [{'ref_sha256':reader._sha(records[key]['provenance']['event_ref'].encode()),
                       'doc_id_sha256':reader._sha(key.encode()),
@@ -3986,6 +3986,26 @@ def create_flat_request_handler(*, enabled=False, binding=None, lane=None, worke
 
 
 _STARTUP_PIPE_QUERY = 'current task active work next step recent status'
+
+# Relevance band for the fixed startup question only. On the real log the e5
+# cosine of every eligible row is far above the 0.55 floor and tightly packed
+# (median about 0.81, best about 0.88), so cosine order alone returned rows 18
+# to 108 days old. Rows within this band of the best score are equally
+# relevant for "current ... recent status"; the newest of them come first.
+_STARTUP_RELEVANCE_BAND = 0.05
+
+
+def _order_selected(selected, query):
+    """Order (record_id, score, lexical, time) rows; recency inside the band only for the startup question."""
+    ordered = sorted(selected, key=lambda item: (-item[1], -item[2], -item[3].timestamp(), item[0]))
+    if query != _STARTUP_PIPE_QUERY or not ordered:
+        return ordered
+    floor = ordered[0][1] - _STARTUP_RELEVANCE_BAND
+    band = [item for item in ordered if item[1] >= floor]
+    band.sort(key=lambda item: (-item[3].timestamp(), -item[1], -item[2], item[0]))
+    # A narrow band must not shrink the answer: rows below it follow in the
+    # old cosine order, so a lane still gets up to three rows.
+    return band + [item for item in ordered if item[1] < floor]
 
 
 def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_locations=False):

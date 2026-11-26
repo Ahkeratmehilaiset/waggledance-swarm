@@ -699,6 +699,30 @@ throw 'owned_junction_mismatch'
 
 
 @WINDOWS
+def test_second_startup_read_replaces_existing_receipt(tmp_path):
+    # Every lane start after the first finds the previous receipt in place.
+    # Windows PowerShell 5.1 passes $null to a .NET string parameter as an
+    # empty string, which File.Replace rejects; the read must still succeed,
+    # replace the receipt and leave no temporary file behind.
+    bundle, pin = _package(tmp_path)
+    worktree = tmp_path / 'owned-worktree'
+    worktree.mkdir()
+    first = _run(bundle, pin, worktree=worktree)
+    assert first['outcome'] == 'success' and first['record_written'] is True
+    audit = worktree / '.codex-audit'
+    receipt_path = audit / 'wd-mind-startup-view.json'
+    earlier = json.loads(receipt_path.read_bytes())
+    second = _run(bundle, pin, worktree=worktree)
+    assert second['outcome'] == 'success', second
+    assert second['record_written'] is True
+    assert second['view_json'] != ''
+    receipt = json.loads(receipt_path.read_bytes())
+    assert receipt['view_sha256'] == second['view_sha256']
+    assert receipt['observed_utc'] != earlier['observed_utc']
+    assert sorted(child.name for child in audit.iterdir()) == ['wd-mind-startup-view.json']
+
+
+@WINDOWS
 @pytest.mark.parametrize('location', ['view', 'binding'])
 def test_discarded_duplicate_fields_never_reach_context(tmp_path, location):
     # JSON decoders keep the last duplicate value; validating that object does

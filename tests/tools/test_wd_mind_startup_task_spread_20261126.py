@@ -81,11 +81,12 @@ def test_generic_reply_row_never_represents_a_task():
     assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a_old', 'b', 'c']
 
 
-def test_task_with_only_generic_rows_keeps_its_best_row_and_fills_last():
+def test_task_with_only_generic_rows_is_shown_by_its_newest_row():
+    """Grok on PR 2192: the newest default reply may answer a later request."""
     rows = [('a1', 0.9, 0, NOW - dt.timedelta(days=2)), ('a2', 0.85, 0, NOW - dt.timedelta(minutes=5))]
     generic = runtime._GENERIC_REPLY_TEXT
     records = _records({'a1': generic, 'a2': generic}, a1='A', a2='A')
-    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a1', 'a2']
+    assert [item[0] for item in runtime._first_three(rows, records, Q)] == ['a2', 'a1']
 
 
 def test_generic_rows_fill_after_useful_rows():

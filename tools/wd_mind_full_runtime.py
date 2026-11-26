@@ -4028,7 +4028,8 @@ def _first_three(selected, records, query):
     The reader refuses events without a task_id, so every record has one; a
     missing key would group such rows under None. Rows whose text is the
     default bound-reply line neither rank nor represent a task, and come last
-    within it (RCO1 on PR 2192); text is decoded only for rows that matter.
+    within it (RCO1 on PR 2192); a task with only such rows is shown by its
+    newest one. Text is decoded only for rows that matter.
     """
     if query != _STARTUP_PIPE_QUERY:
         return selected[:3]
@@ -4059,12 +4060,11 @@ def _first_three(selected, records, query):
         tasks += [task for task in only_generic
                   if task not in tasks and all(is_generic(item) for item in by_task[task])][:3 - len(tasks)]
     for task in tasks:
-        best = by_task[task][0]
         rows = sorted(by_task[task], key=lambda item: (-item[3].timestamp(), -item[1], -item[2], item[0]))
-        useful = [item for item in rows if not is_generic(item)]
-        head = useful if useful else [best]
-        shown = {item[0] for item in head}
-        by_task[task] = head + [item for item in rows if item[0] not in shown]
+        # Useful rows newest first, then default-reply rows newest first; a task
+        # with only default replies is therefore shown by its newest one (Grok).
+        by_task[task] = ([item for item in rows if not is_generic(item)]
+                         + [item for item in rows if is_generic(item)])
     chosen = [by_task[task][0] for task in tasks]
     for task in tasks:
         for item in by_task[task][1:]:

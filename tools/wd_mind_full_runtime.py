@@ -4016,7 +4016,10 @@ def _first_three(selected, records, query):
     a startup answer covered 2.26 distinct tasks on average and 14 % of
     answers held a near-duplicate pair; one row per task gave 3.0 tasks.
     Rows of an already chosen task fill the answer only if fewer than three
-    tasks are eligible, so the answer never shrinks.
+    tasks are eligible, so the answer never shrinks. The trade-off: a second,
+    more relevant row of a chosen task yields to a weaker row of another task.
+    The reader refuses events without a task_id, so every record has one; a
+    missing key would group such rows under None.
     """
     if query != _STARTUP_PIPE_QUERY:
         return selected[:3]

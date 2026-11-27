@@ -185,7 +185,11 @@ switches model and effort himself by his usage limits and the task. So when a pa
 in the lane's allowlist but both the model and the effort come from his own user-level
 config (`model_source` `user_config` for Codex, `user` for Claude; `effort_source` also
 `user:modelSettings` or `ultracode:user`) and the provider is the lane's, the verdict is
-`allowed` with reason `operator_selected` and no profile. Two limits stay:
+`allowed` with reason `operator_selected` and no profile. Three limits stay:
+- on a reviewer lane (`reviewer: true`, claude-rco-1 and claude-rco-2) the model must be of
+  the `claude-opus-` family, because class (a) and gate reviews keep the strongest Claude
+  family (swarm proposal 2026-11-27); another model is `below_floor`, reason
+  `operator_selected_model_below_reviewer_family`. This is a reversible default;
 - the lane floor's effort: an effort below the effort of the lane's floor profile (in the
   provider's effort order) is `below_floor`, reason `operator_selected_effort_below_<effort>`;
   an effort outside the provider's enum keeps `not_in_lane_allowlist`;

@@ -101,6 +101,8 @@ EXIT_ALLOWED, EXIT_ERROR, EXIT_ATTENTION = 0, 2, 3
 # variable a launcher may set, or a model restored from a transcript.
 OPERATOR_MODEL_SOURCES = frozenset({"user_config", "user"})
 OPERATOR_EFFORT_SOURCES = frozenset({"user_config", "user", "user:modelSettings", "ultracode:user"})
+# On a reviewer lane, an operator-selected Claude model must be of this family.
+REVIEWER_MODEL_FAMILY = "claude-opus-"
 DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "configs" / "lane_profile_catalog.json"
 # Documented Windows location of Claude Code managed settings.
 DEFAULT_CLAUDE_MANAGED = Path(r"C:\Program Files\ClaudeCode\managed-settings.json")
@@ -730,6 +732,12 @@ def classify(catalog: dict, lane: str, resolved: dict) -> dict:
         # variable or a resumed transcript does not. The lane floor's effort still holds.
         efforts = catalog["providers"][provider]["efforts"]
         floor_effort = profiles[allowed[spec["floor"]]]["effort"]
+        if (spec.get("reviewer") is True and provider == "claude"
+                and not str(resolved["model"]).startswith(REVIEWER_MODEL_FAMILY)):
+            # Class a and gate reviews keep the strongest Claude family (swarm proposal
+            # 2026-11-27); a reversible default the operator may lift.
+            return {"verdict": "below_floor", "reasons": ["operator_selected_model_below_reviewer_family"],
+                    "profile": None}
         if resolved["effort"] in efforts and efforts.index(resolved["effort"]) >= efforts.index(floor_effort):
             return {"verdict": "allowed", "reasons": ["operator_selected"], "profile": None}
         if resolved["effort"] in efforts:

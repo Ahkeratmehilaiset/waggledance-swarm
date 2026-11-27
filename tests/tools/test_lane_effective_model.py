@@ -1225,8 +1225,14 @@ def sourced(provider, model, effort, model_source, effort_source):
     # (the frozen catalog's reviewer floor profile is at xhigh)
     ("claude-rco-1", sourced("claude", "claude-opus-6", "high", "user", "user:modelSettings"), "below_floor",
      "operator_selected_effort_below_xhigh"),
-    ("claude-rco-1", sourced("claude", "claude-haiku-4-5", "low", "user", "user"), "below_floor",
-     "operator_selected_effort_below_xhigh"),
+    ("fable-5", sourced("claude", "claude-haiku-4-5", "low", "user", "user"), "below_floor",
+     "operator_selected_effort_below_medium"),
+    # A reviewer lane keeps the strongest Claude family for his choice too (reversible default).
+    ("claude-rco-1", sourced("claude", "claude-haiku-4-5", "xhigh", "user", "user"), "below_floor",
+     "operator_selected_model_below_reviewer_family"),
+    ("claude-rco-2", sourced("claude", "claude-sonnet-6", "max", "user", "user"), "below_floor",
+     "operator_selected_model_below_reviewer_family"),
+    ("fable-5", sourced("claude", "claude-sonnet-6", "xhigh", "user", "user"), "allowed", "operator_selected"),
     # Not his own config: a launcher pin, a repository file, the environment, a restored transcript, a default.
     ("codex-lead-1", sourced("codex", "gpt-6-luna", "xhigh", "argv", "argv"), "not_in_lane_allowlist", "not_in_catalog"),
     ("codex-lead-1", sourced("codex", "gpt-6-luna", "xhigh", "user_config", "argv"), "not_in_lane_allowlist", "not_in_catalog"),

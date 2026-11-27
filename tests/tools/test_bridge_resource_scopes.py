@@ -64,6 +64,10 @@ def test_claim_resource_identity(tmp_path, monkeypatch, engine, case, allowed):
     diagnostic = ''
     if engine == 'python':
         monkeypatch.chdir(cwd_b)
+        # Same isolation as the PowerShell branch: a run inside a live lane
+        # must not bind the claim to that lane's session identity.
+        for key in [k for k in os.environ if k.startswith('AGENT_BRIDGE_')]:
+            monkeypatch.delenv(key)
         try:
             claim_task(agent='codex-lead-1', task_id='fixture/ours', summary='fixture',
                        mode='write', write_scope=scopes_b, bridge_root=bridge)

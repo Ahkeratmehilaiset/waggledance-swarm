@@ -41,8 +41,8 @@ def missing_managed(tmp_path) -> Path:
 @pytest.mark.parametrize("model,effort,verdict", [
     ("gpt-5.6-sol", "medium", "allowed"),
     ("gpt-6-sol", "high", "allowed"),
-    ("gpt-6-luna", "low", "not_in_lane_allowlist"),     # the operator's planted fault
-    ("gpt-5.6-terra", "medium", "not_in_lane_allowlist"),
+    ("gpt-6-luna", "low", "below_floor"),               # the operator's planted fault: still attention
+    ("gpt-5.6-terra", "medium", "allowed"),              # his own config: operator_selected (2026-11-27)
 ])
 def test_codex_preflight_verdicts_for_lead(tmp_path, model, effort, verdict):
     result = preflight(CATALOG, "codex-lead-1", "codex", "native", "native",
@@ -135,7 +135,7 @@ def test_an_allowed_launch_exits_zero(tmp_path, capsys):
 def test_the_planted_luna_low_fault_exits_attention(tmp_path, capsys):
     cfg = codex_config(tmp_path, "gpt-6-luna", "low")
     code, entry = run_main(tmp_path, capsys, "--cli", "codex", "--codex-config", str(cfg))
-    assert code == EXIT_ATTENTION and entry["preflight"]["verdict"] == "not_in_lane_allowlist"
+    assert code == EXIT_ATTENTION and entry["preflight"]["verdict"] == "below_floor"
     assert entry["launch"] == "native_argv_unchanged"                  # alert only: the launch is not changed
     logged = (tmp_path / "rt" / "lane_profiles" / "launch-shadow.jsonl").read_text(encoding="utf-8")
     assert json.loads(logged.strip().splitlines()[-1])["preflight"]["effective"]["model"] == "gpt-6-luna"
@@ -326,7 +326,7 @@ def test_codex_home_decides_which_config_the_preflight_reads(tmp_path, monkeypat
     (tmp_path / "codexhome").mkdir()
     codex_config(tmp_path / "codexhome", "gpt-6-luna", "low")
     result = preflight(CATALOG, "codex-lead-1", "codex", "native", "native", env={"CODEX_HOME": str(tmp_path / "codexhome")})
-    assert (result["effective"]["model"], result["verdict"]) == ("gpt-6-luna", "not_in_lane_allowlist")
+    assert (result["effective"]["model"], result["verdict"]) == ("gpt-6-luna", "below_floor")
     assert preflight(CATALOG, "codex-lead-1", "codex", "native", "native", env={})["verdict"] == "allowed"
 
 
@@ -340,7 +340,7 @@ def test_claude_config_dir_decides_which_settings_the_preflight_reads(tmp_path, 
     common = dict(worktree=tmp_path, claude_managed_settings=missing_managed(tmp_path))
     result = preflight(CATALOG, "claude-rco-1", "claude", "native", "native",
                        env={"CLAUDE_CONFIG_DIR": str(tmp_path / "claudedir")}, **common)
-    assert (result["effective"]["model"], result["verdict"]) == ("claude-haiku-4-5", "not_in_lane_allowlist")
+    assert (result["effective"]["model"], result["verdict"]) == ("claude-haiku-4-5", "below_floor")
     assert preflight(CATALOG, "claude-rco-1", "claude", "native", "native", env={}, **common)["verdict"] == "allowed"
 
 

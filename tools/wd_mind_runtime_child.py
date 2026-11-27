@@ -1185,8 +1185,8 @@ class _LocalManifestQuery:
                 binding = runtime.assemble_full_runtime(enabled=True, bundle_root=self._bundle,
                     expected_manifest_sha256=self._manifest, identifier_policy_bytes=self._policy,
                     expected_identifier_policy_sha256=self._policy_sha)
-            except runtime._EagerSourceBudgetRefused as exc:
-                if type(exc) is runtime._EagerSourceBudgetRefused:
+            except (runtime._EagerSourceBudgetRefused, runtime._OwnerMemoryBudgetRefused) as exc:
+                if type(exc) in (runtime._EagerSourceBudgetRefused, runtime._OwnerMemoryBudgetRefused):
                     stage = 'SOURCE_BUDGET'
                 raise
             if self._cancel.is_set():

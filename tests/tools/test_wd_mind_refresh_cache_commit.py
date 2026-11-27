@@ -176,6 +176,24 @@ def test_refresh_budget_refuses_before_any_passage_encoding(refresh_case, monkey
     assert owner._state == 'HOLD' and case.passages == []
 
 
+def test_cache_write_memory_refusal_rolls_back_private_refresh(refresh_case, monkeypatch):
+    case, owner = refresh_case
+    previous = owner._generation
+    old_cache = case.cache_path.read_bytes()
+    previous_status = owner._cache_status
+    append(case, 'synthetic memory refusal before cache publication')
+    original_rows = runtime._cache_rows_from_screened_projection
+    def prepare_rows(*args):
+        rows = original_rows(*args)
+        monkeypatch.setattr(runtime, '_owner_memory_headroom', lambda: 0)
+        return rows
+    monkeypatch.setattr(runtime, '_cache_rows_from_screened_projection', prepare_rows)
+    with pytest.raises(runtime._OwnerMemoryBudgetRefused, match='^OWNER_MEMORY_BUDGET$'):
+        owner._refresh_generation(enabled=True)
+    assert owner._state == 'READY' and owner._generation is previous
+    assert owner._cache_status == previous_status and case.cache_path.read_bytes() == old_cache
+
+
 def test_gate_on_refresh_cache_checks_charge_same_budget(
         synthetic_checkout_pins, flat_consumer_case, monkeypatch, tmp_path):
     """Real prewarm/source prefix and cache-check accounting; writer and pins are fixtures."""

@@ -9,6 +9,7 @@ import pytest
 from tools import wd_mind_full_runtime as runtime
 from tools import wd_mind_vector_cache as cache
 from test_wd_mind_cache_builder_integration import _synthetic_case
+from test_wd_mind_vector_cache import _v2_bytes
 
 
 _REAL_CACHE_CONTENT_PINS = runtime._cache_content_pins
@@ -58,9 +59,9 @@ def test_corrupt_cache_rebuilds_screened_rows(case, fault):
         start = len(cache._MAGIC) + 4
         length = struct.unpack('<I', original[len(cache._MAGIC):start])[0]
         old_header = json.loads(original[start:start + length])
-        rows = (('a' * 64, 'b' * 64, bytes(1536)),)
-        encoded = cache._canonical(cache._header(old_header['binding'], rows))
-        corrupt = cache._MAGIC + struct.pack('<I', len(encoded)) + encoded + b''.join(cache._encoded(rows))
+        loaded = cache.load_cache(case.cache_path, old_header['binding'], lambda *_: True)
+        first, second = loaded.rows
+        corrupt = _v2_bytes(old_header['binding'], ((first[0], first[1], bytes(1536)), second))
     case.cache_path.write_bytes(corrupt)
     case.passages.clear()
     binding, _ = case.snapshot()
@@ -80,7 +81,7 @@ def test_security_refusals_do_not_turn_into_rebuild(case, monkeypatch, reason):
     binding, _ = case.snapshot()
     def refuse(*_args, **_kwargs):
         raise cache.CacheRefused(reason)
-    monkeypatch.setattr(cache, 'load_cache', refuse)
+    monkeypatch.setattr(cache, 'load_cache_for_repair', refuse)
     with pytest.raises(ValueError, match='snapshot_build_refused'):
         case.build(binding)
     assert case.passages == []

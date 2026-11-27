@@ -197,7 +197,7 @@ def test_cache_requires_complete_screened_old_prefix_set(monkeypatch):
     vector = struct.pack('<384f', 1.0, *([0.0] * 383))
     binding = {'prefix_offset': 10, 'prefix_sha256': 'a' * 64,
                'projection_sha256': runtime._cache_projection_sha256(previous)}
-    result = SimpleNamespace(binding=binding, rows=((key, passage, vector),))
+    result = SimpleNamespace(binding=binding, rows=((key, passage, vector),), failed_keys=())
     assert runtime._cache_verified_reusable(snapshot, current, {'old': old, 'new': new}, result) == {'old': vector}
     result.rows = ()
     with pytest.raises(ValueError, match='cache_record_set_changed'):
@@ -611,7 +611,7 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
         runtime._CACHE_MODULE_ATTESTATION = previous_attestation
 
 
-@pytest.mark.parametrize('operation', ['load_cache', 'write_cache'])
+@pytest.mark.parametrize('operation', ['load_cache_for_repair', 'write_cache'])
 def test_cache_security_refusal_does_not_become_miss_or_memory(monkeypatch, tmp_path, operation):
     from tools import wd_mind_vector_cache as vector_cache
     from test_wd_mind_cache_builder_integration import _synthetic_case
@@ -631,7 +631,7 @@ def test_cache_security_refusal_does_not_become_miss_or_memory(monkeypatch, tmp_
     monkeypatch.setattr(vector_cache, operation, refuse)
     with pytest.raises(ValueError, match='snapshot_build_refused'):
         case.build(binding)
-    if operation == 'load_cache':
+    if operation == 'load_cache_for_repair':
         assert case.passages == []
     assert not case.cache_path.exists()
 
@@ -651,7 +651,7 @@ def test_verified_cache_miss_rebuilds_without_relaxing_refusal(monkeypatch, tmp_
     if reason != 'missing':
         def stale(*args, **kwargs):
             raise vector_cache.CacheMiss(reason)
-        monkeypatch.setattr(vector_cache, 'load_cache', stale)
+        monkeypatch.setattr(vector_cache, 'load_cache_for_repair', stale)
     memory = case.build(binding)
     assert memory.cache_status == 'MISS_STORED'
     assert len(case.passages) == 2 and case.cache_path.exists()

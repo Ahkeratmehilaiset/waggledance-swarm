@@ -466,6 +466,34 @@ class _CacheCapacityRefused(FullRuntimeRefused):
     """The verified projection exceeds the pinned cache format's row limit."""
 
 
+# Per-row incremental commit estimates include fixed-size vectors, manifest
+# entries, Python tuples, hex keys, and dictionaries used during verification.
+_CACHE_ROW_BYTES = 1536
+_CACHE_MANIFEST_ENTRY_BYTES = 96
+_CACHE_ROW_OBJECT_BYTES = 1024
+_CACHE_READ_ROW_BYTES = _CACHE_ROW_BYTES + _CACHE_MANIFEST_ENTRY_BYTES + _CACHE_ROW_OBJECT_BYTES
+# The owner materializes a passage batch, IPC frames and decoded float rows.
+# The model itself lives in the separately supervised encoder process.
+_CACHE_ENCODER_BATCH_BYTES = 16 * (4 * 2009 + 384 * 32 + 65536)
+# Writer streams the 96-byte manifest entries and each vector. Its fixed
+# working space includes the bounded 8 KiB header and one unpacked float row.
+_CACHE_WRITE_SCRATCH_BYTES = 64 * 1024
+
+
+def _cache_memory_fits(required_bytes, *, diagnose=False):
+    try:
+        return _owner_memory_headroom() >= required_bytes
+    except OSError:
+        if diagnose:
+            raise _OwnerMeterUnavailable('OWNER_METER_UNAVAILABLE') from None
+        return False
+
+
+def _check_cache_memory(required_bytes):
+    if not _cache_memory_fits(required_bytes, diagnose=True):
+        raise _OwnerMemoryBudgetRefused('OWNER_MEMORY_BUDGET')
+
+
 class _GenerationInputRefused(FullRuntimeRefused):
     """A generation-delivery request is invalid before any provider call."""
 
@@ -1218,12 +1246,14 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
 
 
 class _PrivateFlatMemory:
-    __slots__ = ('binding', 'snapshot', 'manifest', 'ids', 'vectors', 'encoder_binding', 'cache_status')
+    __slots__ = ('binding', 'snapshot', 'manifest', 'ids', 'vectors', 'encoder_binding', 'cache_status',
+                 'cache_repair')
 
     def __init__(self, binding, snapshot, manifest, ids, vectors, encoder_binding, cache_status='DISABLED'):
         self.binding, self.snapshot, self.manifest = binding, snapshot, manifest
         self.ids, self.vectors, self.encoder_binding = ids, vectors, encoder_binding
         self.cache_status = cache_status
+        self.cache_repair = None
 
     def __repr__(self):
         return '<PrivateMindFlatMemory>'
@@ -1390,7 +1420,7 @@ def _cache_snapshot_binding(binding, snapshot, projection, encoder_binding_bytes
             'projection_code_sha256': reader._sha(reader._canonical(projection_code))}
 
 
-def _cache_vectors_from_rows(by_id, rows):
+def _cache_vectors_from_rows(by_id, rows, failed_keys=()):
     """Accept the entire old screened set or reject the entire cache."""
     if type(by_id) is not dict or type(rows) is not tuple:
         raise ValueError('cache_rows')
@@ -1404,6 +1434,10 @@ def _cache_vectors_from_rows(by_id, rows):
             raise ValueError('cache_duplicate')
         current[keys[0]] = (record_id, keys[1])
     reusable = {}
+    for record_key, passage_key in failed_keys:
+        item = current.get(record_key)
+        if item is None or not hmac.compare_digest(item[1], passage_key):
+            raise _CacheProjectionMismatch('cache_projection_changed')
     previous = ''
     for row in rows:
         if (type(row) is not tuple or len(row) != 3 or type(row[0]) is not str
@@ -1452,10 +1486,16 @@ def _cache_verified_reusable(snapshot, projection, by_id, cache_result):
     if not hmac.compare_digest(_cache_projection_sha256(old_projection), stored['projection_sha256']):
         raise _CacheProjectionMismatch('cache_projection_changed')
     old_records = old_projection['messages']['records']
-    old_keys = sorted(_cache_record_keys(record)[0] for record in old_records)
-    if (len(set(old_keys)) != len(old_keys) or tuple(old_keys) != tuple(row[0] for row in rows)):
+    # Strict readers have only complete rows. Repair readers also supply the
+    # verified manifest keys for slots whose vector bytes failed validation.
+    failed_keys = getattr(cache_result, 'failed_keys', ())
+    old_keys = {_cache_record_keys(record) for record in old_records}
+    stored_keys = {(record_key, passage_key) for record_key, passage_key, _ in rows}
+    stored_keys.update(failed_keys)
+    if (len(old_keys) != len(old_records) or len(stored_keys) != len(rows) + len(failed_keys)
+            or stored_keys != old_keys):
         raise _CacheProjectionMismatch('cache_record_set_changed')
-    return _cache_vectors_from_rows(by_id, rows)
+    return _cache_vectors_from_rows(by_id, rows, failed_keys)
 
 
 def _cache_rows_from_screened_projection(projection, ids, vectors):
@@ -1484,10 +1524,14 @@ class _PrivateVectorCache:
             raise ValueError('cache_provider')
         self._module, self._path, self._verify = module, path, verify
 
-    def load(self, binding, verify_prefix):
+    def load(self, binding, verify_prefix, *, admit_rows=None):
         self._verify()
         try:
-            value = self._module.load_cache(self._path, binding, verify_prefix)
+            if admit_rows is None:
+                value = self._module.load_cache(self._path, binding, verify_prefix)
+            else:
+                value = self._module.load_cache_for_repair(self._path, binding, verify_prefix,
+                                                           admit_rows=admit_rows)
         except Exception:
             self._verify()
             raise
@@ -1610,6 +1654,16 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
     package = binding._snapshot_support()
     watcher, output, problem, cleanup_problem, held = None, None, None, None, False
     over_capacity = False
+    memory_refusal = None
+
+    def require_cache_memory(required_bytes):
+        nonlocal memory_refusal
+        try:
+            _check_cache_memory(required_bytes)
+        except (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable) as exc:
+            memory_refusal = type(exc)
+            raise
+
     try:
         try:
             watcher = (package._reserve_watcher() if watcher_lease is None else
@@ -1630,6 +1684,10 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 if not vector_cache.has_capacity(len(records)):
                     over_capacity = True
                     raise _CacheCapacityRefused('CACHE_CAPACITY')
+                prefix_size = frozen['messages']['end_cursor'].offset
+                projection_size = len(frozen['projection_bytes'])
+                require_cache_memory(2 * prefix_size + projection_size * reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE
+                                     + len(records) * _CACHE_READ_ROW_BYTES)
             immutable_prefix = package._immutable_prefix(context)
             projection = json.loads(frozen['projection_bytes'].decode('utf-8'),
                                     object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
@@ -1664,9 +1722,9 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             ids, vectors = tuple(sorted(by_id)), []
             reusable, cache_binding = {}, None
             cache_status = 'DISABLED' if vector_cache is None else 'MISS'
+            checked_rows = failed_rows = widespread_rebuilds = 0
             if vector_cache is not None and prior_memory is None:
-                if type(vector_cache) is not _PrivateVectorCache:
-                    raise ValueError('cache_provider')
+                repair_started = time.monotonic()
                 cache_binding = _cache_snapshot_binding(binding, frozen, projection,
                                                         encoder_binding_bytes, encoder_binding_sha256)
                 try:
@@ -1674,9 +1732,33 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                         return (type(offset) is int and 0 <= offset <= len(immutable_prefix)
                                 and reader._hex(expected)
                                 and hmac.compare_digest(reader._sha(memoryview(immutable_prefix)[:offset]), expected))
-                    cached = vector_cache.load(cache_binding, verify_old_prefix)
+                    def admit_rows(count):
+                        # The codec reads at most 1024 manifest entries into a
+                        # separate bytes object per read, then copies into its table.
+                        scratch = min(count, 1024) * _CACHE_MANIFEST_ENTRY_BYTES + _CACHE_WRITE_SCRATCH_BYTES
+                        try:
+                            require_cache_memory(count * _CACHE_READ_ROW_BYTES + len(ids) * _CACHE_ROW_OBJECT_BYTES
+                                                 + scratch)
+                        except (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable):
+                            return False
+                        return True
+
+                    cached = vector_cache.load(cache_binding, verify_old_prefix, admit_rows=admit_rows)
+                    if cached.binding['prefix_offset'] < len(immutable_prefix):
+                        require_cache_memory(cached.binding['prefix_offset'] * reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE
+                                             + len(ids) * _CACHE_ROW_OBJECT_BYTES)
                     reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
+                    failed_rows = len(cached.failed_keys)
+                    checked_rows = len(cached.rows) + failed_rows
                     cache_status = 'HIT'
+                    del cached
+                except vector_cache._module.CacheAdmissionRefused:
+                    if memory_refusal is _OwnerMeterUnavailable:
+                        raise _OwnerMeterUnavailable('OWNER_METER_UNAVAILABLE') from None
+                    memory_refusal = _OwnerMemoryBudgetRefused
+                    raise _OwnerMemoryBudgetRefused('OWNER_MEMORY_BUDGET') from None
+                except vector_cache._module.WidespreadDamage as exc:
+                    checked_rows, failed_rows, widespread_rebuilds = exc.total_rows, exc.damaged_rows, 1
                 except (vector_cache._module.CacheMiss, _CacheProjectionMismatch):
                     reusable, cache_status = {}, 'MISS'
             if prior_memory is not None:
@@ -1713,6 +1795,12 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             missing = tuple(record_id for record_id in ids if record_id not in reusable)
             for start in range(0, len(missing), 16):
                 chosen = missing[start:start + 16]
+                if vector_cache is not None:
+                    # Full remaining work must fit before starting even the first
+                    # batch. Refresh the sample before every subsequent batch.
+                    require_cache_memory((len(missing) - start) * (_CACHE_ROW_BYTES + _CACHE_ROW_OBJECT_BYTES)
+                                         + len(ids) * (_CACHE_ROW_BYTES + _CACHE_READ_ROW_BYTES)
+                                         + _CACHE_ENCODER_BATCH_BYTES)
                 texts = tuple('passage: ' + reader.decode_text(by_id[key]['stored_text'])[:2000] for key in chosen)
                 checkpoint()
                 raw = passage_encoder(texts)
@@ -1723,7 +1811,10 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     reader._q4_vector(struct.unpack('<384f', raw[index * 1536:(index + 1) * 1536]))
                 for index, record_id in enumerate(chosen):
                     reusable[record_id] = raw[index * 1536:(index + 1) * 1536]
+            if vector_cache is not None:
+                require_cache_memory(len(ids) * (_CACHE_ROW_BYTES + _CACHE_READ_ROW_BYTES))
             vectors = b''.join(reusable[record_id] for record_id in ids)
+            del reusable
             if prior_memory is not None:
                 _flat_check(prior_memory)
             manifest = {'schema': 'wd.mind-flat-f32-memory.v1', 'authority': 'none',
@@ -1739,11 +1830,17 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
             output = _PrivateFlatMemory(binding, frozen, reader._canonical(manifest), ids, vectors,
                                         encoder_binding_bytes, cache_status)
             if vector_cache is not None and prior_memory is None and cache_binding is not None:
+                require_cache_memory(len(ids) * _CACHE_READ_ROW_BYTES)
                 cache_rows = _cache_rows_from_screened_projection(projection, ids, vectors)
+                require_cache_memory(_CACHE_WRITE_SCRATCH_BYTES)
                 vector_cache.write(cache_binding, cache_rows)
                 output.cache_status = cache_status + '_STORED'
                 package._unchanged(snapshot, frozen, report, complete=True)
                 _flat_snapshot(binding, frozen)
+                output.cache_repair = MappingProxyType({
+                    'checked_rows': checked_rows, 'failed_rows': failed_rows,
+                    'reencoded_rows': len(missing), 'widespread_rebuilds': widespread_rebuilds,
+                    'repair_seconds': time.monotonic() - repair_started})
     except BaseException as exc:
         problem = exc
     finally:
@@ -1772,6 +1869,12 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
     if over_capacity and cleanup_problem is None and type(problem) is _CacheCapacityRefused:
         problem = None
         raise _CacheCapacityRefused('CACHE_CAPACITY') from None
+    if memory_refusal is _OwnerMeterUnavailable and cleanup_problem is None and type(problem) is memory_refusal:
+        problem = None
+        raise _OwnerMeterUnavailable('OWNER_METER_UNAVAILABLE') from None
+    if memory_refusal is _OwnerMemoryBudgetRefused and cleanup_problem is None and type(problem) is memory_refusal:
+        problem = None
+        raise _OwnerMemoryBudgetRefused('OWNER_MEMORY_BUDGET') from None
     if cleanup_problem is not None or problem is not None:
         raise ValueError('snapshot_build_refused') from None
     return output
@@ -1835,8 +1938,8 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                                     encoder_binding_bytes)
     except FullRuntimeSnapshotHold:
         raise
-    except _CacheCapacityRefused as exc:
-        if immutable_build and type(exc) is _CacheCapacityRefused:
+    except (_CacheCapacityRefused, _OwnerMemoryBudgetRefused, _OwnerMeterUnavailable) as exc:
+        if immutable_build and type(exc) in (_CacheCapacityRefused, _OwnerMemoryBudgetRefused, _OwnerMeterUnavailable):
             raise
     except Exception:
         pass
@@ -2338,7 +2441,7 @@ class _FlatRequestHandler:
             return {'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'}
         except Exception as exc:
             self._failed = True
-            if building_memory and type(exc) is _CacheCapacityRefused:
+            if building_memory and type(exc) in (_CacheCapacityRefused, _OwnerMemoryBudgetRefused, _OwnerMeterUnavailable):
                 raise
         finally:
             self._lock.release()
@@ -2873,6 +2976,10 @@ def _stage_refresh_generation(owner):
         owner._handler._vector_cache)
     try:
         handler._build(owner._handler._memory)
+    except (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable) as exc:
+        if type(exc) in (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable):
+            return _REFRESH_MEMORY_BUDGET
+        raise
     except _CacheCapacityRefused as exc:
         if type(exc) is _CacheCapacityRefused:
             return _REFRESH_CACHE_CAPACITY
@@ -2940,13 +3047,20 @@ def _write_refresh_vector_cache(owner, old_handler, *, source_budget=None):
     if (type(raw) is not bytes or not reader._hex(snapshot['projection_sha256'])
             or not hmac.compare_digest(reader._sha(raw), snapshot['projection_sha256'])):
         raise ValueError('refresh_projection_pin')
+    if not _cache_memory_fits(len(raw) * reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE
+                              + len(memory.ids) * _CACHE_READ_ROW_BYTES):
+        return _REFRESH_MEMORY_BUDGET
     projection = json.loads(raw.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
                             parse_constant=reader._bad_constant)
     if reader._serialized(projection) != raw:
         raise ValueError('refresh_projection_changed')
     encoder_sha = reader._sha(memory.encoder_binding)
     cache_binding = _cache_snapshot_binding(binding, snapshot, projection, memory.encoder_binding, encoder_sha)
+    if not _cache_memory_fits(len(memory.ids) * _CACHE_READ_ROW_BYTES):
+        return _REFRESH_MEMORY_BUDGET
     rows = _cache_rows_from_screened_projection(projection, memory.ids, memory.vectors)
+    if not _cache_memory_fits(_CACHE_WRITE_SCRATCH_BYTES):
+        return _REFRESH_MEMORY_BUDGET
     cache.write(cache_binding, rows)
     verify_source()
     memory.cache_status = 'REFRESH_STORED'
@@ -3217,7 +3331,9 @@ class _SingleManifestOwner:
             if self._vector_cache_enabled:
                 # Publication can have reached os.replace even if it raises.
                 cache_publish_started = True
-                _write_refresh_vector_cache(self, old_handler, source_budget=self._source_budget)
+                if _write_refresh_vector_cache(self, old_handler, source_budget=self._source_budget) is _REFRESH_MEMORY_BUDGET:
+                    staged = _REFRESH_MEMORY_BUDGET
+                    raise ValueError('refresh_memory_limit')
                 self._cache_status = 'REFRESH_STORED'
             self._source_budget = None
             # Retire direct lane views without closing the shared worker.
@@ -3771,6 +3887,10 @@ class _SingleManifestOwner:
             except BaseException as exc:
                 if stage == 'HANDLER_BUILD' and type(exc) is _CacheCapacityRefused:
                     stage = 'CACHE_CAPACITY'
+                elif stage == 'HANDLER_BUILD' and type(exc) is _OwnerMeterUnavailable:
+                    stage = 'OWNER_METER_UNAVAILABLE'
+                elif stage == 'HANDLER_BUILD' and type(exc) is _OwnerMemoryBudgetRefused:
+                    stage = 'SOURCE_BUDGET'
                 self._start_failure = (stage, next((name for kind, name in _START_ERROR_TYPES.items() if type(exc) is kind), 'UNKNOWN'))
                 # Unknown post-launch states are never declared exited. The
                 # saved owner (if present) remains reachable for explicit EOF.

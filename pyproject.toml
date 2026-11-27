@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waggledance-swarm"
-version = "3.12.0"
-description = "Local-first multi-agent AI runtime — solver-first, autonomous overnight learning, full audit trail"
+version = "3.14.0"
+description = "Local-first multi-agent AI runtime — solver-first routing, an agent bridge with exact-commit approvals, and Mind, a local read-only work-log index"
 readme = "README.md"
 license = "Apache-2.0 AND BUSL-1.1"
 license-files = ["LICENSE", "LICENSE-BUSL.txt", "LICENSE-CORE.md"]

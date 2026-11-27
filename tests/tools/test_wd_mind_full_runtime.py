@@ -2430,7 +2430,8 @@ def test_foreign_global_verifier_reservation_is_not_captured_by_new_owner():
         release.set(); foreign.thread.join(5); package._release_watcher(foreign)
 
 
-def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatch):
+@pytest.mark.parametrize('exiting_thread', [False, True])
+def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatch, exiting_thread):
     runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
     # The synthetic snapshot has no budgetable source; exercise OFF explicitly.
     monkeypatch.setattr(runtime, '_STARTUP_OWNER_SOURCE_BUDGET_ENABLED', False)
@@ -2448,6 +2449,22 @@ def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatc
     assert calls == []
     try:
         assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
+        if exiting_thread:
+            # Model the interval after the completion event and before thread exit.
+            owner._launch_thread.join(timeout=5)
+            assert not owner._launch_thread.is_alive() and owner._launch_done.is_set()
+
+            class ExitingThread:
+                exited = False
+
+                def is_alive(self):
+                    return not self.exited
+
+                def join(self, timeout):
+                    assert 0 < timeout <= 1
+                    self.exited = True
+
+            owner._launch_thread = ExitingThread()
         with pytest.raises(runtime.FullRuntimeRefused, match='^mind_full_runtime_refused$'):
             owner.candidates(request)
         assert owner.status() == {'state': 'READY', 'owned': True, 'authority': 'none'}

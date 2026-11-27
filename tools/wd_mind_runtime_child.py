@@ -1059,7 +1059,7 @@ def _select_local_source_record(reader, records, hit, used):
 
 _LOCAL_START_REASONS = frozenset(('BINDING_CHECK', 'CACHE_PREFLIGHT', 'WORKER_SETUP',
     'HANDLER_BUILD', 'CACHE_CAPACITY', 'CACHE_RESULT', 'FINAL_BINDING_CHECK', 'SOURCE_PREWARM', 'SOURCE_BUDGET',
-    'OWNER_METER_UNAVAILABLE',
+    'OWNER_METER_UNAVAILABLE', 'OWNER_MEMORY_BUDGET',
     'ADMISSION', 'POLICY', 'RUNTIME_BINDING', 'WORKER_FACTORY', 'OWNER_CREATE',
     'EXTERNAL_POLICY', 'OWNER_START', 'OWNER_NOT_READY', 'OWNER_ENTRY', 'IMPORT', 'THREAD_START', 'UNKNOWN'))
 _LOCAL_START_TYPES = frozenset(('ValueError', 'TypeError', 'RuntimeError', 'OSError',
@@ -1190,8 +1190,12 @@ class _LocalManifestQuery:
                 if type(exc) is runtime._OwnerMeterUnavailable:
                     stage = 'OWNER_METER_UNAVAILABLE'
                 raise
-            except (runtime._EagerSourceBudgetRefused, runtime._OwnerMemoryBudgetRefused) as exc:
-                if type(exc) in (runtime._EagerSourceBudgetRefused, runtime._OwnerMemoryBudgetRefused):
+            except runtime._OwnerMemoryBudgetRefused as exc:
+                if type(exc) is runtime._OwnerMemoryBudgetRefused:
+                    stage = 'OWNER_MEMORY_BUDGET'
+                raise
+            except runtime._EagerSourceBudgetRefused as exc:
+                if type(exc) is runtime._EagerSourceBudgetRefused:
                     stage = 'SOURCE_BUDGET'
                 raise
             if self._cancel.is_set():

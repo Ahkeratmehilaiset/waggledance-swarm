@@ -85,6 +85,29 @@ def test_startup_reports_unavailable_meter(tmp_path, monkeypatch):
         adapter.close()
 
 
+@pytest.mark.parametrize(("refusal", "reason"), [
+    (runtime._OwnerMemoryBudgetRefused, "OWNER_MEMORY_BUDGET"),
+    (runtime._EagerSourceBudgetRefused, "SOURCE_BUDGET"),
+])
+def test_startup_distinguishes_memory_and_source_limits(monkeypatch, refusal, reason):
+    from test_wd_mind_owner_diagnostics import _local_adapter
+    from tools import wd_mind_runtime_child as child
+
+    def refuse(**kwargs):
+        raise refusal("synthetic")
+
+    monkeypatch.setattr(child._LocalManifestQuery, "_check_policy", lambda self: None)
+    monkeypatch.setattr(child._LocalManifestQuery, "_check_external_policy", lambda self: None)
+    monkeypatch.setattr(runtime, "assemble_full_runtime", refuse)
+    adapter = _local_adapter()
+    try:
+        adapter.start()
+        assert adapter.wait(timeout=5)["state"] == "HOLD"
+        assert adapter.start_diagnostic()["reason"] == reason
+    finally:
+        adapter.close()
+
+
 @pytest.mark.parametrize("case", ["prefix_limit", "after_build", "after_prewarm", "meter_error"])
 def test_memory_refusal_keeps_previous_index_serving(synthetic_bundle, case):
     digest, policy_sha = _prepared_bundle(synthetic_bundle)

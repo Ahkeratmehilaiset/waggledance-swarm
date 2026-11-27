@@ -4005,7 +4005,12 @@ class _SingleManifestOwner:
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
             if self._launch_thread is not None and self._launch_thread.is_alive():
                 self._state = 'HOLD'
-                return self._status()
+                if not self._launch_done.is_set() or self._launch_thread is threading.current_thread():
+                    return self._status()
+                # The launch result is final, but the thread may still be returning.
+                self._launch_thread.join(timeout=1.0)
+                if self._launch_thread.is_alive():
+                    return self._status()
             if self._rotation_enabled and not self._rotation_is_bound():
                 self._state = 'HOLD'
                 return {'state': 'HOLD', 'owned': None, 'authority': 'none'}

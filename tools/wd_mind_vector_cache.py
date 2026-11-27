@@ -32,10 +32,13 @@ _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _FIELDS = frozenset(("source_identity_sha256", "source_generation_sha256", "prefix_offset",
                      "prefix_sha256", "model_sha256", "policy_sha256", "projection_code_sha256",
                      "projection_sha256"))
-_ROW_SIZE = 64 + 384 * 4
+_VECTOR_SIZE = 384 * 4
+_V1_ROW_SIZE = 64 + _VECTOR_SIZE
+_ENTRY_SIZE = 96
 _MAX_ROWS = 250000
 _MAX_HEADER = 8192
-_MAGIC = b"WDMVC1\n"
+_V1_MAGIC = b"WDMVC1\n"
+_MAGIC = b"WDMVC2\n"
 _CACHE_ROOT = Path(r"C:\wd-mind-private\vector-cache")
 _CACHE_NAME = "vectors.bin"
 
@@ -48,10 +51,30 @@ class CacheMiss(CacheRefused):
     """A verified missing or stale cache may be rebuilt from the source."""
 
 
+class CacheAdmissionRefused(CacheRefused):
+    """The owner declined the verified file's declared row count."""
+
+
+class WidespreadDamage(CacheMiss):
+    """The verified manifest identified too many failed slots for selective repair."""
+
+    def __init__(self, damaged_rows, total_rows):
+        super().__init__("widespread_damage")
+        self.damaged_rows = damaged_rows
+        self.total_rows = total_rows
+
+
 class CacheResult(NamedTuple):
     binding: object
     rows: tuple
     record_set_sha256: str
+
+
+class RepairResult(NamedTuple):
+    binding: object
+    rows: tuple
+    record_set_sha256: str
+    failed_keys: tuple
 
 
 def _binding(value):
@@ -75,30 +98,48 @@ def _rows(rows):
                 or type(row[1]) is not str or not _HEX.fullmatch(row[1])
                 or type(row[2]) is not bytes or len(row[2]) != 1536):
             raise CacheRefused("rows")
-        values = struct.unpack("<384f", row[2])
-        if not all(math.isfinite(x) for x in values):
-            raise CacheRefused("vector")
-        norm = math.sqrt(sum(x * x for x in values))
-        if not math.isfinite(norm) or abs(norm - 1.0) > 0.001:
-            raise CacheRefused("vector_norm")
+        _check_vector(row[2])
         previous = row[0]
     return rows
 
 
+def _check_vector(vector):
+    values = struct.unpack("<384f", vector)
+    if not all(math.isfinite(x) for x in values):
+        raise CacheRefused("vector")
+    norm = math.sqrt(sum(x * x for x in values))
+    if not math.isfinite(norm) or abs(norm - 1.0) > 0.001:
+        raise CacheRefused("vector_norm")
+
+
+def _row_digest(slot, keys, vector):
+    return hashlib.sha256(b"WDMVC2/row\0" + struct.pack("<I", slot) + keys + vector).digest()
+
+
+def _manifest_entries(rows):
+    for slot, (record_hash, passage_hash, vector) in enumerate(rows):
+        keys = bytes.fromhex(record_hash + passage_hash)
+        yield keys + _row_digest(slot, keys, vector)
+
+
+def _manifest_hasher(binding, count):
+    return hashlib.sha256(b"WDMVC2/manifest\0" + struct.pack("<I", count) + _canonical(binding))
+
+
 def _encoded(rows):
-    for record_hash, passage_hash, vector in rows:
-        yield bytes.fromhex(record_hash) + bytes.fromhex(passage_hash) + vector
+    yield from _manifest_entries(rows)
+    for _, _, vector in rows:
+        yield vector
 
 
 def _header(binding, rows):
-    payload, vectors, record_set = hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
-    for row, block in zip(rows, _encoded(rows)):
-        payload.update(block)
-        vectors.update(row[2])
-        record_set.update(bytes.fromhex(row[0]))
-    return {"schema": "wd.mind-vector-cache.v1", "binding": binding, "dimension": 384,
-            "dtype": "f32le", "count": len(rows), "payload_sha256": payload.hexdigest(),
-            "vectors_sha256": vectors.hexdigest(), "record_set_sha256": record_set.hexdigest()}
+    manifest, record_set = _manifest_hasher(binding, len(rows)), hashlib.sha256()
+    for entry in _manifest_entries(rows):
+        manifest.update(entry)
+        record_set.update(entry[:32])
+    return {"schema": "wd.mind-vector-cache.v2", "binding": binding, "dimension": 384,
+            "dtype": "f32le", "count": len(rows), "manifest_sha256": manifest.hexdigest(),
+            "record_set_sha256": record_set.hexdigest()}
 
 
 def _canonical(value):
@@ -422,60 +463,135 @@ def write_cache(path, binding, rows):
         raise CacheRefused("write") from None
 
 
-def load_cache(path, expected_binding, verify_prefix):
-    """Return a complete, checked cache or raise; compare passage hashes again at use."""
+def _read_header(source):
+    initial = source.read(len(_MAGIC) + 4)
+    magic = initial[:-4]
+    if len(initial) != len(_MAGIC) + 4 or magic not in (_V1_MAGIC, _MAGIC):
+        raise CacheMiss("header")
+    length = struct.unpack("<I", initial[-4:])[0]
+    if not 0 < length <= _MAX_HEADER:
+        raise CacheMiss("header")
+    raw = source.read(length)
+    if len(raw) != length:
+        raise CacheMiss("header")
+    legacy = magic == _V1_MAGIC
+    hashes = ("payload_sha256", "vectors_sha256") if legacy else ("manifest_sha256",)
+    fields = {"schema", "binding", "dimension", "dtype", "count", "record_set_sha256", *hashes}
+    try:
+        header = json.loads(raw.decode("ascii"), object_pairs_hook=_unique)
+        if (type(header) is not dict or set(header) != fields or _canonical(header) != raw
+                or header["schema"] != ("wd.mind-vector-cache.v1" if legacy else "wd.mind-vector-cache.v2")
+                or type(header["dimension"]) is not int or header["dimension"] != 384
+                or header["dtype"] != "f32le" or type(header["count"]) is not int
+                or not 0 <= header["count"] <= _MAX_ROWS
+                or any(type(header[key]) is not str or not _HEX.fullmatch(header[key])
+                       for key in (*hashes, "record_set_sha256"))):
+            raise CacheMiss("header")
+        header["binding"] = _binding(header["binding"])
+    except (UnicodeError, ValueError, RecursionError):
+        raise CacheMiss("header") from None
+    row_size = _V1_ROW_SIZE if legacy else _ENTRY_SIZE + _VECTOR_SIZE
+    expected_size = len(initial) + length + header["count"] * row_size
+    if os.fstat(source.fileno()).st_size != expected_size:
+        raise CacheMiss("truncated")
+    return header, legacy
+
+
+def _read_v1(source, header):
+    rows, payload, vectors, record_set = [], hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
+    for _ in range(header["count"]):
+        block = source.read(_V1_ROW_SIZE)
+        if len(block) != _V1_ROW_SIZE:
+            raise CacheMiss("truncated")
+        vector = block[64:]
+        payload.update(block)
+        vectors.update(vector)
+        record_set.update(block[:32])
+        rows.append((block[:32].hex(), block[32:64].hex(), vector))
+    if (payload.hexdigest() != header["payload_sha256"] or vectors.hexdigest() != header["vectors_sha256"]
+            or record_set.hexdigest() != header["record_set_sha256"]):
+        raise CacheMiss("payload")
+    try:
+        return _rows(tuple(rows))
+    except CacheRefused as exc:
+        raise CacheMiss(str(exc)) from None
+
+
+def _read_manifest(source, header):
+    count = header["count"]
+    manifest = bytearray(count * _ENTRY_SIZE)
+    digest = _manifest_hasher(header["binding"], count)
+    for start in range(0, len(manifest), 1024 * _ENTRY_SIZE):
+        size = min(1024 * _ENTRY_SIZE, len(manifest) - start)
+        block = source.read(size)
+        if len(block) != size:
+            raise CacheMiss("truncated")
+        digest.update(block)
+        manifest[start:start + size] = block
+    if digest.hexdigest() != header["manifest_sha256"]:
+        raise CacheMiss("manifest")
+    previous, record_set = b"", hashlib.sha256()
+    for start in range(0, len(manifest), _ENTRY_SIZE):
+        identity = manifest[start:start + 32]
+        if identity <= previous:
+            raise CacheMiss("manifest_order")
+        record_set.update(identity)
+        previous = identity
+    if record_set.hexdigest() != header["record_set_sha256"]:
+        raise CacheMiss("manifest")
+    return manifest
+
+
+def _read_v2(source, header):
+    manifest = _read_manifest(source, header)
+    rows, failed_keys = [], []
+    limit = header["count"] // 20
+    damaged, first_error = 0, None
+    for slot in range(header["count"]):
+        vector = source.read(_VECTOR_SIZE)
+        if len(vector) != _VECTOR_SIZE:
+            raise CacheMiss("truncated")
+        start = slot * _ENTRY_SIZE
+        keys = manifest[start:start + 64]
+        if _row_digest(slot, keys, vector) != manifest[start + 64:start + _ENTRY_SIZE]:
+            error = "payload"
+        else:
+            error = None
+            try:
+                _check_vector(vector)
+            except CacheRefused as exc:
+                error = str(exc)
+        if error:
+            damaged += 1
+            first_error = first_error or error
+            if damaged == limit + 1:
+                rows.clear()
+                failed_keys.clear()
+        if damaged <= limit:
+            record_hash, passage_hash = keys[:32].hex(), keys[32:].hex()
+            if error:
+                failed_keys.append((record_hash, passage_hash))
+            else:
+                rows.append((record_hash, passage_hash, vector))
+    return tuple(rows), tuple(failed_keys), damaged, first_error
+
+
+def _load_cache(path, expected_binding, verify_prefix, *, repair, admit_rows=None):
     path, expected = _plain_path(path), _binding(expected_binding)
     if not callable(verify_prefix):
         raise CacheRefused("prefix_verifier")
+    if admit_rows is not None and not callable(admit_rows):
+        raise CacheRefused("row_admission_callback")
     try:
         with _Directory(path.parent) as directory:
-            # Do not share write/delete while parsing: a concurrent writer must
-            # either publish before this open or wait until this read closes.
+            # Pin the same private handle through both prefix checks and all reads.
             try:
                 fd = _fd(directory.native, path, 3, 0x80000000, 1, os.O_RDONLY)
             except FileNotFoundError:
-                # A synthetic file opener can surface the OS exception rather
-                # than the native wrapper's typed missing-cache result.
                 raise CacheMiss("missing") from None
             with os.fdopen(fd, "rb") as source:
-                # An OS read error can indicate access or device failure, so it
-                # must never be mistaken for recoverable corrupt cache bytes.
-                def read_content(size):
-                    try:
-                        return source.read(size)
-                    except OSError:
-                        raise CacheRefused("read") from None
-
-                initial = read_content(len(_MAGIC) + 4)
-                if len(initial) != len(_MAGIC) + 4 or not initial.startswith(_MAGIC):
-                    raise CacheMiss("header")
-                length = struct.unpack("<I", initial[-4:])[0]
-                if not 0 < length <= _MAX_HEADER:
-                    raise CacheMiss("header")
-                raw = read_content(length)
-                if len(raw) != length:
-                    raise CacheMiss("header")
-                try:
-                    header = json.loads(raw.decode("ascii"), object_pairs_hook=_unique)
-                except (UnicodeError, ValueError, RecursionError):
-                    raise CacheMiss("header") from None
-                if (type(header) is not dict or set(header) != {"schema", "binding", "dimension", "dtype",
-                        "count", "payload_sha256", "vectors_sha256", "record_set_sha256"} or _canonical(header) != raw
-                        or header["schema"] != "wd.mind-vector-cache.v1" or header["dimension"] != 384
-                        or type(header["dimension"]) is not int or header["dtype"] != "f32le"
-                        or type(header["count"]) is not int or not 0 <= header["count"] <= _MAX_ROWS
-                        or any(type(header[key]) is not str or not _HEX.fullmatch(header[key])
-                               for key in ("payload_sha256", "vectors_sha256", "record_set_sha256"))):
-                    raise CacheMiss("header")
-                try:
-                    stored = _binding(header["binding"])
-                except CacheRefused:
-                    raise CacheMiss("header") from None
-                # Check the actual opened file before allocating or reading
-                # rows.  A failed stat remains a hard refusal, not a miss.
-                expected_size = len(_MAGIC) + 4 + length + header["count"] * _ROW_SIZE
-                if os.fstat(source.fileno()).st_size != expected_size:
-                    raise CacheMiss("truncated")
+                header, legacy = _read_header(source)
+                stored = header["binding"]
                 for key in _FIELDS - {"prefix_offset", "prefix_sha256", "projection_sha256"}:
                     if stored[key] != expected[key]:
                         raise CacheMiss("binding_changed")
@@ -485,27 +601,38 @@ def load_cache(path, expected_binding, verify_prefix):
                                  or stored["projection_sha256"] != expected["projection_sha256"]))
                         or verify_prefix(stored["prefix_offset"], stored["prefix_sha256"]) is not True):
                     raise CacheMiss("prefix_changed")
-                rows, payload_hash, vector_hash, record_set = [], hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
-                for _ in range(header["count"]):
-                    block = read_content(_ROW_SIZE)
-                    if len(block) != _ROW_SIZE:
-                        raise CacheMiss("truncated")
-                    payload_hash.update(block)
-                    vector_hash.update(block[64:])
-                    record_set.update(block[:32])
-                    rows.append((block[:32].hex(), block[32:64].hex(), block[64:]))
-                if (read_content(1) or payload_hash.hexdigest() != header["payload_sha256"]
-                        or vector_hash.hexdigest() != header["vectors_sha256"]
-                        or record_set.hexdigest() != header["record_set_sha256"]):
-                    raise CacheMiss("payload")
+                if admit_rows is not None and admit_rows(header["count"]) is not True:
+                    raise CacheAdmissionRefused("row_admission")
+                if legacy:
+                    rows, failed_keys, damaged, error = _read_v1(source, header), (), 0, None
+                else:
+                    rows, failed_keys, damaged, error = _read_v2(source, header)
+                if source.read(1):
+                    raise CacheMiss("truncated")
                 if verify_prefix(stored["prefix_offset"], stored["prefix_sha256"]) is not True:
                     raise CacheMiss("prefix_changed")
-                try:
-                    checked_rows = _rows(tuple(rows))
-                except CacheRefused as exc:
-                    raise CacheMiss(str(exc)) from None
-                return CacheResult(MappingProxyType(stored), checked_rows, record_set.hexdigest())
+                if repair:
+                    if damaged * 20 > header["count"]:
+                        raise WidespreadDamage(damaged, header["count"])
+                    return RepairResult(MappingProxyType(stored), rows, header["record_set_sha256"], failed_keys)
+                if damaged:
+                    raise CacheMiss(error)
+                return CacheResult(MappingProxyType(stored), rows, header["record_set_sha256"])
     except CacheRefused:
         raise
     except Exception:
+        # Access, device, and verifier errors must never trigger a cache rebuild.
         raise CacheRefused("read") from None
+
+
+def load_cache(path, expected_binding, verify_prefix):
+    """Return a complete verified cache. Refuse the entire cache on any damage."""
+    return _load_cache(path, expected_binding, verify_prefix, repair=False)
+
+
+def load_cache_for_repair(path, expected_binding, verify_prefix, *, admit_rows=None):
+    """Read reusable rows and failed keys for an owner that will rebind both to the screened source.
+
+    If supplied, admit_rows(count) must return True before any manifest or row allocation.
+    """
+    return _load_cache(path, expected_binding, verify_prefix, repair=True, admit_rows=admit_rows)

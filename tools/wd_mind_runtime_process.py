@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import types
+import unicodedata
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_CODE = 2 * 1024 * 1024
@@ -156,12 +157,37 @@ def _local_candidate_encode(value):
     return raw
 
 
+# Train 4 item C10: one free-text question beside the fixed startup question.
+FREE_TEXT_QUERY_ID = 'free_text_v1'
+FREE_TEXT_MAX_CHARS = 512
+# The JSON frame is ASCII-escaped (a supplementary character takes 12 bytes) and
+# capped at _LOCAL_CANDIDATE_MAX_BYTES, so the escaped question is bounded too.
+FREE_TEXT_MAX_ESCAPED_BYTES = 2048
+
+
+def free_text_question_ok(value):
+    """True only for an allowed free-text question. Never raises and never echoes the text."""
+    try:
+        return (type(value) is str and 1 <= len(value) <= FREE_TEXT_MAX_CHARS and bool(value.strip())
+                and value.isprintable() and unicodedata.normalize('NFC', value) == value
+                and len(json.dumps(value, ensure_ascii=True)) - 2 <= FREE_TEXT_MAX_ESCAPED_BYTES)
+    except Exception:
+        return False
+
+
 def _local_candidate_request(value):
     keys = {'schema', 'query_id', 'nonce', 'lane', 'scope'}
-    if (type(value) is not dict or set(value) != keys or any(type(value[key]) is not str for key in keys)
+    if type(value) is not dict:
+        raise ValueError('request')
+    free = value.get('query_id') == FREE_TEXT_QUERY_ID
+    if free:
+        keys = keys | {'query'}
+    if (set(value) != keys or any(type(value[key]) is not str for key in keys)
             or value['schema'] not in ('wd.mind-pipe-request.v1', 'wd.mind-pipe-request.v2')
-            or value['query_id'] != 'startup_work_overview' or not _SHA256.fullmatch(value['nonce'])
-            or value['lane'] not in _LOCAL_CANDIDATE_LANES or value['scope'] not in ('own', 'shared')):
+            or value['query_id'] not in ('startup_work_overview', FREE_TEXT_QUERY_ID)
+            or not _SHA256.fullmatch(value['nonce'])
+            or value['lane'] not in _LOCAL_CANDIDATE_LANES or value['scope'] not in ('own', 'shared')
+            or (free and not free_text_question_ok(value['query']))):
         raise ValueError('request')
     return dict(value)
 

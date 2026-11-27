@@ -363,8 +363,14 @@ BOUNDARY_FIELDS = ["lane", "is_supervisor", "observed_at", "current_session_id",
                    "previous_turn_blocker", "open_claims", "unresolved_requests", "session_lineage"]
 
 
+def _hostile_id(value):
+    # repr(object()) carries a memory address, so ids differ between processes
+    # and a parallel run (pytest-xdist) refuses the collection.
+    return "object()" if type(value) is object else repr(value)
+
+
 @pytest.mark.parametrize("field", BOUNDARY_FIELDS)
-@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+@pytest.mark.parametrize("value", HOSTILE, ids=_hostile_id)
 def test_hostile_boundary_fields_never_raise_and_never_proceed_unsafely(field, value):
     old = {"request_id": "r", "bound_session_id": "sess-old"}
     measured = state(unresolved_requests=[old], session_lineage=LINEAGE)
@@ -381,20 +387,20 @@ def test_a_valid_state_with_lineage_is_the_success_twin():
     assert check_safe_boundary(measured, lane="claude-rco-1", now=NOW)["verdict"] == PROCEED
 
 
-@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+@pytest.mark.parametrize("value", HOSTILE, ids=_hostile_id)
 def test_hostile_request_items_block(value):
     result = check_safe_boundary(state(unresolved_requests=[value], session_lineage=LINEAGE),
                                  lane="claude-rco-1", now=NOW)
     assert result["verdict"] == ABORT
 
 
-@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+@pytest.mark.parametrize("value", HOSTILE, ids=_hostile_id)
 def test_hostile_state_and_lane_arguments_never_raise(value):
     assert check_safe_boundary(value, lane="claude-rco-1", now=NOW)["verdict"] == ABORT
     assert check_safe_boundary(state(), lane=value, now=NOW)["verdict"] == ABORT
 
 
-@pytest.mark.parametrize("value", [-1, 1.5, None, True, "60"], ids=repr)
+@pytest.mark.parametrize("value", [-1, 1.5, None, True, "60"], ids=_hostile_id)
 def test_hostile_max_age_fails_closed(value):
     assert check_safe_boundary(state(), lane="claude-rco-1", now=NOW, max_age_seconds=value)["verdict"] == ABORT
 
@@ -408,14 +414,14 @@ REQUEST = {"lane": "claude-rco-1", "current_profile": "claude-sonnet-5-xhigh",
 
 
 @pytest.mark.parametrize("field", ["lane", "current_profile", "target_profile"])
-@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+@pytest.mark.parametrize("value", HOSTILE, ids=_hostile_id)
 def test_hostile_request_fields_park_and_never_raise(field, value):
     req = dict(REQUEST)
     req[field] = value
     assert check_request(CATALOG, req, [], now=NOW)["verdict"] != PROCEED
 
 
-@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+@pytest.mark.parametrize("value", HOSTILE, ids=_hostile_id)
 def test_hostile_requests_and_histories_never_raise(value):
     assert check_request(CATALOG, value, [], now=NOW)["verdict"] == PARK
     verdict = check_request(CATALOG, dict(REQUEST), value, now=NOW)["verdict"]
@@ -426,7 +432,7 @@ def test_hostile_requests_and_histories_never_raise(value):
 # ---------------------------------------------------------------- rco-2 N4: hostile planner inputs
 
 @pytest.mark.parametrize("field", ["lane", "binding", "admission", "quota_states", "history"])
-@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+@pytest.mark.parametrize("value", HOSTILE, ids=_hostile_id)
 def test_hostile_planner_arguments_never_raise_and_never_propose(field, value):
     args = dict(binding=binding(lane="claude-rco-1"), admission="ESCALATE", quota_states=CLAUDE_OK, history=[],
                 now=NOW)
@@ -443,7 +449,7 @@ def test_hostile_planner_arguments_never_raise_and_never_propose(field, value):
 
 
 @pytest.mark.parametrize("field", ["session_identity", "observed_model_raw", "observed_effort", "lane"])
-@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+@pytest.mark.parametrize("value", HOSTILE, ids=_hostile_id)
 def test_hostile_binding_fields_park(field, value):
     hostile = binding(lane="claude-rco-1")
     hostile[field] = value

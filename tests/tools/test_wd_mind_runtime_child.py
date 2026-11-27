@@ -55,7 +55,7 @@ def test_parent_result_accepts_historical_event_and_reports_age():
     ('2026-01-01T00:00:00Z', -1, 'UNKNOWN'),
     ('2026-01-01T00:00:00Z', True, 'UNKNOWN'),
     ('2026-01-01T00:00:00Z', 1, 'FRESH'),
-])
+], ids=['future_time', 'naive_time', 'negative_age', 'bool_age', 'valid_fresh'])  # stable ids across processes
 def test_parent_result_refuses_invalid_time_age_or_status(timestamp, age, freshness):
     with pytest.raises(ValueError):
         _validate_parent_result(_verified_parent_result(timestamp=timestamp, age=age, freshness=freshness))

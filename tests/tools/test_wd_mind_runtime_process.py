@@ -1226,8 +1226,8 @@ class _FakeConnection:
 def _query_with_client(monkeypatch, client):
     import multiprocessing.connection as connection
     monkeypatch.setattr(connection, 'Client', client)
-    name = preflight.local_candidate_pipe_name(manifest_sha256=_hash(os.urandom(32)))
-    query = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=_candidate_request())
+    # Exercise the client with a fake transport on every platform.
+    query = preflight._LocalCandidateQuery('synthetic', preflight._local_candidate_request(_candidate_request()))
     query.start()
     return query
 

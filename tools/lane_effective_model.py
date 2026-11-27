@@ -96,6 +96,13 @@ CLAUDE_ALIASES = frozenset({"opus", "sonnet", "haiku", "fable", "default", "opus
 KNOWN_MODEL_SUFFIXES = frozenset({"[1m]"})
 _SUFFIX = re.compile(r"\[[^\]]*\]$")
 EXIT_ALLOWED, EXIT_ERROR, EXIT_ATTENTION = 0, 2, 3
+# Sources that are the operator's own deliberate choice (his user-level CLI config),
+# as opposed to a launcher pin, a repository file, managed settings, an environment
+# variable a launcher may set, or a model restored from a transcript.
+OPERATOR_MODEL_SOURCES = frozenset({"user_config", "user"})
+OPERATOR_EFFORT_SOURCES = frozenset({"user_config", "user", "user:modelSettings", "ultracode:user"})
+# On a reviewer lane, an operator-selected Claude model must be of this family.
+REVIEWER_MODEL_FAMILY = "claude-opus-"
 DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "configs" / "lane_profile_catalog.json"
 # Documented Windows location of Claude Code managed settings.
 DEFAULT_CLAUDE_MANAGED = Path(r"C:\Program Files\ClaudeCode\managed-settings.json")
@@ -717,6 +724,25 @@ def classify(catalog: dict, lane: str, resolved: dict) -> dict:
                     "profile": profile_id}
     elsewhere = [pid for pid, p in profiles.items()
                  if (p["provider"], p["model"], p["effort"]) == (provider, resolved["model"], resolved["effort"])]
+    if (resolved.get("model_source") in OPERATOR_MODEL_SOURCES
+            and resolved.get("effort_source") in OPERATOR_EFFORT_SOURCES):
+        # Operator 2026-11-27: every current and future Codex and Claude Code model and
+        # effort may be used, never as a fixed default. Only his own user-level config
+        # counts; a launcher argv, a project file, managed settings, an environment
+        # variable or a resumed transcript does not. The lane floor's effort still holds.
+        efforts = catalog["providers"][provider]["efforts"]
+        floor_effort = profiles[allowed[spec["floor"]]]["effort"]
+        if (spec.get("reviewer") is True and provider == "claude"
+                and not str(resolved["model"]).startswith(REVIEWER_MODEL_FAMILY)):
+            # Class a and gate reviews keep the strongest Claude family (swarm proposal
+            # 2026-11-27); a reversible default the operator may lift.
+            return {"verdict": "below_floor", "reasons": ["operator_selected_model_below_reviewer_family"],
+                    "profile": None}
+        if resolved["effort"] in efforts and efforts.index(resolved["effort"]) >= efforts.index(floor_effort):
+            return {"verdict": "allowed", "reasons": ["operator_selected"], "profile": None}
+        if resolved["effort"] in efforts:
+            return {"verdict": "below_floor", "reasons": [f"operator_selected_effort_below_{floor_effort}"],
+                    "profile": None}
     return {"verdict": "not_in_lane_allowlist",
             "reasons": ["in_catalog_for_other_lanes" if elsewhere else "not_in_catalog"], "profile": None}
 

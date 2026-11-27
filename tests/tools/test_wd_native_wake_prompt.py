@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -391,3 +392,135 @@ $request=& {q(bin_dir / 'Write-AgentEvent.ps1')} -Agent operator -Type wake_requ
     assert len(notices) == (1 if session == "real-lane-session" else 0)
     if notices:
         assert notices[0]["payload"]["reason"] == "native_wake_prompt_degraded"
+
+
+TASK_ID = "fable-5/train-fixture"
+PROJECTION_SCHEMA = "wd.tools-mind-projection.v1"
+PROJECTION_READER = "Invoke-WdMindStartupRead.ps1"
+STATUS_FIXTURE = '{"schema":"wd.mind-direct-status.v1","authority":"none","facts":[]}'
+
+
+def projection_fixture(tmp_path: Path) -> tuple[Path, str]:
+    bundle, _ = bundle_fixture(tmp_path)
+    reader = bundle / PROJECTION_READER
+    view_hash = hashlib.sha256(STATUS_FIXTURE.encode()).hexdigest()
+    reader.write_text(
+        f"""function Invoke-WdMindStartupRead {{
+    param([string]$BundleRoot,[string]$ExpectedManifestHash,[string]$Lane,[string]$Worktree)
+    if ($PSBoundParameters.ContainsKey('Worktree') -or $Lane -cne 'codex-tools-1') {{
+        throw 'invalid fixture invocation'
+    }}
+    if ($BundleRoot -cne '{str(bundle).replace(chr(39), chr(39) * 2)}' -or
+        $ExpectedManifestHash -cne $env:WD_REBOOT_EXPECTED_MANIFEST_HASH) {{
+        throw 'invalid fixture binding'
+    }}
+    [pscustomobject]@{{
+        outcome=$env:WD_C13_FIXTURE_READER_OUTCOME; view_json='{STATUS_FIXTURE}'; view_sha256='{view_hash}'
+        private_path='PRIVATE_FIXTURE_OMIT'
+    }}
+}}
+""", encoding="utf-8",
+    )
+    manifest = bundle / "deployment-manifest.json"
+    pinned = json.loads(manifest.read_text(encoding="utf-8"))
+    pinned["files"][reader.name] = digest(reader)
+    manifest.write_text(json.dumps(pinned), encoding="utf-8")
+    return bundle, digest(manifest)
+
+
+def run_projection(ps, bundle, anchor, *, task=TASK_ID, previous="", agent="codex-tools-1",
+                   session_agent="codex-tools-1", session_anchor=None, reader_outcome="success"):
+    env = os.environ.copy()
+    env.update(
+        AGENT_BRIDGE_AGENT=session_agent,
+        AGENT_BRIDGE_SESSION_ID="synthetic-tools-session",
+        WD_REBOOT_EXPECTED_MANIFEST_HASH=session_anchor or anchor,
+        WD_C13_FIXTURE_READER_OUTCOME=reader_outcome,
+    )
+    args = [
+        ps, "-NoProfile", "-NonInteractive", "-File", str(HELPER),
+        "-Agent", agent, "-TaskProjection", "-TaskId", task,
+        "-BundleRoot", str(bundle), "-ExpectedManifestHash", anchor,
+    ]
+    if previous:
+        args.extend(["-PreviousProjectionKey", previous])
+    return subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=30)
+
+
+@pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
+def test_tools_projects_only_on_new_task_or_manifest(tmp_path, ps):
+    bundle, anchor = projection_fixture(tmp_path)
+    before = {p.name: (digest(p), p.stat().st_mtime_ns) for p in bundle.iterdir()}
+
+    first = run_projection(ps, bundle, anchor)
+    assert first.returncode == 0, first.stdout + first.stderr
+    first = json.loads(first.stdout)
+    key = f"{PROJECTION_SCHEMA}={anchor.lower()}:{TASK_ID}"
+    assert first == {
+        "schema": PROJECTION_SCHEMA,
+        "authority": "none",
+        "outcome": "success",
+        "checkpoint_evidence": key,
+        "view_sha256": hashlib.sha256(STATUS_FIXTURE.encode()).hexdigest(),
+        "view_json": STATUS_FIXTURE,
+    }
+
+    repeat = run_projection(ps, bundle, anchor, previous=key)
+    assert repeat.returncode == 0, repeat.stdout + repeat.stderr
+    assert json.loads(repeat.stdout) == first | {
+        "outcome": "unchanged", "checkpoint_evidence": None, "view_json": None, "view_sha256": None,
+    }
+
+    next_task = run_projection(ps, bundle, anchor, task="new-task", previous=key)
+    assert next_task.returncode == 0, next_task.stdout + next_task.stderr
+    assert json.loads(next_task.stdout)["outcome"] == "success"
+    assert before == {p.name: (digest(p), p.stat().st_mtime_ns) for p in bundle.iterdir()}
+
+    manifest = bundle / "deployment-manifest.json"
+    pinned = json.loads(manifest.read_text(encoding="utf-8"))
+    pinned["generation_marker"] = 2
+    manifest.write_text(json.dumps(pinned), encoding="utf-8")
+    rotated = run_projection(ps, bundle, digest(manifest), previous=key)
+    assert rotated.returncode == 0, rotated.stdout + rotated.stderr
+    assert json.loads(rotated.stdout)["outcome"] == "success"
+    assert json.loads(rotated.stdout)["checkpoint_evidence"] != key
+
+
+@pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("damage", ["refused_read", "unknown_read", "reader_pin"])
+def test_tools_retries_optional_read_after_unavailability(tmp_path, ps, damage):
+    outcome = {"refused_read": "refused", "unknown_read": "unknown"}.get(damage, "success")
+    bundle, anchor = projection_fixture(tmp_path)
+    previous = f"{PROJECTION_SCHEMA}={anchor.lower()}:previous-task"
+    reader = bundle / PROJECTION_READER
+    if damage == "reader_pin":
+        pinned_bytes = reader.read_bytes()
+        reader.write_text("throw 'PRIVATE_FIXTURE_OMIT'", encoding="utf-8")
+    result = run_projection(ps, bundle, anchor, previous=previous, reader_outcome=outcome)
+    assert result.returncode == 0, result.stdout + result.stderr
+    data = json.loads(result.stdout)
+    assert data["outcome"] == "unavailable" and "PRIVATE_FIXTURE_OMIT" not in result.stdout + result.stderr
+    assert data["view_json"] is None and data["view_sha256"] is None
+    assert data["checkpoint_evidence"] is None
+
+    if damage == "reader_pin":
+        reader.write_bytes(pinned_bytes)
+    retry = run_projection(ps, bundle, anchor, previous=previous)
+    assert retry.returncode == 0, retry.stdout + retry.stderr
+    recovered = json.loads(retry.stdout)
+    assert recovered["outcome"] == "success"
+    assert recovered["checkpoint_evidence"] == f"{PROJECTION_SCHEMA}={anchor.lower()}:{TASK_ID}"
+
+
+@pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("invalid", [
+    {"agent": "codex-lead-1", "session_agent": "codex-lead-1"},
+    {"session_agent": "codex-lead-1"},
+    {"session_anchor": "0" * 64},
+    {"task": "bad task"},
+])
+def test_projection_refuses_unbound_invocations(tmp_path, ps, invalid):
+    bundle, anchor = projection_fixture(tmp_path)
+    result = run_projection(ps, bundle, anchor, **invalid)
+    assert result.returncode != 0
+    assert not result.stdout.strip()

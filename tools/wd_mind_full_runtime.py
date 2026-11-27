@@ -4009,11 +4009,13 @@ class _SingleManifestOwner:
 
     def _candidate_request(self, request, *, located):
         expected = 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1'
-        if (type(request) is not dict or set(request) != {'schema','query_id','nonce','lane','scope'}
+        if (type(request) is not dict or set(request) != _pipe_request_keys(request)
                 or any(type(value) is not str for value in request.values())
-                or request['schema'] != expected or request['query_id'] != 'startup_work_overview'
+                or request['schema'] != expected
+                or request['query_id'] not in ('startup_work_overview', _FREE_TEXT_QUERY_ID)
                 or not reader._hex(request['nonce']) or request['lane'] not in self._lanes
-                or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')):
+                or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')
+                or (request['query_id'] == _FREE_TEXT_QUERY_ID and not _free_text_question_ok(request['query']))):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         # A disabled budget gate refuses both candidate protocols before I/O.
         if not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
@@ -4120,7 +4122,12 @@ class _SingleManifestOwner:
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
             if self._launch_thread is not None and self._launch_thread.is_alive():
                 self._state = 'HOLD'
-                return self._status()
+                if not self._launch_done.is_set() or self._launch_thread is threading.current_thread():
+                    return self._status()
+                # The launch result is final, but the thread may still be returning.
+                self._launch_thread.join(timeout=1.0)
+                if self._launch_thread.is_alive():
+                    return self._status()
             if self._rotation_enabled and not self._rotation_is_bound():
                 self._state = 'HOLD'
                 return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
@@ -4230,6 +4237,31 @@ def create_flat_request_handler(*, enabled=False, binding=None, lane=None, worke
 
 _STARTUP_PIPE_QUERY = 'current task active work next step recent status'
 
+# Train 4 item C10. The same bounds as tools/wd_mind_runtime_process.py
+# free_text_question_ok, checked again here because the owner trusts no client.
+_FREE_TEXT_QUERY_ID = 'free_text_v1'
+
+
+def _pipe_request_keys(request):
+    keys = {'schema', 'query_id', 'nonce', 'lane', 'scope'}
+    return keys | {'query'} if request.get('query_id') == _FREE_TEXT_QUERY_ID else keys
+
+
+def _free_text_question_ok(value):
+    """True only for an allowed free-text question; never raises or echoes the text.
+
+    Ranking keys on the startup text, so that exact sentence is refused here, in
+    every first validation and before any owner state (Lead on PR 2201): a refusal
+    inside the owner's fault region would turn READY into HOLD.
+    """
+    try:
+        return (type(value) is str and 1 <= len(value) <= 512 and bool(value.strip()) and value.isprintable()
+                and reader.unicodedata.normalize('NFC', value) == value
+                and len(json.dumps(value, ensure_ascii=True)) - 2 <= 2048
+                and value != _STARTUP_PIPE_QUERY)
+    except Exception:
+        return False
+
 # Relevance band for the fixed startup question only. On the real log the e5
 # cosine of every eligible row is far above the 0.55 floor and tightly packed
 # (median about 0.81, best about 0.88), so cosine order alone returned rows 18
@@ -4330,16 +4362,18 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_l
                 or (_include_locations and type(handler._retained) is not _RetainedFlatQueryState)):
             raise ValueError('input')
         frozen = dict(request)
-        if (set(frozen) != {'schema', 'query_id', 'nonce', 'lane', 'scope'}
+        free = frozen.get('query_id') == _FREE_TEXT_QUERY_ID
+        if (set(frozen) != _pipe_request_keys(frozen)
                 or any(type(frozen[key]) is not str for key in frozen)
                 or frozen['schema'] != 'wd.mind-pipe-request.v1'
-                or frozen['query_id'] != 'startup_work_overview'
+                or frozen['query_id'] not in ('startup_work_overview', _FREE_TEXT_QUERY_ID)
                 or not reader._hex(frozen['nonce']) or frozen['lane'] not in reader._LANES
-                or frozen['scope'] not in ('own', 'shared')):
+                or frozen['scope'] not in ('own', 'shared')
+                or (free and not _free_text_question_ok(frozen['query']))):
             raise ValueError('request')
         reply = handler.lane_view(frozen['lane']).handle({
             'schema': 'wd.mind-flat-owner-request.v1', 'lane': frozen['lane'],
-            'scope': frozen['scope'], 'query': _STARTUP_PIPE_QUERY})
+            'scope': frozen['scope'], 'query': frozen['query'] if free else _STARTUP_PIPE_QUERY})
         if (type(reply) is not dict
                 or set(reply) != {'schema', 'lane', 'scope', 'authority', 'expires_utc',
                                   'expiry_scope', 'snapshot_freshness', 'result'}

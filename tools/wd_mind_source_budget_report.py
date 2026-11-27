@@ -17,6 +17,13 @@ when they differ. ``--limit`` overrides both.
 It reads the log as bytes and the timestamps of its rows, prints no event
 text and writes nothing.
 
+The explicit operator status view adds the state and observation time of a
+selected canary receipt for the active deployment. It outputs only budget
+aggregates, uses the source named by the pinned fleet, and is read-only.
+VERIFIED_NONEMPTY describes the prior canary, with no live owner guarantee.
+
+    python -I -B -X utf8 tools/wd_mind_source_budget_report.py --status [--owner-receipt <canary.json>] [--days 14]
+
     python -I -B -X utf8 tools/wd_mind_source_budget_report.py --log <events.jsonl> [--days 14 --days 30] [--json]
 """
 import argparse
@@ -24,6 +31,7 @@ import ast
 import datetime as dt
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -32,10 +40,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import wd_mind_content_query_readonly as reader  # noqa: E402
+from tools.wd_mind_absent_generation_prefix_readonly import (  # noqa: E402
+    MAX_CONTROL_BYTES, _deployment_source, _plain, _read_pinned, _unique_object,
+)
 
 STATE_POINTER = Path(r"C:\Python\WD_REBOOT_STATE_CURRENT.json")
 READER_IN_BUNDLE = Path("tools-bootstrap") / "tools" / "wd_mind_content_query_readonly.py"
 _LIMIT_NAMES = ("_COMPLETE_SOURCE_PREFIX_BYTES", "_EAGER_MEMORY_BUDGET_BYTES", "_EAGER_MEMORY_BYTES_PER_SOURCE_BYTE")
+_STATUS_CONTROL_BYTES = 64 * 1024
+_STATUS_READ_ERRORS = (OSError, ValueError, TypeError, KeyError, AttributeError, SyntaxError, RecursionError, ArithmeticError)
+_OWNER_RECEIPT_STATES = (
+    'PRECHECK_FAILED', 'WRAPPER_FAILED', 'REFUSED', 'INVALID_RESULT', 'EMPTY_SUCCESS', 'VERIFIED_NONEMPTY',
+)
 
 
 def _int_expr(node):
@@ -95,8 +111,13 @@ def _window(path, size, limit, days, now):
         raise ValueError('days')
     start = now - dt.timedelta(days=days)
     window_bytes = 0
+    remaining = size
     with path.open('rb') as handle:
-        for line in handle:
+        while remaining:
+            line = handle.readline(remaining)
+            if not line:
+                raise ValueError('source_truncated')
+            remaining -= len(line)
             stamp = _stamp(line)
             if stamp is not None and start <= stamp <= now:
                 window_bytes += len(line)
@@ -142,18 +163,141 @@ def measure(log_path, *, days=(14, 30), now=None, limit=None, pointer=STATE_POIN
             'windows': windows}
 
 
+def _read_status_control(path):
+    _plain(path, directory=False)
+    with path.open('rb') as handle:
+        raw = handle.read(_STATUS_CONTROL_BYTES + 1)
+    if not 0 < len(raw) <= _STATUS_CONTROL_BYTES:
+        raise ValueError('control_size')
+    return raw
+
+
+def _control_object(raw):
+    value = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_object)
+    if type(value) is not dict:
+        raise ValueError('control_object')
+    return value
+
+
+def _utc_stamp(value):
+    if type(value) is not str:
+        raise ValueError('receipt_time')
+    if value.endswith('Z'):
+        value = value[:-1] + '+00:00'
+    stamp = dt.datetime.fromisoformat(value)
+    if stamp.utcoffset() != dt.timedelta(0):
+        raise ValueError('receipt_time')
+    return stamp
+
+
+def _installed_status_binding(raw):
+    state = _control_object(raw)
+    bundle = Path(state['active_bundle'])
+    commit = state['source_commit']
+    manifest_pin = state['manifest_sha256']
+    if (type(state.get('schema_version')) is not int or state['schema_version'] != 1
+            or not re.fullmatch(r'[0-9a-f]{40}', commit) or bundle.name != commit
+            or state['final_commit'] != commit or state['final_manifest_sha256'] != manifest_pin):
+        raise ValueError('active_deployment')
+    manifest = _control_object(_read_pinned(bundle / 'deployment-manifest.json', manifest_pin, MAX_CONTROL_BYTES))
+    if manifest.get('source_commit') != commit:
+        raise ValueError('manifest_commit')
+    reader_pin = manifest['files'][READER_IN_BUNDLE.as_posix()]
+    installed_source = _read_pinned(bundle / READER_IN_BUNDLE, reader_pin, MAX_CONTROL_BYTES)
+    limit = limit_from_reader_source(installed_source.decode('utf-8'))
+    if limit <= 0:
+        raise ValueError('installed_limit')
+    return bundle, commit, manifest_pin.lower(), _utc_stamp(state['installed_at_utc']), limit
+
+
+def _owner_observation(path, commit, manifest_pin, installed_at, now):
+    value = _control_object(_read_status_control(Path(path)))
+    if value['source_commit'] != commit or value['manifest_sha256'].lower() != manifest_pin:
+        raise ValueError('receipt_binding')
+    state = value['status']
+    observed = _utc_stamp(value['observed_utc'])
+    if state not in _OWNER_RECEIPT_STATES or not installed_at <= observed <= now:
+        raise ValueError('receipt_observation')
+    if state in ('VERIFIED_NONEMPTY', 'EMPTY_SUCCESS'):
+        count = value['result_count']
+        native_exit = value['native_exit']
+        if (value['result_schema'] != 'wd.mind-flat-verified-session.v1'
+                or type(native_exit) is not int or native_exit != 0
+                or type(count) is not int or not 0 <= count <= 3
+                or (count > 0) != (state == 'VERIFIED_NONEMPTY')):
+            raise ValueError('receipt_result')
+    return {'state': state, 'observed_utc': observed.isoformat().replace('+00:00', 'Z')}
+
+
+def measure_status(*, owner_receipt=None, days=(14, 30), now=None, pointer=STATE_POINTER):
+    """Project the selected canary observation and the active source's budget as aggregates."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if any(type(day) is not int or not 1 <= day <= 365 for day in days):
+        raise ValueError('days')
+    unknown_owner = {'state': 'UNKNOWN', 'observed_utc': None}
+    unknown_budget = {'used_percent': None, 'days_left': [{'days': day, 'days_left': None} for day in days]}
+    result = {'schema': 'wd.mind-operator-status.v1', 'authority': 'none',
+              'owner_ready_receipt': unknown_owner, 'source_budget': unknown_budget}
+    pointer = Path(pointer)
+    try:
+        raw = _read_status_control(pointer)
+        bundle, commit, manifest_pin, installed_at, limit = _installed_status_binding(raw)
+    except _STATUS_READ_ERRORS:
+        return result
+
+    if owner_receipt is not None:
+        try:
+            result['owner_ready_receipt'] = _owner_observation(owner_receipt, commit, manifest_pin, installed_at, now)
+        except _STATUS_READ_ERRORS:
+            pass
+
+    try:
+        source, _, _ = _deployment_source(str(bundle), manifest_pin)
+        before = source.stat()
+        windows = [_window(source, before.st_size, limit, day, now) for day in days]
+        after = source.stat()
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or after.st_size < before.st_size:
+            raise ValueError('source_changed')
+        result['source_budget'] = {
+            'used_percent': round(100 * before.st_size / limit, 1),
+            'days_left': [{'days': w['days'], 'days_left': w['days_left']} for w in windows],
+        }
+    except _STATUS_READ_ERRORS:
+        pass
+
+    try:
+        if _read_status_control(pointer) == raw:
+            return result
+    except _STATUS_READ_ERRORS:
+        pass
+    return {**result, 'owner_ready_receipt': unknown_owner, 'source_budget': unknown_budget}
+
+
 def _mib(value):
     return '%.1f MiB' % (value / 1024**2)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--log', required=True)
+    parser.add_argument('--log')
     parser.add_argument('--days', type=int, action='append')
     parser.add_argument('--limit', type=int)
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--status', action='store_true', help='print the operator status view as JSON')
+    parser.add_argument('--owner-receipt', help='manual canary JSON for the active deployment')
     args = parser.parse_args(argv)
-    report = measure(args.log, days=tuple(args.days or (14, 30)), limit=args.limit)
+    days = tuple(args.days or (14, 30))
+    if any(not 1 <= day <= 365 for day in days):
+        parser.error('--days must be between 1 and 365')
+    if args.status:
+        if args.log is not None or args.limit is not None:
+            parser.error('--status selects the active source and limit')
+        status = measure_status(owner_receipt=args.owner_receipt, days=days)
+        print(json.dumps(status, sort_keys=True))
+        return 0
+    if args.log is None or args.owner_receipt is not None:
+        parser.error('use --log for the budget report and --owner-receipt with --status')
+    report = measure(args.log, days=days, limit=args.limit)
     if args.json:
         print(json.dumps(report, sort_keys=True))
         return 0

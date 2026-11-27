@@ -312,7 +312,7 @@ def test_cli_exit_codes(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["classification"]["verdict"] == "allowed"
     luna = toml(tmp_path / "luna.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n')
     assert main(["--lane", "codex-lead-1", "--cli", "codex", "--codex-config", str(luna), *frozen]) == 3
-    assert json.loads(capsys.readouterr().out)["classification"]["verdict"] == "not_in_lane_allowlist"
+    assert json.loads(capsys.readouterr().out)["classification"]["verdict"] == "below_floor"
     assert main(["--lane", "codex-lead-1", "--cli", "codex", "--catalog", str(tmp_path / "none.json")]) == 2
 
 
@@ -980,7 +980,7 @@ def test_the_cli_reads_codex_home(tmp_path, capsys, monkeypatch):
     assert (code, out["model"]) == (0, "gpt-6-sol")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codexhome"))
     code, out = _cli(capsys, "--lane", "codex-lead-1", "--cli", "codex")
-    assert (code, out["model"], out["classification"]["verdict"]) == (3, "gpt-6-luna", "not_in_lane_allowlist")
+    assert (code, out["model"], out["classification"]["verdict"]) == (3, "gpt-6-luna", "below_floor")
 
 
 def test_the_cli_reads_claude_config_dir(tmp_path, capsys, monkeypatch):
@@ -997,7 +997,7 @@ def test_the_cli_reads_claude_config_dir(tmp_path, capsys, monkeypatch):
     assert (code, out["model"]) == (0, "claude-sonnet-5")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claudedir"))
     code, out = _cli(capsys, "--lane", "claude-rco-1", "--cli", "claude", "--claude-managed-settings", missing)
-    assert (code, out["model"], out["classification"]["verdict"]) == (3, "claude-haiku-4-5", "not_in_lane_allowlist")
+    assert (code, out["model"], out["classification"]["verdict"]) == (3, "claude-haiku-4-5", "below_floor")
     assert seen == [1, 1]                         # the registry reader is looked up at call time
 
 
@@ -1203,3 +1203,74 @@ def test_a_malformed_entry_for_another_model_is_harmless(tmp_path):
     js(c.worktree / ".claude" / "settings.json", {"effortLevel": "xhigh"})
     js(c.user, {"model": "claude-opus-5-5", "modelSettings": {"claude-sonnet-5": "low"}})
     assert c.resolve()["resolved"] is True
+
+
+# ---------------------------------------------------------------- operator-selected models (operator 2026-11-27)
+
+def sourced(provider, model, effort, model_source, effort_source):
+    return dict(resolved(provider, model, effort), model_source=model_source, effort_source=effort_source)
+
+
+@pytest.mark.parametrize("lane,res,verdict,reason", [
+    # His own user-level config: any model of the lane's provider, at or above the floor effort.
+    ("codex-lead-1", sourced("codex", "gpt-7-future", "high", "user_config", "user_config"), "allowed", "operator_selected"),
+    ("codex-lead-1", sourced("codex", "gpt-6-luna", "medium", "user_config", "user_config"), "allowed", "operator_selected"),
+    ("codex-lead-1", sourced("codex", "gpt-5.6-terra", "medium", "user_config", "user_config"), "allowed", "operator_selected"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "user", "user"), "allowed", "operator_selected"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "user", "user:modelSettings"), "allowed", "operator_selected"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "user", "ultracode:user"), "allowed", "operator_selected"),
+    # The floor's effort still holds for his choice.
+    ("codex-lead-1", sourced("codex", "gpt-6-luna", "low", "user_config", "user_config"), "below_floor",
+     "operator_selected_effort_below_medium"),
+    # (the frozen catalog's reviewer floor profile is at xhigh)
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "high", "user", "user:modelSettings"), "below_floor",
+     "operator_selected_effort_below_xhigh"),
+    ("fable-5", sourced("claude", "claude-haiku-4-5", "low", "user", "user"), "below_floor",
+     "operator_selected_effort_below_medium"),
+    # A reviewer lane keeps the strongest Claude family for his choice too (reversible default).
+    ("claude-rco-1", sourced("claude", "claude-haiku-4-5", "xhigh", "user", "user"), "below_floor",
+     "operator_selected_model_below_reviewer_family"),
+    ("claude-rco-2", sourced("claude", "claude-sonnet-6", "max", "user", "user"), "below_floor",
+     "operator_selected_model_below_reviewer_family"),
+    ("fable-5", sourced("claude", "claude-sonnet-6", "xhigh", "user", "user"), "allowed", "operator_selected"),
+    # Not his own config: a launcher pin, a repository file, the environment, a restored transcript, a default.
+    ("codex-lead-1", sourced("codex", "gpt-6-luna", "xhigh", "argv", "argv"), "not_in_lane_allowlist", "not_in_catalog"),
+    ("codex-lead-1", sourced("codex", "gpt-6-luna", "xhigh", "user_config", "argv"), "not_in_lane_allowlist", "not_in_catalog"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "project", "user"), "not_in_lane_allowlist", "not_in_catalog"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "project_local", "project_local"),
+     "not_in_lane_allowlist", "not_in_catalog"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "cli_settings", "user"), "not_in_lane_allowlist", "not_in_catalog"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "env:ANTHROPIC_MODEL", "user"),
+     "not_in_lane_allowlist", "not_in_catalog"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "user", "env:CLAUDE_CODE_EFFORT_LEVEL"),
+     "not_in_lane_allowlist", "not_in_catalog"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "resume_transcript", "user"),
+     "not_in_lane_allowlist", "not_in_catalog"),
+    ("claude-rco-1", sourced("claude", "claude-opus-6", "xhigh", "managed", "managed"), "not_in_lane_allowlist", "not_in_catalog"),
+    # An effort outside the provider enum is never waved through.
+    ("codex-lead-1", sourced("codex", "gpt-7-future", "turbo", "user_config", "user_config"), "not_in_lane_allowlist",
+     "not_in_catalog"),
+    # Provider mismatch and lanes outside the catalog keep their verdicts.
+    ("codex-lead-1", sourced("claude", "claude-opus-6", "xhigh", "user", "user"), "provider_mismatch", "lane_provider_codex"),
+    ("grok-scout-1", sourced("codex", "gpt-7-future", "high", "user_config", "user_config"), "unknown", "lane_not_in_catalog"),
+])
+def test_operator_selected_models(lane, res, verdict, reason):
+    result = classify(CATALOG, lane, res)
+    assert (result["verdict"], result["reasons"][0]) == (verdict, reason)
+    if reason == "operator_selected":
+        assert result["profile"] is None                    # no catalog profile, so nothing becomes a default
+
+
+def test_an_unresolved_operator_config_stays_unknown():
+    res = dict(sourced("codex", "gpt-7-future", "high", "user_config", "user_config"), resolved=False,
+               issues=["model_reasoning_effort_not_a_string_in_user_config"])
+    assert classify(CATALOG, "codex-lead-1", res)["verdict"] == "unknown"
+
+
+def test_an_operator_selected_burst_profile_is_allowed_on_the_shipped_catalog():
+    # Tools on gpt-6.2-sol xhigh from his own config raised launch attention on 2026-11-26.
+    shipped, _ = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+    res = sourced("codex", "gpt-6.2-sol", "xhigh", "user_config", "user_config")
+    assert classify(shipped, "codex-tools-1", res)["reasons"] == ["operator_selected"]
+    assert classify(shipped, "codex-tools-1", dict(res, model_source="argv", effort_source="argv"))["verdict"] \
+        == "not_in_lane_allowlist"

@@ -388,9 +388,13 @@ class _OwnerMemoryBudgetRefused(FullRuntimeRefused):
     """A private candidate cannot fit within the owner's remaining commit budget."""
 
 
+class _OwnerMeterUnavailable(FullRuntimeRefused):
+    """Windows could not supply the commit accounting needed for admission."""
+
+
 # Leave room for unmetered allocations between samples. Source expansion is
 # an estimate; neither this margin nor an admission sample is a reservation.
-_OWNER_COMMIT_LIMIT = 10 * 1024**3
+_OWNER_COMMIT_LIMIT = reader._EAGER_MEMORY_BUDGET_BYTES
 _OWNER_COMMIT_RESERVE = 64 * 1024**2
 
 
@@ -423,29 +427,38 @@ def _owner_memory_headroom():
     if not kernel.IsProcessInJob(process, None, ctypes.byref(in_job)):
         raise OSError('job_membership_unavailable')
     limits = None
+    job_charge = 0
     if in_job.value:
         limits = _ExtendedLimit()
         query = kernel.QueryInformationJobObject
         query.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p)
         if not query(None, 9, ctypes.byref(limits), ctypes.sizeof(limits), None):
             raise OSError('job_limits_unavailable')
-    return _remaining_owner_commit(counters.private_usage, limits)
+        if limits.basic.flags & 0x200:
+            # JobObjectMemoryUsageInformation holds two ULONG64 byte counts:
+            # current charge across the job, followed by its lifetime peak.
+            usage = (ctypes.c_uint64 * 2)()
+            if not query(None, 28, ctypes.byref(usage), ctypes.sizeof(usage), None) or not usage[0]:
+                raise OSError('job_charge_unavailable')
+            job_charge = usage[0]
+    return _remaining_owner_commit(counters.private_usage, limits, job_charge)
 
 
-def _remaining_owner_commit(private_usage, limits):
+def _remaining_owner_commit(private_usage, limits, job_charge):
     available = _OWNER_COMMIT_LIMIT - private_usage
     if limits is not None and limits.basic.flags & 0x100:  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
         available = min(available, limits.process_memory - private_usage)
     if limits is not None and limits.basic.flags & 0x200:  # JOB_OBJECT_LIMIT_JOB_MEMORY
-        # Peak job charge conservatively includes the other processes in the job.
-        available = min(available, limits.job_memory - max(limits.peak_job_memory, private_usage))
+        available = min(available, limits.job_memory - max(job_charge, private_usage))
     return max(0, available - _OWNER_COMMIT_RESERVE)
 
 
-def _owner_source_capacity():
+def _owner_source_capacity(*, diagnose=False):
     try:
         return _owner_memory_headroom() // reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE
     except OSError:
+        if diagnose:
+            raise _OwnerMeterUnavailable('OWNER_METER_UNAVAILABLE') from None
         return 0
 
 
@@ -1092,7 +1105,7 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
     of approval or of a trusted parent channel.
     """
     result = None
-    over_budget = memory_limited = False
+    over_budget = memory_limited = meter_unavailable = False
     cancelled_type = cancellation_group = None
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
@@ -1114,7 +1127,11 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         bundle = Path(bundle_root)
         controls = _bundle_inputs(bundle, expected_manifest_sha256)
         source_limit = reader._max_eager_source_bytes()
-        memory_limit = _owner_source_capacity()
+        try:
+            memory_limit = _owner_source_capacity(diagnose=True)
+        except _OwnerMeterUnavailable:
+            meter_unavailable = True
+            raise
         memory_limited = memory_limit < source_limit
         if memory_limit <= 0:
             over_budget = True
@@ -1189,6 +1206,8 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         raise cancelled_type() from None
     if cancellation_group is not None:
         raise cancellation_group from None
+    if meter_unavailable:
+        raise _OwnerMeterUnavailable('OWNER_METER_UNAVAILABLE') from None
     if over_budget:
         if memory_limited:
             raise _OwnerMemoryBudgetRefused('OWNER_MEMORY_BUDGET') from None
@@ -2834,8 +2853,8 @@ def _stage_refresh_generation(owner):
     try:
         binding = assemble_full_runtime(enabled=True, bundle_root=bundle, expected_manifest_sha256=manifest,
             identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_pin)
-    except _OwnerMemoryBudgetRefused as exc:
-        if type(exc) is _OwnerMemoryBudgetRefused:
+    except (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable) as exc:
+        if type(exc) in (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable):
             return _REFRESH_MEMORY_BUDGET
         raise
     except _EagerSourceBudgetRefused as exc:

@@ -15,7 +15,7 @@
 
 ## Measured (dated)
 
-Each line names its date and its commit or round. Lines not rerun for this release keep their original date.
+Each line names its date and its commit or round. Lines not rerun for this release keep their original date. Workloads, proof hashes and reproduction commands: [`docs/benchmarks/release-claim-evidence.md`](docs/benchmarks/release-claim-evidence.md).
 
 **Rerun for v3.14.0** (2026-11-27, one Windows host, synthetic data):
 
@@ -26,7 +26,7 @@ Each line names its date and its commit or round. Lines not rerun for this relea
 
 - **10 000 descriptors**, local claim audit 2026-05-10: warm p99 0.05 ms, cold p99 28.7 ms after cache attach.
 - **50 000 descriptors** (stress), same audit: 2000/2000 hits, 0 fallback, 0 misses, warm p99 0.22 ms, cold p99 354.8 ms.
-- **1004 live agent clones** spawned in 120 s (~8.36/s, p50 88.8 ms, p99 1.43 s) and **81 live agent templates** thinking concurrently in 0.47 s with zero errors, same audit. This is object-runtime capacity; practical live-LLM concurrency is bounded by local model latency.
+- **1004 live agent clones** spawned in 120 s (~8.36/s, p50 88.8 ms, p99 1.43 s) and **81 live agent templates** thinking concurrently in 0.47 s with zero errors, same audit; the original runner, configuration and raw samples were not kept. This is object-runtime capacity; practical live-LLM concurrency is bounded by local model latency.
 - Provider jobs delta = 0 and builder jobs delta = 0 on every tested path, same audit.
 - **Mined solver dispatch** (Phase 18B/18C, 2026-05-05): 30 runtime gap signals → 14 candidates → 6 allowlisted solvers registered, 8 rejected; 18/18 dispatch cases pass across all 6 low-risk solver families.
 - **79× faster** 10 000-descriptor build (147.25 s → 1.86 s), R21.2 transaction batching, 2026-05-10.

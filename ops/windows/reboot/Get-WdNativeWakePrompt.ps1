@@ -124,10 +124,10 @@ function Read-NativeWakePinnedBytes {
 }
 
 if ($TaskProjection) {
-    # The key describes the last attempt. It never authorizes execution or carries prior view bytes.
+    # Only a successful read emits a key for deduplication.
     $key = 'wd.tools-mind-projection.v1=' + $manifestHash.ToLowerInvariant() + ':' + $TaskId
     $projection = [ordered]@{schema='wd.tools-mind-projection.v1'; authority='none';
-        outcome='unchanged'; checkpoint_evidence=$key; view_sha256=$null; view_json=$null}
+        outcome='unchanged'; checkpoint_evidence=$null; view_sha256=$null; view_json=$null}
     if ($PreviousProjectionKey -cne $key) {
         $projection.outcome = 'unavailable'
         try {
@@ -141,6 +141,7 @@ if ($TaskProjection) {
                 $viewHash = (Get-NativeWakeBytesHash -Bytes $viewBytes).ToLowerInvariant()
                 if ($viewBytes.Length -le 8192 -and $read.view_sha256 -ceq $viewHash) {
                     $projection.outcome = 'success'
+                    $projection.checkpoint_evidence = $key
                     $projection.view_json = $read.view_json
                     $projection.view_sha256 = $viewHash
                 }

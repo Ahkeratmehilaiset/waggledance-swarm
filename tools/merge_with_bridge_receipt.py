@@ -194,6 +194,8 @@ def merge_with_bridge_receipt(
 
     With ``grok_fallback`` (rule12 only) the fresh gate must reproduce the
     receipt's whole Grok evidence tuple, or the merge is refused before gh.
+    For a Rule 14a Mind-class merge the fresh gate must likewise reproduce the
+    receipt's lane evidence tuple exactly, or the merge is refused before gh.
     """
     if type(grok_fallback) is not bool:
         raise ValueError("grok_fallback must be a boolean")
@@ -434,6 +436,30 @@ def merge_with_bridge_receipt(
             },
         )
     receipt_gate_report = receipt_report.get("gate_report")
+    receipt_mind_evidence = (
+        receipt_gate_report.get("mind_class_lane_evidence")
+        if isinstance(receipt_gate_report, Mapping)
+        else None
+    )
+    if fresh_gate.get("mind_class_lane_evidence") != receipt_mind_evidence:
+        # Rule 14a: the receipt names one lane, two identities, two approval
+        # events and the path classes. A fresh gate that passes on anything
+        # else is another decision, so the merge is refused before GitHub and
+        # this receipt is not used. Both values are None for every other merge.
+        return _blocked(
+            decision="apply_gate_recheck_failed",
+            errors=[
+                "fresh gate Rule 14a Mind-class lane evidence differs from the receipt"
+            ],
+            stage="apply_recheck",
+            pr_number=pr_number,
+            extra={
+                "fresh_gate": fresh_gate,
+                "receipt_mind_class_lane_evidence": receipt_mind_evidence,
+                "snapshot_path": str(snapshot_path),
+                "receipt_bundle_path": receipt_report["receipt_bundle_path"],
+            },
+        )
     receipt_evidence = (
         receipt_gate_report.get("grok_fallback_evidence")
         if isinstance(receipt_gate_report, Mapping)

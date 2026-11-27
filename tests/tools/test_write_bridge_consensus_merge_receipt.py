@@ -514,3 +514,151 @@ def test_receipt_default_has_no_enrollment_override(tmp_path, monkeypatch, expli
         )
     assert seen == [None]
     assert not (tmp_path / "receipt").exists()
+
+
+# --- Rule 14a Mind-class lane receipt: two identities, re-derivable ----------
+MIND_PATHS = ["sandbox/mind/reader.py", "tools/wd_mind_reader.py"]
+
+
+def _mind_pr_status(paths: list[str] | None = None) -> dict:
+    status = _pr_status()
+    status["changed_paths"] = list(MIND_PATHS if paths is None else paths)
+    status["diff_text"] = "".join(
+        f"diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n"
+        f"--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n"
+        for p in status["changed_paths"]
+    )
+    return status
+
+
+def _mind_consensus() -> list[dict]:
+    return [
+        _claim("claude-rco-2", "2026-06-13T22:39:00Z"),
+        _event("codex-lead-1", "build_consensus_pass", "2026-06-13T22:40:00Z"),
+        _event("claude-rco-1", "rco_pass", "2026-06-13T22:42:00Z"),
+    ]
+
+
+def _write_mind(tmp_path: Path, *, events: list[dict] | None = None, status: dict | None = None) -> dict:
+    return write_bridge_consensus_merge_receipt(
+        pr_status=_mind_pr_status() if status is None else status,
+        events_path=_events_path(tmp_path, _mind_consensus() if events is None else events),
+        out_dir=tmp_path / "receipt", expected_head=HEAD, expected_base_sha=BASE,
+        consensus_proposal_id=TASK, repo="example/repo", from_agent="codex-lead-1",
+        bridge_task_id=TASK, now_utc=NOW, rco_enrollment_context=_unknown_enrollment_context(),
+    )
+
+
+def test_mind_lane_receipt_names_two_identities_and_the_real_policy(tmp_path: Path) -> None:
+    from waggledance.core.magma.canonical import sha256_digest
+    status = _mind_pr_status()
+    report = _write_mind(tmp_path, status=status)
+    manifest = Path(report["receipt_bundle_path"])
+    assert verify_manifest(manifest)["ok"] is True
+    payload = json.loads((manifest.parent / "payload-001-merge.json").read_text(encoding="utf-8"))
+    assert payload["consensus_lane"] == "rule14a_mind_class"
+    lane = payload["mind_class_lane"]
+    assert lane["engaged"] is True and lane["path_gate_lifted"] is True
+    assert "consensus" not in lane                      # kept once, under bridge_consensus
+    assert [row["path"] for row in lane["classification"]["matches"]] == MIND_PATHS
+    assert payload["changed_paths"] == MIND_PATHS
+    assert payload["head_sha"] == HEAD and payload["base_sha"] == BASE
+    assert payload["diff_digest"] == sha256_digest(status["diff_text"])
+    assert payload["path_gate"]["allowed"] is False
+    consensus = payload["bridge_consensus"]
+    assert consensus["required_identities"] == [
+        {"role": "lead", "agent": "codex-lead-1"},
+        {"role": "rco", "agent": "claude-rco-1"},
+    ]
+    assert consensus["approver_ref"]["ts_utc"] == "2026-06-13T22:40:00Z"
+    assert consensus["rco_pass_ref"]["ts_utc"] == "2026-06-13T22:42:00Z"
+    assert consensus["author_agent"] == "claude-rco-2"
+    bundle_text = "".join(p.read_text(encoding="utf-8") for p in manifest.parent.glob("*.json"))
+    assert "three_identity" not in bundle_text
+    assert "path_gate:allowlist_clean" not in bundle_text
+    assert "policy:bridge_consensus_approval_v1" not in bundle_text
+    for needle in (
+        "rule14a:mind_class_two_identity_head_bound",
+        "path_gate:rule14a_mind_class_whole_diff",
+        "policy:rule14a_mind_class_fast_path_v1",
+        "verify_mind_class_consensus",
+        "classify_mind_class",
+    ):
+        assert needle in bundle_text, needle
+    evaluation = report["gate_report"]
+    assert evaluation["bridge_consensus"]["consensus_lane"] == "rule14a_mind_class"
+
+
+def test_mind_lane_receipt_on_allowlisted_paths_records_a_clean_path_gate(tmp_path: Path) -> None:
+    report = _write_mind(tmp_path, status=_mind_pr_status(["tools/wd_mind_reader.py"]))
+    manifest = Path(report["receipt_bundle_path"])
+    bundle_text = "".join(p.read_text(encoding="utf-8") for p in manifest.parent.glob("*.json"))
+    assert "rule14a:mind_class_two_identity_head_bound" in bundle_text
+    assert "path_gate:allowlist_clean" in bundle_text
+    assert "path_gate:rule14a_mind_class_whole_diff" not in bundle_text
+
+
+def test_three_identity_receipt_is_unchanged_for_a_non_mind_diff(tmp_path: Path) -> None:
+    report = _write_mind(tmp_path, events=_full_consensus(), status=_pr_status())
+    manifest = Path(report["receipt_bundle_path"])
+    payload = json.loads((manifest.parent / "payload-001-merge.json").read_text(encoding="utf-8"))
+    assert "consensus_lane" not in payload and "mind_class_lane" not in payload
+    bundle_text = "".join(p.read_text(encoding="utf-8") for p in manifest.parent.glob("*.json"))
+    assert "bridge_consensus:three_identity_head_bound" in bundle_text
+    assert "rule14a" not in bundle_text
+
+
+def test_mind_lane_receipt_is_refused_without_the_rco_pass_or_on_a_mixed_diff(tmp_path: Path) -> None:
+    for name, kwargs in (
+        ("no-rco", {"events": _mind_consensus()[:-1]}),
+        ("mixed", {"status": _mind_pr_status(MIND_PATHS + ["tools/agent_next_task.py"])}),
+    ):
+        (tmp_path / name).mkdir()
+        with pytest.raises(BridgeConsensusMergeReceiptError) as excinfo:
+            _write_mind(tmp_path / name, **kwargs)
+        assert excinfo.value.report["decision"] == "merge_plan_not_receipt_eligible"
+        assert not (tmp_path / name / "receipt").exists()
+
+
+def _mind_payload(report: dict) -> dict:
+    manifest = Path(report["receipt_bundle_path"])
+    return json.loads((manifest.parent / "payload-001-merge.json").read_text(encoding="utf-8"))
+
+
+def test_mind_lane_receipt_carries_the_exact_lane_evidence_tuple(tmp_path: Path) -> None:
+    report = _write_mind(tmp_path)
+    payload = _mind_payload(report)
+    evidence = payload["mind_class_lane_evidence"]
+    assert evidence == report["gate_report"]["mind_class_lane_evidence"]
+    assert evidence["schema"] == "wd.rule14a-mind-class-lane-evidence.v1"
+    assert evidence["policy"] == "rule14a_mind_class"
+    assert evidence["head_sha"] == HEAD and evidence["base_sha"] == BASE and evidence["task_id"] == TASK
+    assert evidence["required_identities"] == payload["bridge_consensus"]["required_identities"]
+    assert evidence["approver_ref"] == payload["bridge_consensus"]["approver_ref"]
+    assert len(evidence["approver_ref"]["event_sha256"]) == 64
+    assert len(evidence["rco_pass_event_sha256"]) == 64
+    assert [row["path"] for row in evidence["path_classes"]] == MIND_PATHS
+
+
+def test_three_identity_receipt_has_no_lane_evidence(tmp_path: Path) -> None:
+    report = _write_mind(tmp_path, events=_full_consensus(), status=_pr_status())
+    assert "mind_class_lane_evidence" not in _mind_payload(report)
+    assert "mind_class_lane_evidence" not in report["gate_report"]
+
+
+def test_mind_lane_receipt_is_refused_when_the_gate_report_lacks_its_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.write_bridge_consensus_merge_receipt as writer
+    real = writer.evaluate_auto_merge_gate
+
+    def without_evidence(**kwargs):
+        report = dict(real(**kwargs))
+        report["mind_class_lane_evidence"] = None
+        return report
+
+    monkeypatch.setattr(writer, "evaluate_auto_merge_gate", without_evidence)
+    with pytest.raises(BridgeConsensusMergeReceiptError) as excinfo:
+        _write_mind(tmp_path)
+    assert excinfo.value.report["decision"] == "mind_class_lane_report_inconsistent"
+    assert not (tmp_path / "receipt").exists()

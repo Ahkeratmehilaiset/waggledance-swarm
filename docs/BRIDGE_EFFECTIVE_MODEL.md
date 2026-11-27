@@ -169,7 +169,8 @@ settings is `None`, with the reason in `issues`. A source counts as unreadable w
 
 `classify(catalog, lane, resolved)` returns one verdict:
 - `allowed`: in the lane's `allowed_profiles` at or above its floor (the reason says
-  `default` or `in_allowlist`);
+  `default` or `in_allowlist`), or the operator's own choice (reason `operator_selected`,
+  below);
 - `below_floor`;
 - `not_in_lane_allowlist`, with reason `in_catalog_for_other_lanes` or `not_in_catalog`;
 - `provider_mismatch`;
@@ -177,6 +178,29 @@ settings is `None`, with the reason in `issues`. A source counts as unreadable w
 
 The CLI exits `0` for `allowed`, `3` for anything that needs attention and `2` for an
 error.
+
+**Operator-selected models (operator decision 2026-11-27).** The operator approved every
+current and future Codex and Claude Code model and effort, never as a fixed default; he
+switches model and effort himself by his usage limits and the task. So when a pair is not
+in the lane's allowlist but both the model and the effort come from his own user-level
+config (`model_source` `user_config` for Codex, `user` for Claude; `effort_source` also
+`user:modelSettings` or `ultracode:user`) and the provider is the lane's, the verdict is
+`allowed` with reason `operator_selected` and no profile. Three limits stay:
+- on a reviewer lane (`reviewer: true`, claude-rco-1 and claude-rco-2) the model must be of
+  the `claude-opus-` family, because class (a) and gate reviews keep the strongest Claude
+  family (swarm proposal 2026-11-27); another model is `below_floor`, reason
+  `operator_selected_model_below_reviewer_family`. This is a reversible default;
+- the lane floor's effort: an effort below the effort of the lane's floor profile (in the
+  provider's effort order) is `below_floor`, reason `operator_selected_effort_below_<effort>`;
+  an effort outside the provider's enum keeps `not_in_lane_allowlist`;
+- only his own config counts. A launcher `--model` / `--effort` (a pinned default), a
+  repository `.claude` file, `--settings`, managed settings, an environment variable a
+  launcher may set, and a model restored from a resumed transcript keep the old verdicts.
+
+The catalog itself is unchanged: no profile becomes a default, every profile stays
+`approved: false` while the catalog is unsigned, and the shadow advisor still finds no
+admissible candidate. A resumed Claude launch on a model outside the catalog still raises
+attention, because a transcript model may come from a built-in default.
 
 ## Measured on this machine, 2026-09-27
 
@@ -189,3 +213,6 @@ Later the same day, after the operator moved `config.toml` to `gpt-6-sol / high`
 Codex lanes resolve to `gpt-6-sol / high`, `allowed`.
 
 The planted-fault check is a test: a `luna / low` config for Lead is never `allowed`.
+Since 2026-11-27 it is `below_floor` (low is under the floor's medium) instead of
+`not_in_lane_allowlist`; a `luna / xhigh` config in the operator's own file would now be
+`allowed` (`operator_selected`).

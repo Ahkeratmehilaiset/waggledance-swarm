@@ -23,7 +23,9 @@ but nothing escalated it, because it was a sentence and not a gate.
    the signed catalog. The resolved values, their sources and the verdict go into the lane's
    `lane_profiles/launch-shadow.jsonl` entry under `preflight`.
 3. **The status code is the only signal the launcher reads:**
-   - `0`: the verdict is `allowed` (or no `--cli` was given);
+   - `0`: the verdict is `allowed` (or no `--cli` was given). Since 2026-11-27 that includes
+     a model and effort from the operator's own user-level config at or above the lane
+     floor's effort (`operator_selected`, docs/BRIDGE_EFFECTIVE_MODEL.md);
    - `3`: attention. The verdict is `below_floor`, `not_in_lane_allowlist`,
      `provider_mismatch` or `unknown`, or the resolver itself failed;
    - any other code, or a probe that cannot run at all: the preflight is **unavailable**

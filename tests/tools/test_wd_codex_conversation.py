@@ -13,7 +13,19 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "ops/windows/reboot/Invoke-WdCodexConversationLoop.ps1"
 OLD = ROOT / "ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1"
-SHELLS = list(dict.fromkeys(filter(None, [shutil.which("powershell.exe"), shutil.which("pwsh")])) )
+def _real_shell(path):
+    """A Store install exposes pwsh as an app execution alias (a reparse point
+    under WindowsApps), which the runner rightly refuses as a managed turn path;
+    ask the shell for its own executable instead."""
+    if not path or os.name != "nt" or not os.lstat(path).st_file_attributes & 0x400:
+        return path
+    return subprocess.run([path, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                           "[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName"],
+                          capture_output=True, text=True, timeout=60, check=True).stdout.strip()
+
+
+SHELLS = list(dict.fromkeys(filter(None, [_real_shell(shutil.which("powershell.exe")),
+                                          _real_shell(shutil.which("pwsh"))])))
 
 
 def q(value):

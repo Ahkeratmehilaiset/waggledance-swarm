@@ -11,7 +11,7 @@
 
 **Bridge.** WaggleDance is built by a swarm of coding agents (Codex and Claude lanes, plus an advisory Grok helper) under one human operator, coordinating through one append-only event log. Every change lands through a pull request whose approvals bind to the exact commit; a recognized reviewer's veto blocks the merge, and silence never approves. Not automated: the operator signs every protected-class change, any re-push needs new approvals, and the Stage-2 runtime flip stays a separate operator session ([details](#development-agent-bridge)).
 
-**Mind.** Mind indexes the bridge work log locally with `multilingual-e5-small` and makes no cloud calls; at lane startup it returns at most three relevant rows, so a lane can pick up its thread after a restart. Since v3.14.0 the session command line also takes one free-text question per call, and the vector cache repairs isolated damage instead of rebuilding. Not built yet: incremental refresh, free-text questions at lane startup, and any self-learning; Mind is recall, and in an offline test it finds the right row for only a minority of free-text questions ([details](#mind-the-swarms-local-memory-in-production-since-2026-11-25)).
+**Mind.** Mind indexes the bridge work log locally with `multilingual-e5-small` and makes no cloud calls; at lane startup it returns at most three rows, meant to help a lane pick up its thread after a restart, and since v3.14.0 the session command line also takes one free-text question per call. No benefit is demonstrated yet: in a five-lane check on 2026-11-27 no lane reported Mind changing a decision, and in an offline test the free-text route finds the right row for only a minority of questions. Next steps are a view delivered after a resume or compaction and the free-text route inside lanes; Mind is recall, not self-learning ([details](#mind-the-swarms-local-memory-in-production-since-2026-11-25)).
 
 ## Measured (dated)
 
@@ -126,7 +126,7 @@ What the bridge enforces in code, not only in instructions:
 
 ### Mind: the swarm's local memory (in production since 2026-11-25)
 
-Mind is a local, read-only index of the bridge work log, embedded with `multilingual-e5-small`. It makes no cloud calls and changes no code or model weights. At lane startup it answers one fixed question with at most three relevant rows, the newest first within a relevance band, which helps a lane pick up the thread after a restart.
+Mind is a local, read-only index of the bridge work log, embedded with `multilingual-e5-small`. It makes no cloud calls and changes no code or model weights. At lane startup it answers one fixed question with at most three relevant rows, the newest first within a relevance band. It is meant to help a lane pick up the thread after a restart; a five-lane check on 2026-11-27 found no demonstrated benefit yet.
 
 Free-text questions (v3.14.0): the session command line (`tools/wd_bridge_mind_session.py`) takes one question per call, read from a file (1 to 512 characters, never from the command line). The answer is at most three rows ranked by plain similarity above a fixed floor. The question text is never logged, stored or put in an error. Lane startup still asks only the fixed question.
 
@@ -136,7 +136,7 @@ At refresh, the owner also limits the source to one sixteenth of its remaining c
 
 A refresh rebuilds the index in full, reusing cached vectors of unchanged rows. Since v3.14.0 each cached row carries its own digest. Damage in at most 5 % of the rows is repaired by re-encoding only those rows; larger damage rebuilds the whole cache; a strict read still refuses any damaged cache.
 
-Not built yet: incremental refresh, free-text questions at lane startup, delivery after a compaction, and self-scoring. Mind is recall, not self-learning. Code: `tools/wd_mind_*.py`, startup read in `ops/windows/reboot/`.
+Not built yet: incremental refresh, a view delivered after a resume or compaction, free-text questions inside lanes, and self-scoring. Mind is recall, not self-learning. Code: `tools/wd_mind_*.py`, startup read in `ops/windows/reboot/`.
 
 After a reboot the operator restores the fleet from the installed reboot bundle with `start-wd-all.ps1 -Auto` ([`ops/windows/reboot/BOOT_AFTER_REBOOT.md`](ops/windows/reboot/BOOT_AFTER_REBOOT.md)). Bridge changes are recorded in [`CHANGELOG.md`](CHANGELOG.md); the last bridge release tag is `bridge-2026.09.27-bridge-final-acceptance`.
 

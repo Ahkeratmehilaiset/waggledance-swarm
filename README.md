@@ -307,6 +307,8 @@ Mind is a local, read-only index of the bridge work log, embedded with `multilin
 
 Installed state: the owner and the index run on the operator's host since 2026-11-25. Startup delivery to the lanes, newest-first ordering and the 640 MiB source limit arrive with the next installation. The 640 MiB limit is on the source the owner reads eagerly: its 10 GiB memory budget divided by a factor of 16, more than twice the measured first-start peak of about 6.7× the source size; the refresh peak is not measured yet and must be measured before the source passes 256 MiB.
 
+At refresh, the owner also limits the source to one sixteenth of its remaining commit headroom after a 64 MiB reserve. For example, with 1.5 GiB already charged against the 10 GiB budget, the effective ceiling is 540 MiB. A tighter Windows job limit can lower it further.
+
 A refresh rebuilds the index in full, reusing cached vectors of unchanged rows. Not built yet: free-text questions, incremental refresh, and self-scoring. Mind is recall, not self-learning. Code: `tools/wd_mind_*.py`, startup read in `ops/windows/reboot/`.
 
 After a reboot the operator restores the fleet from the installed reboot bundle with `start-wd-all.ps1 -Auto` ([`ops/windows/reboot/BOOT_AFTER_REBOOT.md`](ops/windows/reboot/BOOT_AFTER_REBOOT.md)). Bridge changes are recorded in [`CHANGELOG.md`](CHANGELOG.md); the last bridge release tag is `bridge-2026.09.27-bridge-final-acceptance`.

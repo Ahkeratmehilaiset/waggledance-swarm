@@ -676,15 +676,25 @@ def test_local_candidate_cli_preserves_uncertain_query_owner(monkeypatch, tmp_pa
     session._LOCAL_CANDIDATE_PENDING.remove(pending)
 
 
-@pytest.mark.parametrize('status, token', [('REFUSED', b'PIPE_REFUSED'), ('TIMEOUT', b'PIPE_TIMEOUT'),
-                                           ('HOLD', b'PIPE_START_UNCERTAIN'), ('ABSTAIN', b'NO_CANDIDATES')])
-def test_local_candidate_cli_names_the_pipe_outcome_with_a_fixed_token(monkeypatch, tmp_path, status, token):
+@pytest.mark.parametrize('status, refusal, token', [
+    ('REFUSED', None, b'PIPE_REFUSED'), ('TIMEOUT', None, b'PIPE_TIMEOUT'),
+    ('HOLD', None, b'PIPE_START_UNCERTAIN'), ('ABSTAIN', None, b'NO_CANDIDATES'),
+    # C15: a refused pipe names its stage with one of six fixed tokens ...
+    ('REFUSED', 'PIPE_ACCESS_DENIED', b'PIPE_ACCESS_DENIED'), ('REFUSED', 'PIPE_NOT_FOUND', b'PIPE_NOT_FOUND'),
+    ('REFUSED', 'PIPE_CONNECT_FAILED', b'PIPE_CONNECT_FAILED'), ('REFUSED', 'PIPE_IO', b'PIPE_IO'),
+    ('REFUSED', 'PIPE_REPLY_TIMEOUT', b'PIPE_REPLY_TIMEOUT'), ('REFUSED', 'PIPE_REPLY_INVALID', b'PIPE_REPLY_INVALID'),
+    # ... and anything else, or a stage on another status, never reaches stderr.
+    ('REFUSED', 'private text', b'PIPE_REFUSED'), ('REFUSED', b'PIPE_IO', b'PIPE_REFUSED'),
+    ('TIMEOUT', 'PIPE_ACCESS_DENIED', b'PIPE_TIMEOUT'), ('ABSTAIN', 'PIPE_IO', b'NO_CANDIDATES'),
+])
+def test_local_candidate_cli_names_the_pipe_outcome_with_a_fixed_token(monkeypatch, tmp_path, status, refusal, token):
     # A lane read that fails at the owner pipe says which stage failed, with a
     # fixed token only; no frame, row or policy byte reaches stderr.
     from tools import wd_mind_runtime_process as process
     query = SimpleNamespace(start=lambda: None,
                             wait=lambda **_: {'status':status, 'authority':'none', 'sender_authentication':'UNKNOWN',
-                                              'source_verification':'UNVERIFIED', 'candidate_frame':None},
+                                              'source_verification':'UNVERIFIED', 'candidate_frame':None,
+                                              'refusal':refusal},
                             status=lambda: {'state':'STOPPED'})
     monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: object())
     monkeypatch.setattr(process, 'create_local_candidate_query', lambda **_: query)

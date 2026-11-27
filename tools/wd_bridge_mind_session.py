@@ -173,6 +173,13 @@ class _SelectedPipeRefused(MindContentSessionRefused):
 # Fixed tokens for the owner pipe outcome only. They name a stage, never content.
 _PIPE_REFUSAL_REASONS = {'REFUSED': 'PIPE_REFUSED', 'TIMEOUT': 'PIPE_TIMEOUT', 'HOLD': 'PIPE_START_UNCERTAIN',
                          'ABSTAIN': 'NO_CANDIDATES'}
+# A REFUSED pipe may name its stage (C15); anything else stays PIPE_REFUSED.
+_PIPE_REFUSAL_STAGES = frozenset({'PIPE_ACCESS_DENIED', 'PIPE_NOT_FOUND', 'PIPE_CONNECT_FAILED',
+                                  'PIPE_IO', 'PIPE_REPLY_TIMEOUT', 'PIPE_REPLY_INVALID'})
+# C10: a question file that is not one allowed free-text question.
+_QUESTION_REFUSAL = 'QUESTION_INVALID'
+_QUESTION_FILE_LIMIT = 2048
+_PIPE_REFUSAL_TOKENS = frozenset(_PIPE_REFUSAL_REASONS.values()) | _PIPE_REFUSAL_STAGES | {_QUESTION_REFUSAL}
 
 
 def _pin_flat_session(bundle_root, expected_manifest_sha256):
@@ -602,10 +609,36 @@ def _preflight_selected_source_prefix(budget, offset):
         raise
 
 
+def _question_from_file(path, allowed):
+    """One UTF-8 question from a stable plain file, or None. The text never reaches an error or a log.
+
+    Not hash-pinned: a digest in argv would let a process listing guess a short
+    question (RCO2 on PR 2201), and the question is the asking lane's own input.
+    """
+    try:
+        raw = _selected_stable_read(path, _QUESTION_FILE_LIMIT)
+        for ending in (b'\r\n', b'\n'):
+            if raw.endswith(ending):
+                raw = raw[:-len(ending)]
+                break
+        text = raw.decode('utf-8', errors='strict')
+    except Exception:
+        return None
+    return text if allowed(text) is True else None
+
+
 def _selected_pin_read(path, expected, limit):
     """Read a pinned plain file without importing code from the bundle."""
     if type(expected) is not str or _SHA256.fullmatch(expected) is None:
         raise ValueError('pin')
+    raw = _selected_stable_read(path, limit)
+    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected):
+        raise ValueError('pin')
+    return raw
+
+
+def _selected_stable_read(path, limit):
+    """Read a plain file that is no link and does not change while it is read."""
     if not path.is_absolute() or '..' in path.parts:
         raise ValueError('path')
     for index, component in enumerate((path, *path.parents)):
@@ -623,8 +656,7 @@ def _selected_pin_read(path, expected, limit):
     identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
     if (len(raw) > limit or len(raw) != opened.st_size
             or identity(before) != identity(opened) or identity(opened) != identity(after)
-            or identity(after) != identity(current)
-            or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected)):
+            or identity(after) != identity(current)):
         raise ValueError('pin')
     return raw
 
@@ -1587,11 +1619,17 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         _reap_local_candidate_pending()
         names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
         controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')
-        if (len(argv) != 11 or argv[0] not in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled')
+        # C10: the free-text mode adds one question file and is never controlled.
+        ask = bool(argv and argv[0] == '--mind-local-candidate-ask')
+        if ask:
+            names = names | {'--question-path'}
+        if (len(argv) != 1 + 2 * len(names)
+                or argv[0] not in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled',
+                                   '--mind-local-candidate-ask')
                 or (controlled and control is None) or (not controlled and control is not None)):
             raise ValueError('args')
         pairs = list(zip(argv[1::2], argv[2::2]))
-        if len(pairs) != 5 or {key for key, _ in pairs} != names:
+        if len(pairs) != len(names) or {key for key, _ in pairs} != names:
             raise ValueError('args')
         args = dict(pairs)
         policy_pin, approval = args['--policy-sha256'], args['--approval-reference-sha256']
@@ -1631,6 +1669,15 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 nonce = secrets.token_hex(32)
                 request = {'schema':'wd.mind-pipe-request.v2', 'query_id':'startup_work_overview',
                            'nonce':nonce, 'lane':lane, 'scope':scope}
+                if ask:
+                    question = _question_from_file(Path(args['--question-path']), runtime_process.free_text_question_ok)
+                    if question is None:
+                        with state['result_lock']:
+                            if state['reason'] is None and not state['abandoned']:
+                                state['reason'] = _QUESTION_REFUSAL
+                        raise ValueError('question')
+                    request = dict(request, query_id=runtime_process.FREE_TEXT_QUERY_ID, query=question)
+                    question = None
                 query = runtime_process.create_local_candidate_query(enabled=True,
                     pipe_name=runtime_process.local_candidate_pipe_name(manifest_sha256=manifest_pin), request=request)
                 state['query'] = query
@@ -1643,6 +1690,10 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                         or received.get('sender_authentication') != 'UNKNOWN'
                         or received.get('source_verification') != 'UNVERIFIED'):
                     token = _PIPE_REFUSAL_REASONS.get(received.get('status'))
+                    if token == 'PIPE_REFUSED':
+                        stage = received.get('refusal')
+                        if type(stage) is str and stage in _PIPE_REFUSAL_STAGES:
+                            token = stage
                     if token is not None:
                         with state['result_lock']:
                             # Never replace an earlier, more specific reason.
@@ -1706,7 +1757,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 raise _SelectedEagerSourceBudgetRefused('SOURCE_BUDGET')
             if state['reason'] == 'SOURCE_PREFIX_BUDGET':
                 raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget')
-            if state['reason'] in _PIPE_REFUSAL_REASONS.values():
+            if state['reason'] in _PIPE_REFUSAL_TOKENS:
                 raise _SelectedPipeRefused(state['reason'])
             raise ValueError('refused')
         if output.write(state['result']) != len(state['result']):
@@ -1723,7 +1774,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
             elif type(exc) is _SelectedEagerSourceBudgetRefused and deadline is not None and time.monotonic() < deadline:
                 error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_BUDGET","authority":"none"}\n')
             elif (type(exc) is _SelectedPipeRefused and deadline is not None and time.monotonic() < deadline
-                    and exc.args and exc.args[0] in _PIPE_REFUSAL_REASONS.values()):
+                    and exc.args and exc.args[0] in _PIPE_REFUSAL_TOKENS):
                 error.write(b'{"error":"mind_session_content_refused","reason":"' + exc.args[0].encode('ascii')
                             + b'","authority":"none"}\n')
             else:
@@ -1752,7 +1803,8 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    if '--mind-local-candidate-read' in argv or '--mind-local-candidate-read-controlled' in argv:
+    if ('--mind-local-candidate-read' in argv or '--mind-local-candidate-read-controlled' in argv
+            or '--mind-local-candidate-ask' in argv):
         pin = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         root = str(Path(__file__).absolute().parents[2])
         controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')

@@ -858,6 +858,7 @@ def test_candidate_ipc_rejects_untrusted_or_malformed_reply(fault):
         result = query.wait(timeout=10)
         assert result['status'] == 'REFUSED' and result['candidate_frame'] is None
         assert result['source_verification'] == 'UNVERIFIED'
+        assert result['refusal'] == 'PIPE_IO'           # the service checks the frame itself and closes unanswered
     finally:
         assert service.close(timeout=5)['state'] == 'STOPPED'
 
@@ -1197,3 +1198,86 @@ def test_synthetic_idle_clean_close_allows_next_request():
     assert replies == [expected_reply]
     assert service._uncertain_connection is None
     assert service.status()['state'] == 'STOPPED'
+
+
+# ---------------------------------------------------------------- C15: a refusal names its stage, fixed tokens only
+
+class _FakeConnection:
+    def __init__(self, *, send=None, poll=True, recv=b'{}'):
+        self._send, self._poll, self._recv = send, poll, recv
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def send_bytes(self, data):
+        if self._send is not None:
+            raise self._send
+
+    def poll(self, timeout):
+        return self._poll
+
+    def recv_bytes(self, limit):
+        return self._recv
+
+
+def _query_with_client(monkeypatch, client):
+    import multiprocessing.connection as connection
+    monkeypatch.setattr(connection, 'Client', client)
+    # Exercise the client with a fake transport on every platform.
+    query = preflight._LocalCandidateQuery('synthetic', preflight._local_candidate_request(_candidate_request()))
+    query.start()
+    return query
+
+
+def _raise(exc):
+    def client(**_):
+        raise exc
+    return client
+
+
+@pytest.mark.parametrize('client, stage', [
+    (_raise(PermissionError(13, 'synthetic os text')), 'PIPE_ACCESS_DENIED'),
+    (_raise(FileNotFoundError(2, 'synthetic os text')), 'PIPE_NOT_FOUND'),
+    (_raise(OSError(231, 'synthetic os text')), 'PIPE_CONNECT_FAILED'),
+    (_raise(ValueError('synthetic')), 'PIPE_CONNECT_FAILED'),
+    (lambda **_: _FakeConnection(send=EOFError()), 'PIPE_IO'),
+    (lambda **_: _FakeConnection(send=BrokenPipeError(109, 'synthetic os text')), 'PIPE_IO'),
+    (lambda **_: _FakeConnection(poll=False), 'PIPE_REPLY_TIMEOUT'),
+    (lambda **_: _FakeConnection(recv=b'not json'), 'PIPE_REPLY_INVALID'),
+    (lambda **_: _FakeConnection(recv=b'{"status":"CANDIDATES"}'), 'PIPE_REPLY_INVALID'),
+], ids=['access_denied', 'not_found', 'busy', 'other_connect', 'eof_on_send', 'broken_pipe', 'reply_timeout',
+        'reply_not_json', 'reply_wrong_shape'])
+def test_a_refused_local_query_names_its_stage(monkeypatch, client, stage):
+    result = _query_with_client(monkeypatch, client).wait(timeout=10)
+    assert (result['status'], result['refusal'], result['candidate_frame']) == ('REFUSED', stage, None)
+    assert result['refusal'] in preflight._LOCAL_CANDIDATE_REFUSALS
+    assert 'synthetic' not in json.dumps(result)                      # never an OS message or content
+
+
+def test_only_a_refused_query_carries_a_stage(monkeypatch):
+    release = threading.Event()
+
+    def slow(**_):
+        release.wait(10)
+        raise PermissionError(13, 'late')
+    query = _query_with_client(monkeypatch, slow)
+    try:
+        result = query.wait(timeout=0)
+        assert (result['status'], result['refusal']) == ('TIMEOUT', None)
+    finally:
+        release.set()
+        query.close(timeout=10)
+    # A late refusal after the caller gave up never turns the answer into a stage.
+    assert query.wait(timeout=1)['refusal'] is None
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named pipes only')
+def test_a_missing_owner_pipe_is_named_not_found():
+    name = preflight.local_candidate_pipe_name(manifest_sha256=_hash(os.urandom(32)))
+    query = preflight.create_local_candidate_query(enabled=True, pipe_name=name, request=_candidate_request())
+    query.start()
+    result = query.wait(timeout=10)
+    assert (result['status'], result['refusal']) == ('REFUSED', 'PIPE_NOT_FOUND')

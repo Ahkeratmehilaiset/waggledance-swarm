@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -1099,6 +1100,27 @@ def test_real_adapter_worker_hint_during_hold_publication(monkeypatch, hold_writ
             assert not malformed
             assert diagnostics and diagnostics[-1]['worker_exit_stage_hint'] == 'serving'
     assert b'synthetic-hold-write-error' not in wire
+
+
+def test_manual_launcher_and_child_start_reasons_agree():
+    script = MANUAL_HELPER.read_text(encoding='utf-8-sig')
+    arrays = re.findall(r'\$reasons\s*=\s*@\(([^)]*)\)', script)
+    assert len(arrays) == 1
+    launcher_reasons = set(re.findall(r"'([A-Z_]+)'", arrays[0]))
+    admission_details = {'ADMISSION_MISSING', 'ADMISSION_RESERVED', 'ADMISSION_LOCK_UNAVAILABLE'}
+    assert launcher_reasons == child._LOCAL_START_REASONS | admission_details
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual helper is Windows-specific')
+@pytest.mark.parametrize('shell', ['powershell.exe', 'pwsh.exe'])
+def test_manual_parser_reports_owner_memory_budget_in_both_versions(shell):
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip('requested PowerShell version unavailable')
+    script = Path(__file__).with_name('test_wd_mind_manual_diagnostic_parser.ps1')
+    subprocess.run([executable, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                    '-File', str(script), '-HelperPath', str(MANUAL_HELPER),
+                    '-SelfTestSourceBudget', '-BudgetReason', 'OWNER_MEMORY_BUDGET'], check=True)
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell manual helper is Windows-specific')

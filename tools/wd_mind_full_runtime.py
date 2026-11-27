@@ -384,6 +384,84 @@ class _EagerSourceBudgetRefused(FullRuntimeRefused):
     """The local source exceeds the effective eager projection limit (640 MiB)."""
 
 
+class _OwnerMemoryBudgetRefused(FullRuntimeRefused):
+    """A private candidate cannot fit within the owner's remaining commit budget."""
+
+
+class _OwnerMeterUnavailable(FullRuntimeRefused):
+    """Windows could not supply the commit accounting needed for admission."""
+
+
+# Leave room for unmetered allocations between samples. Source expansion is
+# an estimate; neither this margin nor an admission sample is a reservation.
+_OWNER_COMMIT_LIMIT = reader._EAGER_MEMORY_BUDGET_BYTES
+_OWNER_COMMIT_RESERVE = 64 * 1024**2
+
+
+def _owner_memory_headroom():
+    """Additional bytes available to the Windows owner, after its safety reserve."""
+    if os.name != 'nt':
+        # The Windows owner job is absent on portable/offline readers.
+        return _OWNER_COMMIT_LIMIT
+    import ctypes
+    from ctypes import wintypes
+    from tools.wd_mind_runtime_child import _ExtendedLimit
+
+    class ProcessMemoryCountersEx(ctypes.Structure):
+        _fields_ = [('cb', wintypes.DWORD), ('page_faults', wintypes.DWORD)] + [
+            (field, ctypes.c_size_t) for field in (
+                'peak_working_set', 'working_set', 'peak_paged_pool', 'paged_pool',
+                'peak_nonpaged_pool', 'nonpaged_pool', 'pagefile', 'peak_pagefile', 'private_usage')]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    process = kernel.GetCurrentProcess()
+    counters = ProcessMemoryCountersEx()
+    counters.cb = ctypes.sizeof(counters)
+    read_memory = kernel.K32GetProcessMemoryInfo
+    read_memory.argtypes = (wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD)
+    if not read_memory(process, ctypes.byref(counters), counters.cb) or not counters.private_usage:
+        raise OSError('process_memory_unavailable')
+    in_job = wintypes.BOOL()
+    kernel.IsProcessInJob.argtypes = (wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL))
+    if not kernel.IsProcessInJob(process, None, ctypes.byref(in_job)):
+        raise OSError('job_membership_unavailable')
+    limits = None
+    job_charge = 0
+    if in_job.value:
+        limits = _ExtendedLimit()
+        query = kernel.QueryInformationJobObject
+        query.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p)
+        if not query(None, 9, ctypes.byref(limits), ctypes.sizeof(limits), None):
+            raise OSError('job_limits_unavailable')
+        if limits.basic.flags & 0x200:
+            # JobObjectMemoryUsageInformation holds two ULONG64 byte counts:
+            # current charge across the job, followed by its lifetime peak.
+            usage = (ctypes.c_uint64 * 2)()
+            if not query(None, 28, ctypes.byref(usage), ctypes.sizeof(usage), None) or not usage[0]:
+                raise OSError('job_charge_unavailable')
+            job_charge = usage[0]
+    return _remaining_owner_commit(counters.private_usage, limits, job_charge)
+
+
+def _remaining_owner_commit(private_usage, limits, job_charge):
+    available = _OWNER_COMMIT_LIMIT - private_usage
+    if limits is not None and limits.basic.flags & 0x100:  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+        available = min(available, limits.process_memory - private_usage)
+    if limits is not None and limits.basic.flags & 0x200:  # JOB_OBJECT_LIMIT_JOB_MEMORY
+        available = min(available, limits.job_memory - max(job_charge, private_usage))
+    return max(0, available - _OWNER_COMMIT_RESERVE)
+
+
+def _owner_source_capacity(*, diagnose=False):
+    try:
+        return _owner_memory_headroom() // reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE
+    except OSError:
+        if diagnose:
+            raise _OwnerMeterUnavailable('OWNER_METER_UNAVAILABLE') from None
+        return 0
+
+
 class _CacheCapacityRefused(FullRuntimeRefused):
     """The verified projection exceeds the pinned cache format's row limit."""
 
@@ -1027,7 +1105,7 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
     of approval or of a trusted parent channel.
     """
     result = None
-    over_budget = False
+    over_budget = memory_limited = meter_unavailable = False
     cancelled_type = cancellation_group = None
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
@@ -1048,10 +1126,20 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         reader._load_identifier_policy(identifier, key, tag, allow_empty_v2=True)
         bundle = Path(bundle_root)
         controls = _bundle_inputs(bundle, expected_manifest_sha256)
+        source_limit = reader._max_eager_source_bytes()
+        try:
+            memory_limit = _owner_source_capacity(diagnose=True)
+        except _OwnerMeterUnavailable:
+            meter_unavailable = True
+            raise
+        memory_limited = memory_limit < source_limit
+        if memory_limit <= 0:
+            over_budget = True
+            raise _OwnerMemoryBudgetRefused()
         try:
             observed = prefix.observe_prefix(enabled=True, bundle_root=bundle_root,
                 expected_manifest_sha256=expected_manifest_sha256, scope='full_prefix_v1',
-                max_prefix_bytes=reader._max_eager_source_bytes())
+                max_prefix_bytes=min(source_limit, memory_limit))
         except prefix._ObservedPrefixBudgetRefused as exc:
             over_budget = type(exc) is prefix._ObservedPrefixBudgetRefused
             raise
@@ -1118,7 +1206,11 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         raise cancelled_type() from None
     if cancellation_group is not None:
         raise cancellation_group from None
+    if meter_unavailable:
+        raise _OwnerMeterUnavailable('OWNER_METER_UNAVAILABLE') from None
     if over_budget:
+        if memory_limited:
+            raise _OwnerMemoryBudgetRefused('OWNER_MEMORY_BUDGET') from None
         raise _EagerSourceBudgetRefused('SOURCE_BUDGET') from None
     if result is None:
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
@@ -2752,6 +2844,7 @@ def _verify_refresh_basis(owner):
 
 
 _REFRESH_SOURCE_BUDGET = object()
+_REFRESH_MEMORY_BUDGET = object()
 _REFRESH_CACHE_CAPACITY = object()
 
 
@@ -2760,11 +2853,17 @@ def _stage_refresh_generation(owner):
     try:
         binding = assemble_full_runtime(enabled=True, bundle_root=bundle, expected_manifest_sha256=manifest,
             identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_pin)
+    except (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable) as exc:
+        if type(exc) in (_OwnerMemoryBudgetRefused, _OwnerMeterUnavailable):
+            return _REFRESH_MEMORY_BUDGET
+        raise
     except _EagerSourceBudgetRefused as exc:
         if type(exc) is _EagerSourceBudgetRefused:
             return _REFRESH_SOURCE_BUDGET
         raise
     snapshot = binding.snapshot_for_query()
+    if _owner_source_capacity() <= 0:
+        return _REFRESH_MEMORY_BUDGET
     # A refreshed-cache commit needs two additional budgeted prefix checks.
     # Refuse before _build starts passage encoding if they cannot fit.
     if owner._vector_cache_enabled and _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
@@ -2778,6 +2877,8 @@ def _stage_refresh_generation(owner):
         if type(exc) is _CacheCapacityRefused:
             return _REFRESH_CACHE_CAPACITY
         raise
+    if _owner_source_capacity() <= 0:
+        return _REFRESH_MEMORY_BUDGET
     return {'binding':binding, 'snapshot':snapshot, 'memory':handler._memory, 'handler':handler}
 
 
@@ -3043,6 +3144,7 @@ class _SingleManifestOwner:
     def _refresh_generation(self, *, enabled=False):
         """Explicit in-process refresh; no scheduling, publishing or activation."""
         previous = staged = generation = old_handler = None
+        old_prewarm = None
         old_rotation_snapshot = old_adapter_snapshot = None
         accepted = handler_locked = rotator_locked = contention_only = cache_publish_started = False
         pending = None
@@ -3062,12 +3164,20 @@ class _SingleManifestOwner:
                 raise FullRuntimeRefused('mind_full_runtime_refused')
             if old_handler._pending_rotator is not None or old_handler._refresh_controller is not None:
                 raise ValueError('refresh_handler_busy')
+            if _owner_source_capacity() <= 0:
+                staged = _REFRESH_MEMORY_BUDGET
+                raise ValueError('refresh_memory_limit')
             self._state = 'HOLD'
             _verify_refresh_basis(self)
             staged = _stage_refresh_generation(self)
+            if staged is _REFRESH_MEMORY_BUDGET:
+                raise ValueError('refresh_memory_limit')
             if staged is _REFRESH_SOURCE_BUDGET or staged is _REFRESH_CACHE_CAPACITY:
                 raise ValueError('refresh_resource_limit')
             generation = _validate_refresh_generation(self, staged)
+            if _owner_source_capacity() <= 0:
+                staged = _REFRESH_MEMORY_BUDGET
+                raise ValueError('refresh_memory_limit')
             if self._rotation_enabled:
                 if not self._rotation_is_bound() or self._adapter is None:
                     raise ValueError('rotation_binding')
@@ -3094,12 +3204,16 @@ class _SingleManifestOwner:
                 # The replacement generation is still private under the owner
                 # lock. Prewarm it before publishing READY; a source failure
                 # follows the existing rollback-to-HOLD path below.
+                old_prewarm = self._retained, self._source_budget, self._prewarm_generation
                 self._retained = None
                 self._state = 'STARTING'
                 self._source_budget = (_prewarm_source_budget(self._snapshot, extra_prefix_passes=2)
                     if self._vector_cache_enabled else _prewarm_source_budget(self._snapshot))
                 self._ensure_retained_locked(source_budget=self._source_budget)
                 self._prewarm_generation = self._generation
+                if _owner_source_capacity() <= 0:
+                    staged = _REFRESH_MEMORY_BUDGET
+                    raise ValueError('refresh_memory_limit')
             if self._vector_cache_enabled:
                 # Publication can have reached os.replace even if it raises.
                 cache_publish_started = True
@@ -3116,7 +3230,17 @@ class _SingleManifestOwner:
             self._state = 'READY'
             accepted = True
         except BaseException as exc:
-            if not contention_only:
+            if staged is _REFRESH_MEMORY_BUDGET:
+                # The old handler and disk cache are still intact. Restore
+                # any private swap before releasing the query locks.
+                self._generation = previous
+                if old_prewarm is not None:
+                    self._retained, self._source_budget, self._prewarm_generation = old_prewarm
+                if rotator_locked:
+                    self._client._snapshot = old_rotation_snapshot
+                    self._adapter._snapshot = old_adapter_snapshot
+                self._state = 'READY'
+            elif not contention_only:
                 if cache_publish_started:
                     self._cache_status = 'REFRESH_UNKNOWN'
                 if previous is not None:
@@ -3131,7 +3255,9 @@ class _SingleManifestOwner:
                     self._handler._retained = None
                 self._retained = None
                 self._state = 'HOLD'
-            if staged is _REFRESH_SOURCE_BUDGET:
+            if staged is _REFRESH_MEMORY_BUDGET:
+                pending = _OwnerMemoryBudgetRefused('OWNER_MEMORY_BUDGET')
+            elif staged is _REFRESH_SOURCE_BUDGET:
                 pending = _EagerSourceBudgetRefused('SOURCE_BUDGET')
             elif staged is _REFRESH_CACHE_CAPACITY:
                 pending = _CacheCapacityRefused('CACHE_CAPACITY')
@@ -3144,7 +3270,7 @@ class _SingleManifestOwner:
                 self._client._lock.release()
             if handler_locked:
                 old_handler._lock.release()
-            previous = staged = generation = old_handler = None
+            previous = staged = generation = old_handler = old_prewarm = None
             self._lock.release()
         if pending is not None:
             raise pending from None
@@ -3766,11 +3892,13 @@ class _SingleManifestOwner:
 
     def _candidate_request(self, request, *, located):
         expected = 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1'
-        if (type(request) is not dict or set(request) != {'schema','query_id','nonce','lane','scope'}
+        if (type(request) is not dict or set(request) != _pipe_request_keys(request)
                 or any(type(value) is not str for value in request.values())
-                or request['schema'] != expected or request['query_id'] != 'startup_work_overview'
+                or request['schema'] != expected
+                or request['query_id'] not in ('startup_work_overview', _FREE_TEXT_QUERY_ID)
                 or not reader._hex(request['nonce']) or request['lane'] not in self._lanes
-                or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')):
+                or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')
+                or (request['query_id'] == _FREE_TEXT_QUERY_ID and not _free_text_question_ok(request['query']))):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         # A disabled budget gate refuses both candidate protocols before I/O.
         if not _STARTUP_OWNER_SOURCE_BUDGET_ENABLED:
@@ -3877,7 +4005,12 @@ class _SingleManifestOwner:
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
             if self._launch_thread is not None and self._launch_thread.is_alive():
                 self._state = 'HOLD'
-                return self._status()
+                if not self._launch_done.is_set() or self._launch_thread is threading.current_thread():
+                    return self._status()
+                # The launch result is final, but the thread may still be returning.
+                self._launch_thread.join(timeout=1.0)
+                if self._launch_thread.is_alive():
+                    return self._status()
             if self._rotation_enabled and not self._rotation_is_bound():
                 self._state = 'HOLD'
                 return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
@@ -3987,6 +4120,31 @@ def create_flat_request_handler(*, enabled=False, binding=None, lane=None, worke
 
 _STARTUP_PIPE_QUERY = 'current task active work next step recent status'
 
+# Train 4 item C10. The same bounds as tools/wd_mind_runtime_process.py
+# free_text_question_ok, checked again here because the owner trusts no client.
+_FREE_TEXT_QUERY_ID = 'free_text_v1'
+
+
+def _pipe_request_keys(request):
+    keys = {'schema', 'query_id', 'nonce', 'lane', 'scope'}
+    return keys | {'query'} if request.get('query_id') == _FREE_TEXT_QUERY_ID else keys
+
+
+def _free_text_question_ok(value):
+    """True only for an allowed free-text question; never raises or echoes the text.
+
+    Ranking keys on the startup text, so that exact sentence is refused here, in
+    every first validation and before any owner state (Lead on PR 2201): a refusal
+    inside the owner's fault region would turn READY into HOLD.
+    """
+    try:
+        return (type(value) is str and 1 <= len(value) <= 512 and bool(value.strip()) and value.isprintable()
+                and reader.unicodedata.normalize('NFC', value) == value
+                and len(json.dumps(value, ensure_ascii=True)) - 2 <= 2048
+                and value != _STARTUP_PIPE_QUERY)
+    except Exception:
+        return False
+
 # Relevance band for the fixed startup question only. On the real log the e5
 # cosine of every eligible row is far above the 0.55 floor and tightly packed
 # (median about 0.81, best about 0.88), so cosine order alone returned rows 18
@@ -4087,16 +4245,18 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_l
                 or (_include_locations and type(handler._retained) is not _RetainedFlatQueryState)):
             raise ValueError('input')
         frozen = dict(request)
-        if (set(frozen) != {'schema', 'query_id', 'nonce', 'lane', 'scope'}
+        free = frozen.get('query_id') == _FREE_TEXT_QUERY_ID
+        if (set(frozen) != _pipe_request_keys(frozen)
                 or any(type(frozen[key]) is not str for key in frozen)
                 or frozen['schema'] != 'wd.mind-pipe-request.v1'
-                or frozen['query_id'] != 'startup_work_overview'
+                or frozen['query_id'] not in ('startup_work_overview', _FREE_TEXT_QUERY_ID)
                 or not reader._hex(frozen['nonce']) or frozen['lane'] not in reader._LANES
-                or frozen['scope'] not in ('own', 'shared')):
+                or frozen['scope'] not in ('own', 'shared')
+                or (free and not _free_text_question_ok(frozen['query']))):
             raise ValueError('request')
         reply = handler.lane_view(frozen['lane']).handle({
             'schema': 'wd.mind-flat-owner-request.v1', 'lane': frozen['lane'],
-            'scope': frozen['scope'], 'query': _STARTUP_PIPE_QUERY})
+            'scope': frozen['scope'], 'query': frozen['query'] if free else _STARTUP_PIPE_QUERY})
         if (type(reply) is not dict
                 or set(reply) != {'schema', 'lane', 'scope', 'authority', 'expires_utc',
                                   'expiry_scope', 'snapshot_freshness', 'result'}

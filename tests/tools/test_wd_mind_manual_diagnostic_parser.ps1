@@ -1,5 +1,6 @@
 param([Parameter(Mandatory)][string]$HelperPath, [switch]$SelfTestV2, [switch]$SelfTestAdmission,
-      [switch]$SelfTestSourceBudget)
+      [switch]$SelfTestSourceBudget,
+      [ValidateSet('SOURCE_BUDGET','OWNER_MEMORY_BUDGET')][string]$BudgetReason='SOURCE_BUDGET')
 $ErrorActionPreference = 'Stop'
 . $HelperPath
 if ($SelfTestAdmission -or $SelfTestSourceBudget) {
@@ -7,7 +8,7 @@ if ($SelfTestAdmission -or $SelfTestSourceBudget) {
     $status='{"authority":"none","caller_authentication":"UNKNOWN","index_refresh":"NOT_SCHEDULED",'+
         '"manifest_sha256":"'+('a'*64)+'","schema":"wd.mind-local-owner-status.v1",'+
         '"source_authentication":"UNKNOWN","state":"HOLD"}'
-    $reason=if($SelfTestSourceBudget){'SOURCE_BUDGET'}else{'ADMISSION'}
+    $reason=if($SelfTestSourceBudget){$BudgetReason}else{'ADMISSION'}
     $exceptionType=if($SelfTestSourceBudget){'UNKNOWN'}else{'LaunchRefused'}
     $v1='{"authority":"none","exception_type":"'+$exceptionType+'","reason":"'+$reason+'",'+
         '"schema":"wd.mind-local-owner-start-diagnostic.v1"}'

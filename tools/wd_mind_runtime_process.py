@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import types
+import unicodedata
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_CODE = 2 * 1024 * 1024
@@ -156,12 +157,43 @@ def _local_candidate_encode(value):
     return raw
 
 
+# Train 4 item C10: one free-text question beside the fixed startup question.
+FREE_TEXT_QUERY_ID = 'free_text_v1'
+# At most 512 code points, AND at most 2048 bytes once ASCII-escaped: the JSON
+# frame is escaped (a supplementary character takes 12 bytes) and capped at
+# _LOCAL_CANDIDATE_MAX_BYTES, so a question of non-ASCII text is shorter.
+FREE_TEXT_MAX_CHARS = 512
+FREE_TEXT_MAX_ESCAPED_BYTES = 2048
+# The fixed startup sentence (tools/wd_mind_full_runtime.py _STARTUP_PIPE_QUERY).
+# Ranking keys on that text, so it is never a free question; refusing it here and
+# in the owner's first validation keeps the refusal before any owner state.
+FREE_TEXT_RESERVED = 'current task active work next step recent status'
+
+
+def free_text_question_ok(value):
+    """True only for an allowed free-text question. Never raises and never echoes the text."""
+    try:
+        return (type(value) is str and 1 <= len(value) <= FREE_TEXT_MAX_CHARS and bool(value.strip())
+                and value.isprintable() and unicodedata.normalize('NFC', value) == value
+                and len(json.dumps(value, ensure_ascii=True)) - 2 <= FREE_TEXT_MAX_ESCAPED_BYTES
+                and value != FREE_TEXT_RESERVED)
+    except Exception:
+        return False
+
+
 def _local_candidate_request(value):
     keys = {'schema', 'query_id', 'nonce', 'lane', 'scope'}
-    if (type(value) is not dict or set(value) != keys or any(type(value[key]) is not str for key in keys)
+    if type(value) is not dict:
+        raise ValueError('request')
+    free = value.get('query_id') == FREE_TEXT_QUERY_ID
+    if free:
+        keys = keys | {'query'}
+    if (set(value) != keys or any(type(value[key]) is not str for key in keys)
             or value['schema'] not in ('wd.mind-pipe-request.v1', 'wd.mind-pipe-request.v2')
-            or value['query_id'] != 'startup_work_overview' or not _SHA256.fullmatch(value['nonce'])
-            or value['lane'] not in _LOCAL_CANDIDATE_LANES or value['scope'] not in ('own', 'shared')):
+            or value['query_id'] not in ('startup_work_overview', FREE_TEXT_QUERY_ID)
+            or not _SHA256.fullmatch(value['nonce'])
+            or value['lane'] not in _LOCAL_CANDIDATE_LANES or value['scope'] not in ('own', 'shared')
+            or (free and not free_text_question_ok(value['query']))):
         raise ValueError('request')
     return dict(value)
 
@@ -487,6 +519,11 @@ def create_local_candidate_service(*, enabled=False, owner=None, pipe_name=None)
     return _LocalCandidateService(owner, pipe_name)
 
 
+# Fixed stage tokens for a refused local candidate query; never content or an OS message.
+_LOCAL_CANDIDATE_REFUSALS = frozenset({'PIPE_ACCESS_DENIED', 'PIPE_NOT_FOUND', 'PIPE_CONNECT_FAILED',
+                                       'PIPE_IO', 'PIPE_REPLY_TIMEOUT', 'PIPE_REPLY_INVALID'})
+
+
 class _LocalCandidateQuery:
     """A retained bounded-wait client; received hashes remain untrusted proposals."""
     def __init__(self, name, request):
@@ -494,6 +531,7 @@ class _LocalCandidateQuery:
         self._thread = None
         self._done, self._lock = threading.Event(), threading.Lock()
         self._result, self._timed_out, self._start_uncertain, self._closed = None, False, False, False
+        self._refusal = None
 
     def start(self):
         with self._lock:
@@ -509,14 +547,29 @@ class _LocalCandidateQuery:
 
     def _run(self):
         from multiprocessing.connection import Client
-        result = None
+        result, refusal = None, 'PIPE_IO'
         try:
-            with Client(address=self._name, family='AF_PIPE', authkey=None) as connection:
+            # The stage of a refusal is kept as a fixed token only (C15): a lane
+            # read inside a sandbox must say whether it could reach the pipe at all.
+            try:
+                connection = Client(address=self._name, family='AF_PIPE', authkey=None)
+            except PermissionError:
+                refusal = 'PIPE_ACCESS_DENIED'
+                raise
+            except FileNotFoundError:
+                refusal = 'PIPE_NOT_FOUND'
+                raise
+            except BaseException:
+                refusal = 'PIPE_CONNECT_FAILED'
+                raise
+            with connection:
                 connection.send_bytes(_local_candidate_encode(self._request))
                 if not connection.poll(90):
+                    refusal = 'PIPE_REPLY_TIMEOUT'
                     raise ValueError('timeout')
-                response = _local_candidate_reply(_local_candidate_json(connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)),
-                                                  self._request)
+                raw = connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)
+                refusal = 'PIPE_REPLY_INVALID'
+                response = _local_candidate_reply(_local_candidate_json(raw), self._request)
                 result = _local_candidate_encode(response)
         except BaseException:
             pass
@@ -524,6 +577,7 @@ class _LocalCandidateQuery:
             with self._lock:
                 if not self._timed_out:
                     self._result = result
+                    self._refusal = None if result is not None else refusal
             self._done.set()
 
     def wait(self, *, timeout):
@@ -537,8 +591,9 @@ class _LocalCandidateQuery:
             raw = None if self._timed_out else self._result
             status = ('HOLD' if self._start_uncertain and not self._done.is_set() else
                       'TIMEOUT' if self._timed_out else ('REFUSED' if raw is None else _local_candidate_json(raw)['status']))
+            refusal = self._refusal if status == 'REFUSED' and self._refusal in _LOCAL_CANDIDATE_REFUSALS else None
         return {'status':status, 'authority':'none', 'sender_authentication':'UNKNOWN',
-                'source_verification':'UNVERIFIED', 'candidate_frame':raw}
+                'source_verification':'UNVERIFIED', 'candidate_frame':raw, 'refusal':refusal}
 
     def _thread_exited_locked(self):
         # done is set in the worker's finally, before native thread exit. An

@@ -130,8 +130,12 @@ def test_poisoned_parent_module_path_preserves_native_pinned_stub_contract(
     pwsh = shutil.which("pwsh")
     if not pwsh:
         pytest.skip("a real PowerShell 7 module directory is required for this poison control")
-    foreign_modules = Path(pwsh).parent / "Modules"
-    assert foreign_modules.is_dir()
+    # Ask PowerShell 7 for its own home: a Store install resolves "pwsh" to an
+    # app execution alias under WindowsApps, whose folder has no Modules.
+    home = subprocess.run([pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSHOME"],
+                          capture_output=True, text=True, timeout=60, check=True).stdout.strip()
+    foreign_modules = Path(home) / "Modules"
+    assert foreign_modules.is_dir(), foreign_modules
     poisoned_path = str(foreign_modules)
     monkeypatch.setenv("pSmOdUlEpAtH", poisoned_path)
     wrapper, anchor = _bundle(tmp_path)

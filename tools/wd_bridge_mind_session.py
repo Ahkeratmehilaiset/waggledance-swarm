@@ -173,6 +173,10 @@ class _SelectedPipeRefused(MindContentSessionRefused):
 # Fixed tokens for the owner pipe outcome only. They name a stage, never content.
 _PIPE_REFUSAL_REASONS = {'REFUSED': 'PIPE_REFUSED', 'TIMEOUT': 'PIPE_TIMEOUT', 'HOLD': 'PIPE_START_UNCERTAIN',
                          'ABSTAIN': 'NO_CANDIDATES'}
+# A REFUSED pipe may name its stage (C15); anything else stays PIPE_REFUSED.
+_PIPE_REFUSAL_STAGES = frozenset({'PIPE_ACCESS_DENIED', 'PIPE_NOT_FOUND', 'PIPE_CONNECT_FAILED',
+                                  'PIPE_IO', 'PIPE_REPLY_TIMEOUT', 'PIPE_REPLY_INVALID'})
+_PIPE_REFUSAL_TOKENS = frozenset(_PIPE_REFUSAL_REASONS.values()) | _PIPE_REFUSAL_STAGES
 
 
 def _pin_flat_session(bundle_root, expected_manifest_sha256):
@@ -1643,6 +1647,10 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                         or received.get('sender_authentication') != 'UNKNOWN'
                         or received.get('source_verification') != 'UNVERIFIED'):
                     token = _PIPE_REFUSAL_REASONS.get(received.get('status'))
+                    if token == 'PIPE_REFUSED':
+                        stage = received.get('refusal')
+                        if type(stage) is str and stage in _PIPE_REFUSAL_STAGES:
+                            token = stage
                     if token is not None:
                         with state['result_lock']:
                             # Never replace an earlier, more specific reason.
@@ -1706,7 +1714,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 raise _SelectedEagerSourceBudgetRefused('SOURCE_BUDGET')
             if state['reason'] == 'SOURCE_PREFIX_BUDGET':
                 raise _SelectedSourcePrefixBudgetRefused('source_prefix_budget')
-            if state['reason'] in _PIPE_REFUSAL_REASONS.values():
+            if state['reason'] in _PIPE_REFUSAL_TOKENS:
                 raise _SelectedPipeRefused(state['reason'])
             raise ValueError('refused')
         if output.write(state['result']) != len(state['result']):
@@ -1723,7 +1731,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
             elif type(exc) is _SelectedEagerSourceBudgetRefused and deadline is not None and time.monotonic() < deadline:
                 error.write(b'{"error":"mind_session_content_refused","reason":"SOURCE_BUDGET","authority":"none"}\n')
             elif (type(exc) is _SelectedPipeRefused and deadline is not None and time.monotonic() < deadline
-                    and exc.args and exc.args[0] in _PIPE_REFUSAL_REASONS.values()):
+                    and exc.args and exc.args[0] in _PIPE_REFUSAL_TOKENS):
                 error.write(b'{"error":"mind_session_content_refused","reason":"' + exc.args[0].encode('ascii')
                             + b'","authority":"none"}\n')
             else:

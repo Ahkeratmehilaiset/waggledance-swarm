@@ -81,6 +81,31 @@
           "wd-routine-coding"
         ]
       },
+      "codex-gpt-6.2-sol-xhigh": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6.2-sol",
+        "effort": "xhigh",
+        "roles": [
+          "lead",
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
       "codex-gpt-6-sol-high": {
         "provider": "codex",
         "account_pool": "operator-chatgpt-subscription",
@@ -106,6 +131,31 @@
           "wd-routine-coding"
         ]
       },
+      "codex-gpt-6.2-sol-high": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6.2-sol",
+        "effort": "high",
+        "roles": [
+          "lead",
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
       "codex-gpt-6-sol-medium": {
         "provider": "codex",
         "account_pool": "operator-chatgpt-subscription",
@@ -121,6 +171,30 @@
           }
         ],
         "model": "gpt-6-sol",
+        "effort": "medium",
+        "roles": [
+          "lead",
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-routine-coding"
+        ]
+      },
+      "codex-gpt-6.2-sol-medium": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6.2-sol",
         "effort": "medium",
         "roles": [
           "lead",
@@ -225,6 +299,29 @@
           "wd-routine-coding"
         ]
       },
+      "codex-gpt-6.2-sol-max": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6.2-sol",
+        "effort": "max",
+        "roles": [
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-routine-coding"
+        ]
+      },
       "codex-gpt-6-sol-ultra": {
         "provider": "codex",
         "account_pool": "operator-chatgpt-subscription",
@@ -240,6 +337,29 @@
           }
         ],
         "model": "gpt-6-sol",
+        "effort": "ultra",
+        "roles": [
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-routine-coding"
+        ]
+      },
+      "codex-gpt-6.2-sol-ultra": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6.2-sol",
         "effort": "ultra",
         "roles": [
           "tools"
@@ -367,15 +487,20 @@
         "profiles": [
           "codex-gpt-6-astra-medium",
           "codex-gpt-6-sol-xhigh",
+          "codex-gpt-6.2-sol-xhigh",
           "codex-gpt-6-sol-high",
-          "codex-gpt-6-sol-medium"
+          "codex-gpt-6.2-sol-high",
+          "codex-gpt-6-sol-medium",
+          "codex-gpt-6.2-sol-medium"
         ]
       },
       "codex-tools-1": {
         "role": "tools",
         "profiles": [
           "codex-gpt-6-sol-high",
-          "codex-gpt-6-sol-medium"
+          "codex-gpt-6.2-sol-high",
+          "codex-gpt-6-sol-medium",
+          "codex-gpt-6.2-sol-medium"
         ]
       },
       "claude-rco-1": {
@@ -417,10 +542,13 @@
       "allowed_profiles": [
         "codex-gpt-6-astra-medium",
         "codex-gpt-6-sol-xhigh",
+        "codex-gpt-6.2-sol-xhigh",
         "codex-gpt-6-sol-high",
-        "codex-gpt-6-sol-medium"
+        "codex-gpt-6.2-sol-high",
+        "codex-gpt-6-sol-medium",
+        "codex-gpt-6.2-sol-medium"
       ],
-      "floor": 3,
+      "floor": 6,
       "default": "codex-gpt-6-sol-high",
       "boot_profile": "codex-gpt-6-astra-medium",
       "burst_profiles": [
@@ -435,15 +563,20 @@
     "codex-tools-1": {
       "allowed_profiles": [
         "codex-gpt-6-sol-high",
-        "codex-gpt-6-sol-medium"
+        "codex-gpt-6.2-sol-high",
+        "codex-gpt-6-sol-medium",
+        "codex-gpt-6.2-sol-medium"
       ],
-      "floor": 1,
+      "floor": 3,
       "default": "codex-gpt-6-sol-medium",
       "boot_profile": "codex-gpt-6-sol-high",
       "burst_profiles": [
         "codex-gpt-6-sol-xhigh",
+        "codex-gpt-6.2-sol-xhigh",
         "codex-gpt-6-sol-max",
-        "codex-gpt-6-sol-ultra"
+        "codex-gpt-6.2-sol-max",
+        "codex-gpt-6-sol-ultra",
+        "codex-gpt-6.2-sol-ultra"
       ],
       "max_relaunches_per_hour": 2,
       "cooldown_seconds": 1800,

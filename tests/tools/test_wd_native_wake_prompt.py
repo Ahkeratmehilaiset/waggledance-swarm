@@ -400,7 +400,7 @@ PROJECTION_READER = "Invoke-WdMindStartupRead.ps1"
 STATUS_FIXTURE = '{"schema":"wd.mind-direct-status.v1","authority":"none","facts":[]}'
 
 
-def projection_fixture(tmp_path: Path, *, outcome: str = "success") -> tuple[Path, str]:
+def projection_fixture(tmp_path: Path) -> tuple[Path, str]:
     bundle, _ = bundle_fixture(tmp_path)
     reader = bundle / PROJECTION_READER
     view_hash = hashlib.sha256(STATUS_FIXTURE.encode()).hexdigest()
@@ -415,7 +415,7 @@ def projection_fixture(tmp_path: Path, *, outcome: str = "success") -> tuple[Pat
         throw 'invalid fixture binding'
     }}
     [pscustomobject]@{{
-        outcome='{outcome}'; view_json='{STATUS_FIXTURE}'; view_sha256='{view_hash}'
+        outcome=$env:WD_C13_FIXTURE_READER_OUTCOME; view_json='{STATUS_FIXTURE}'; view_sha256='{view_hash}'
         private_path='PRIVATE_FIXTURE_OMIT'
     }}
 }}
@@ -429,12 +429,13 @@ def projection_fixture(tmp_path: Path, *, outcome: str = "success") -> tuple[Pat
 
 
 def run_projection(ps, bundle, anchor, *, task=TASK_ID, previous="", agent="codex-tools-1",
-                   session_agent="codex-tools-1", session_anchor=None):
+                   session_agent="codex-tools-1", session_anchor=None, reader_outcome="success"):
     env = os.environ.copy()
     env.update(
         AGENT_BRIDGE_AGENT=session_agent,
         AGENT_BRIDGE_SESSION_ID="synthetic-tools-session",
         WD_REBOOT_EXPECTED_MANIFEST_HASH=session_anchor or anchor,
+        WD_C13_FIXTURE_READER_OUTCOME=reader_outcome,
     )
     args = [
         ps, "-NoProfile", "-NonInteractive", "-File", str(HELPER),
@@ -467,7 +468,7 @@ def test_tools_projects_only_on_new_task_or_manifest(tmp_path, ps):
     repeat = run_projection(ps, bundle, anchor, previous=key)
     assert repeat.returncode == 0, repeat.stdout + repeat.stderr
     assert json.loads(repeat.stdout) == first | {
-        "outcome": "unchanged", "view_json": None, "view_sha256": None,
+        "outcome": "unchanged", "checkpoint_evidence": None, "view_json": None, "view_sha256": None,
     }
 
     next_task = run_projection(ps, bundle, anchor, task="new-task", previous=key)
@@ -487,19 +488,28 @@ def test_tools_projects_only_on_new_task_or_manifest(tmp_path, ps):
 
 @pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("damage", ["refused_read", "unknown_read", "reader_pin"])
-def test_tools_omits_optional_view_and_tracks_attempt_on_refusal(tmp_path, ps, damage):
+def test_tools_retries_optional_read_after_unavailability(tmp_path, ps, damage):
     outcome = {"refused_read": "refused", "unknown_read": "unknown"}.get(damage, "success")
-    bundle, anchor = projection_fixture(tmp_path, outcome=outcome)
+    bundle, anchor = projection_fixture(tmp_path)
+    previous = f"{PROJECTION_SCHEMA}={anchor.lower()}:previous-task"
+    reader = bundle / PROJECTION_READER
     if damage == "reader_pin":
-        (bundle / PROJECTION_READER).write_text("throw 'PRIVATE_FIXTURE_OMIT'", encoding="utf-8")
-    result = run_projection(ps, bundle, anchor)
+        pinned_bytes = reader.read_bytes()
+        reader.write_text("throw 'PRIVATE_FIXTURE_OMIT'", encoding="utf-8")
+    result = run_projection(ps, bundle, anchor, previous=previous, reader_outcome=outcome)
     assert result.returncode == 0, result.stdout + result.stderr
     data = json.loads(result.stdout)
     assert data["outcome"] == "unavailable" and "PRIVATE_FIXTURE_OMIT" not in result.stdout + result.stderr
     assert data["view_json"] is None and data["view_sha256"] is None
-    repeat = run_projection(ps, bundle, anchor, previous=data["checkpoint_evidence"])
-    assert repeat.returncode == 0, repeat.stdout + repeat.stderr
-    assert json.loads(repeat.stdout)["outcome"] == "unchanged"
+    assert data["checkpoint_evidence"] is None
+
+    if damage == "reader_pin":
+        reader.write_bytes(pinned_bytes)
+    retry = run_projection(ps, bundle, anchor, previous=previous)
+    assert retry.returncode == 0, retry.stdout + retry.stderr
+    recovered = json.loads(retry.stdout)
+    assert recovered["outcome"] == "success"
+    assert recovered["checkpoint_evidence"] == f"{PROJECTION_SCHEMA}={anchor.lower()}:{TASK_ID}"
 
 
 @pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)

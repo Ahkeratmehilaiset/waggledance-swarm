@@ -20,7 +20,69 @@ def test_headroom_respects_process_and_job_charges(flags, headroom_mib):
     mib = 1024**2
     limits = SimpleNamespace(basic=SimpleNamespace(flags=flags), process_memory=400*mib,
                              job_memory=1000*mib, peak_job_memory=800*mib)
-    assert runtime._remaining_owner_commit(100*mib, limits) == headroom_mib*mib - runtime._OWNER_COMMIT_RESERVE
+    assert runtime._remaining_owner_commit(100*mib, limits, 800*mib) == headroom_mib*mib - runtime._OWNER_COMMIT_RESERVE
+
+
+def test_job_charge_can_recover_after_a_peak():
+    mib = 1024**2
+    limits = SimpleNamespace(basic=SimpleNamespace(flags=0x200), job_memory=900*mib, peak_job_memory=899*mib)
+    assert runtime._remaining_owner_commit(100*mib, limits, 899*mib) == 0
+    assert runtime._remaining_owner_commit(100*mib, limits, 200*mib) == 700*mib - runtime._OWNER_COMMIT_RESERVE
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job object")
+def test_current_job_charge_on_native_limited_child():
+    import ctypes
+    import subprocess
+    from tools.wd_mind_runtime_child import _ExtendedLimit, _Job
+
+    job = _Job()
+    try:
+        limit = 512 * 1024**2
+        limits = _ExtendedLimit()
+        limits.basic.flags = 0x200
+        limits.job_memory = limit
+        assert job.api.SetInformationJobObject(job.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits))
+        code = ("import sys; from tools.wd_mind_full_runtime import _owner_memory_headroom; "
+                "sys.stdin.readline(); print(_owner_memory_headroom())")
+        # The Windows venv redirector starts another process before it can
+        # be assigned. Put the interpreter that samples the job in it directly.
+        with subprocess.Popen([sys._base_executable, "-B", "-c", code], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+            try:
+                job.attach(proc)
+                out, err = proc.communicate("sample\n", timeout=30)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+            assert proc.returncode == 0, err
+            assert 0 < int(out) < limit - runtime._OWNER_COMMIT_RESERVE
+    finally:
+        job.close()
+
+
+def test_startup_reports_unavailable_meter(tmp_path, monkeypatch):
+    from test_wd_mind_owner_diagnostics import _local_adapter
+    from tools import wd_mind_runtime_child as child
+
+    def fail():
+        raise OSError("synthetic meter fault")
+
+    monkeypatch.setattr(runtime, "_owner_memory_headroom", fail)
+    monkeypatch.setattr(child._LocalManifestQuery, "_check_policy", lambda self: None)
+    monkeypatch.setattr(child._LocalManifestQuery, "_check_external_policy", lambda self: None)
+    monkeypatch.setattr(runtime, "_bundle_inputs", lambda *args: ())
+    monkeypatch.setattr(runtime.reader, "_load_identifier_policy", lambda *args, **kwargs: {})
+    adapter = _local_adapter()
+    adapter._bundle = str(tmp_path)
+    adapter._policy_sha = runtime.reader._sha(adapter._policy)
+    try:
+        adapter.start()
+        assert adapter.wait(timeout=5)["state"] == "HOLD"
+        assert adapter.start_diagnostic()["reason"] == "OWNER_METER_UNAVAILABLE"
+    finally:
+        adapter.close()
 
 
 @pytest.mark.parametrize("case", ["prefix_limit", "after_build", "after_prewarm", "meter_error"])

@@ -19,7 +19,7 @@ Each line names its date and its commit or round. Lines not rerun for this relea
 
 **Rerun for v3.14.0** (2026-11-27, one Windows host, synthetic data):
 
-- **Capability lookup, 10 000 synthetic solver descriptors**, 1000 lookups per pass: 1000/1000 hits, 0 FIFO fallback, 0 misses; **warm p99 0.018 ms**, first pass after cache attach p99 5.06 ms (commit `beaab1a2`).
+- **Capability lookup, 10 000 synthetic solver descriptors**, 1000 lookups per pass: 1000/1000 hits, 0 FIFO fallback, 0 misses; **warm p99 0.020 ms**, first pass after cache attach p99 6.87 ms (commit `95643d57`).
 - **Agent spawn**: 1745 agent objects completed within 120 s (1746 started, 0 failed), p50 66.5 ms, p99 101.2 ms; one worker, local model disabled, isolated SQLite (commit `95643d57`).
 
 **Earlier measurements, not rerun** (date and round as measured):

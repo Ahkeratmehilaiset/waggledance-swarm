@@ -40,7 +40,12 @@ param(
     # The ONE final operator signature stays out of band. An actual install (neither -StageOnly nor -DryRun)
     # must be given the exact pair that -StageOnly printed; otherwise it refuses before any machine file changes.
     [string] $ExpectedFinalCommit = '',
-    [string] $ExpectedFinalManifestHash = ''
+    [string] $ExpectedFinalManifestHash = '',
+    # Required by this version's unconditional Git member discovery. These are
+    # caller inputs, not authentication or an additional operator signature.
+    # A reviewed external native-Git anchor is still required for real use.
+    [string] $GitExecutable = '',
+    [string] $ExpectedGitSha256 = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -844,26 +849,261 @@ function Get-RelativeFileHashMap {
     return $result
 }
 
+function Assert-WdGitAclRules {
+    param([string]$OwnerSid, [object[]]$Rules, [switch]$VolumeRoot)
+    $trusted = @('S-1-5-18', 'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    if ($OwnerSid -cnotin $trusted) { throw 'Mind Git: untrusted path owner' }
+    [long]$mutation = 0x500D0156
+    # Creating a different child of C:\ does not replace an existing protected
+    # Program Files path. Delete-child/ACL/owner/attribute rights remain checked.
+    if ($VolumeRoot) { $mutation = $mutation -band (-bnot 4) }
+    foreach ($rule in $Rules) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+        if ($rule.IdentityReference.Value -cnotin $trusted -and
+            (([long]$rule.FileSystemRights -band 0xffffffffL) -band $mutation)) {
+            throw 'Mind Git: untrusted path mutation permission'
+        }
+    }
+}
+
+function Assert-WdNativeGitPath {
+    param([string]$Path)
+    # This slice supports one native installation layout. In particular the
+    # fleet's cmd/git.exe launcher is NOT an anchor for this executable.
+    if ($Path -cne 'C:\Program Files\Git\mingw64\bin\git.exe') {
+        throw 'Mind Git: unsupported native executable path'
+    }
+    [void](Assert-WdPathWithoutReparse -Path $Path -TrustedRoot 'C:\' -ExpectedType Leaf)
+    $current = $Path
+    while ($current) {
+        $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
+        $descriptor = New-Object Security.AccessControl.RawSecurityDescriptor ($acl.GetSecurityDescriptorBinaryForm(), 0)
+        if ($null -eq $descriptor.DiscretionaryAcl) { throw 'Mind Git: null path DACL' }
+        Assert-WdGitAclRules -OwnerSid $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value `
+            -Rules @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) `
+            -VolumeRoot:($current -ceq 'C:\')
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Assert-WdPinnedGit {
+    param($GitContext)
+    if ($null -eq $GitContext -or $GitContext.ExpectedSha256 -cnotmatch '^[0-9A-F]{64}$' -or
+        $GitContext.Handle -isnot [IO.FileStream] -or -not $GitContext.Handle.CanRead -or
+        $GitContext.Handle.Name -cne $GitContext.Path) { throw 'Mind Git: pin descriptor invalid' }
+    Assert-WdNativeGitPath -Path $GitContext.Path
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $GitContext.Handle.Position = 0
+        $heldHash = [BitConverter]::ToString($sha.ComputeHash($GitContext.Handle)).Replace('-', '')
+    }
+    finally { $sha.Dispose() }
+    if ($heldHash -cne $GitContext.ExpectedSha256 -or
+        (Get-FileHash -LiteralPath $GitContext.Path -Algorithm SHA256).Hash -cne $GitContext.ExpectedSha256) {
+        throw 'Mind Git: pin mismatch'
+    }
+}
+
+function Open-WdPinnedGit {
+    param([string]$GitExecutable, [string]$ExpectedGitSha256)
+    if ([string]::IsNullOrEmpty($GitExecutable) -or $ExpectedGitSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') {
+        throw 'Mind Git: pin inputs missing or invalid'
+    }
+    Assert-WdNativeGitPath -Path $GitExecutable
+    $handle = [IO.File]::Open($GitExecutable, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $context = [pscustomobject]@{Path=$GitExecutable;ExpectedSha256=$ExpectedGitSha256.ToUpperInvariant();Handle=$handle}
+        Assert-WdPinnedGit -GitContext $context
+        return $context
+    }
+    catch { $handle.Dispose(); throw }
+}
+
+function Close-WdPinnedGit {
+    param($GitContext)
+    if ($null -ne $GitContext -and $null -ne $GitContext.Handle) {
+        $GitContext.Handle.Dispose()
+        $GitContext.Handle = $null
+    }
+}
+
+function ConvertTo-WdGitArgument {
+    param([AllowEmptyString()][string]$Value)
+    # Windows CommandLineToArgvW quoting, including embedded quotes and trailing
+    # backslashes. The process starts a literal executable, never a shell.
+    return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+
+function New-WdGitProcessInfo {
+    param($GitContext, [string]$Worktree, [string[]]$ArgumentList)
+    Assert-WdPinnedGit -GitContext $GitContext
+    if (@(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_*' }).Count) {
+        throw 'Mind Git: inherited Git environment override'
+    }
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $GitContext.Path
+    $info.Arguments = (@('--no-replace-objects', '-c', 'core.fsmonitor=false', '-C', $Worktree) + $ArgumentList |
+        ForEach-Object { ConvertTo-WdGitArgument -Value $_ }) -join ' '
+    $info.WorkingDirectory = [IO.Path]::GetDirectoryName($GitContext.Path)
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.EnvironmentVariables['GIT_CONFIG_NOSYSTEM'] = '1'
+    $info.EnvironmentVariables['GIT_CONFIG_GLOBAL'] = 'NUL'
+    return $info
+}
+
 function Invoke-GitCapture {
     param(
         [Parameter(Mandatory)] [string] $Worktree,
-        [Parameter(Mandatory)] [string[]] $ArgumentList
+        [Parameter(Mandatory)] [string[]] $ArgumentList,
+        $GitContext
     )
-
-    $previousPreference = $ErrorActionPreference
+    $info = New-WdGitProcessInfo -GitContext $GitContext -Worktree $Worktree -ArgumentList $ArgumentList
+    $child = New-Object Diagnostics.Process
+    $child.StartInfo = $info
     try {
-        $ErrorActionPreference = 'Continue'
-        $output = @(& git -C $Worktree @ArgumentList 2>&1)
-        $exitCode = $LASTEXITCODE
+        if (-not $child.Start()) { throw 'Mind Git: process did not start' }
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        $child.WaitForExit()
+        $text = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
+        Assert-WdPinnedGit -GitContext $GitContext
+        $output = @()
+        if ($text.Length) { $output = @([regex]::Split($text.TrimEnd([char[]]"`r`n"), '\r?\n')) }
+        return [pscustomobject]@{ExitCode=$child.ExitCode;Output=$output;Text=$text.Trim()}
     }
-    finally {
-        $ErrorActionPreference = $previousPreference
+    finally { $child.Dispose() }
+}
+
+function Assert-WdMindPackageRoot {
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path -cnotmatch '^[Cc]:[\\/]' -or $Path -match '(^|[\\/])(\.|\.\.)([\\/]|$)' -or
+        $Path -match '(^|[\\/])[^\\/]*[. ]([\\/]|$)' -or $Path -match '~[0-9]' -or $Path.Contains('"')) {
+        throw 'Mind package: unsafe root spelling'
     }
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        Output = @($output)
-        Text = (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim()
+    return Assert-WdPathWithoutReparse -Path $Path -TrustedRoot 'C:\' -ExpectedType Directory
+}
+
+function Get-WdMindGitBlobSha256 {
+    param([string]$Worktree, [string]$BlobOid, [long]$ExpectedSize, $GitContext)
+    # Raw Git objects, without working-tree filters or archive substitutions.
+    $info = New-WdGitProcessInfo -GitContext $GitContext -Worktree $Worktree -ArgumentList @('cat-file','blob',$BlobOid)
+    $child = New-Object Diagnostics.Process
+    $child.StartInfo = $info
+    $bytes = New-Object IO.MemoryStream
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        if (-not $child.Start()) { throw 'Mind package: Git blob read did not start' }
+        $stderr = $child.StandardError.ReadToEndAsync()
+        $child.StandardOutput.BaseStream.CopyTo($bytes)
+        $child.WaitForExit()
+        Assert-WdPinnedGit -GitContext $GitContext
+        if ($child.ExitCode -ne 0 -or $bytes.Length -ne $ExpectedSize) {
+            throw ('Mind package: Git blob read failed or changed size: ' + $stderr.GetAwaiter().GetResult())
+        }
+        $bytes.Position = 0
+        return [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
     }
+    finally { $sha.Dispose(); $bytes.Dispose(); $child.Dispose() }
+}
+
+function Get-WdMindPackageMembers {
+    param([Parameter(Mandatory)][string]$Worktree, [Parameter(Mandatory)][string]$Commit, $GitContext)
+    try {
+        Assert-WdPinnedGit -GitContext $GitContext
+        $root = Assert-WdMindPackageRoot -Path $Worktree
+        if ($Commit -cnotmatch '^[0-9a-f]{40}$') { throw 'invalid frozen commit' }
+        foreach ($key in @('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES')) {
+            if ([Environment]::GetEnvironmentVariable($key, 'Process')) { throw 'inherited Git root override' }
+        }
+        $head = Invoke-GitCapture -GitContext $GitContext -Worktree $root -ArgumentList @('--no-replace-objects','rev-parse','HEAD')
+        if ($head.ExitCode -ne 0 -or $head.Text -cne $Commit) { throw 'HEAD differs from the frozen commit' }
+        $top = Invoke-GitCapture -GitContext $GitContext -Worktree $root -ArgumentList @('--no-replace-objects','rev-parse','--show-toplevel')
+        if ($top.ExitCode -ne 0 -or (Resolve-FullPath $top.Text) -cne $root) { throw 'source is not the exact repository root' }
+        $tree = Invoke-GitCapture -GitContext $GitContext -Worktree $root -ArgumentList @('--no-replace-objects','ls-tree','--full-tree',$Commit)
+        if ($tree.ExitCode -ne 0) { throw 'cannot read frozen root tree' }
+        foreach ($line in $tree.Output) {
+            $pair = ([string]$line) -split '\t', 2
+            if ($pair.Count -eq 2 -and $pair[1] -ieq 'tools' -and $pair[1] -cne 'tools') { throw 'case alias of tools root' }
+        }
+        $tree = Invoke-GitCapture -GitContext $GitContext -Worktree $root -ArgumentList @('--no-replace-objects','-c','core.quotepath=false','ls-tree','-r','--full-tree',$Commit,'--','tools')
+        if ($tree.ExitCode -ne 0) { throw 'cannot enumerate frozen tools tree' }
+        $rows = @{}
+        $names = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($line in $tree.Output) {
+            $pair = ([string]$line) -split '\t', 2
+            if ($pair.Count -ne 2 -or $pair[1] -inotmatch '^"?tools/wd_mind_') { continue }
+            $relative = [string]$pair[1]
+            if ($relative -cnotmatch '^tools/wd_mind_[a-z0-9_]+\.py$' -or
+                $pair[0] -cnotmatch '^(100644|100755) blob ([0-9a-f]{40})$' -or $rows.ContainsKey($relative)) {
+                throw ('unsafe, aliased or non-blob Mind member: ' + $relative)
+            }
+            $oid = $Matches[2]
+            $rows[$relative] = $oid
+            $names.Add($relative)
+            if ($names.Count -gt 256) { throw 'member count exceeds 256' }
+        }
+        $names.Sort([StringComparer]::Ordinal)
+        $dirty = Invoke-GitCapture -GitContext $GitContext -Worktree $root -ArgumentList @('--no-replace-objects','-c','core.fsmonitor=false','-c','core.excludesFile=','status','--porcelain','--untracked-files=all','--ignored=matching','--',':(icase,glob)tools/wd_mind_*')
+        if ($dirty.ExitCode -ne 0 -or $dirty.Output.Count -ne 0) { throw 'dirty, missing or untracked Mind source' }
+        $tools = Join-Path $root 'tools'
+        if (Test-Path -LiteralPath $tools) {
+            [void](Assert-WdPathWithoutReparse -Path $tools -TrustedRoot 'C:\' -ExpectedType Directory)
+            foreach ($item in @(Get-ChildItem -LiteralPath $tools -Force -ErrorAction Stop | Where-Object { $_.Name -imatch '^wd_mind_' })) {
+                $relative = 'tools/' + $item.Name
+                if (-not $rows.ContainsKey($relative) -or $relative -cnotmatch '^tools/wd_mind_[a-z0-9_]+\.py$') { throw 'extra or aliased physical Mind source' }
+            }
+        }
+        $files = New-Object 'System.Collections.Generic.List[object]'
+        [long]$total = 0
+        foreach ($relative in $names) {
+            $oid = [string]$rows[$relative]
+            $size = Invoke-GitCapture -GitContext $GitContext -Worktree $root -ArgumentList @('--no-replace-objects','cat-file','-s',$oid)
+            if ($size.ExitCode -ne 0 -or $size.Text -cnotmatch '^[0-9]+$') { throw 'cannot read blob size' }
+            [long]$length = $size.Text
+            $total += $length
+            if ($length -gt 8388608 -or $total -gt 67108864) { throw 'Mind blob byte budget exceeded' }
+            $hash = Get-WdMindGitBlobSha256 -GitContext $GitContext -Worktree $root -BlobOid $oid -ExpectedSize $length
+            $path = Assert-WdPathWithoutReparse -Path (Join-Path $root $relative) -TrustedRoot 'C:\' -ExpectedType Leaf
+            if ((Get-Item -LiteralPath $path).Length -ne $length -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $hash) {
+                throw ('source bytes differ from the frozen blob: ' + $relative)
+            }
+            $files.Add([pscustomobject]@{relative_path=$relative;blob_oid=$oid;sha256=$hash;bytes=$length})
+        }
+        return [pscustomobject]@{schema='wd.mind-code-package.v1';source_commit=$Commit;files=@($files.ToArray())}
+    }
+    catch { throw ('Mind package: ' + $_.Exception.Message) }
+}
+
+function Assert-WdMindPackageArchive {
+    param([Parameter(Mandatory)][string]$ArchiveRoot, [Parameter(Mandatory)]$Package)
+    try {
+        $root = Assert-WdMindPackageRoot -Path $ArchiveRoot
+        if ($Package.schema -cne 'wd.mind-code-package.v1' -or $Package.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
+            $Package.files -isnot [array] -or @($Package.files).Count -gt 256) { throw 'invalid member snapshot' }
+        $seen = @{}
+        foreach ($member in $Package.files) {
+            $relative = [string]$member.relative_path
+            if ($relative -cnotmatch '^tools/wd_mind_[a-z0-9_]+\.py$' -or $seen.ContainsKey($relative)) { throw 'invalid archive member path' }
+            $seen[$relative] = $true
+            $path = Assert-WdPathWithoutReparse -Path (Join-Path $root $relative) -TrustedRoot 'C:\' -ExpectedType Leaf
+            if ((Get-Item -LiteralPath $path).Length -ne $member.bytes -or
+                (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $member.sha256) { throw ('archive bytes differ from Git blob: ' + $relative) }
+        }
+        $tools = Join-Path $root 'tools'
+        if (Test-Path -LiteralPath $tools) {
+            [void](Assert-WdPathWithoutReparse -Path $tools -TrustedRoot 'C:\' -ExpectedType Directory)
+            foreach ($item in @(Get-ChildItem -LiteralPath $tools -Force -ErrorAction Stop | Where-Object { $_.Name -imatch '^wd_mind_' })) {
+                if (-not $seen.ContainsKey('tools/' + $item.Name) -or $item.PSIsContainer -or
+                    ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'extra, aliased or linked archive member' }
+            }
+        }
+    }
+    catch { throw ('Mind package: ' + $_.Exception.Message) }
 }
 
 function New-ForwardingWrapper {
@@ -1299,7 +1539,13 @@ $persistentDriveRoot = [IO.Path]::GetPathRoot($machineFull)
     -ExpectedType Directory `
     -AllowMissing)
 
+# Every new deployment in this version uses Git member discovery. Legacy
+# installed runtimes and extracted pure wrapper functions do not open this pin.
+$GitContext = $null
+try {
+$GitContext = Open-WdPinnedGit -GitExecutable $GitExecutable -ExpectedGitSha256 $ExpectedGitSha256
 $gitRootProbe = Invoke-GitCapture `
+    -GitContext $GitContext `
     -Worktree $sourceRoot `
     -ArgumentList @('rev-parse', '--show-toplevel')
 $gitRoot = [string]$gitRootProbe.Text
@@ -1308,6 +1554,7 @@ if ($gitRootProbe.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($gitRoot)) {
 }
 $gitRoot = Resolve-FullPath ([string]$gitRoot)
 $commonGitProbe = Invoke-GitCapture `
+    -GitContext $GitContext `
     -Worktree $gitRoot `
     -ArgumentList @('rev-parse', '--path-format=absolute', '--git-common-dir')
 $commonGit = [string]$commonGitProbe.Text
@@ -1337,7 +1584,15 @@ $bridgeCodeSourceFiles = @(
 if ($bridgeCodeSourceFiles.Count -lt 1) {
     throw 'bridge code package definition lists no python files'
 }
+$headProbe = Invoke-GitCapture -GitContext $GitContext -Worktree $gitRoot -ArgumentList @('rev-parse', 'HEAD')
+$head = [string]$headProbe.Text
+if ($headProbe.ExitCode -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
+    throw 'could not resolve the exact reboot-bundle commit'
+}
+$mindPackage = Get-WdMindPackageMembers -GitContext $GitContext -Worktree $gitRoot -Commit $head
+$bridgeCodeSourceFiles = @($bridgeCodeSourceFiles + @($mindPackage.files | ForEach-Object { [string]$_.relative_path }) | Select-Object -Unique)
 $statusProbe = Invoke-GitCapture `
+    -GitContext $GitContext `
     -Worktree $gitRoot `
     -ArgumentList (@(
         'status',
@@ -1356,12 +1611,12 @@ if (@($relativeSource).Count -gt 0) {
     throw 'refusing to deploy uncommitted reboot or Tools bootstrap sources'
 }
 
-$headProbe = Invoke-GitCapture -Worktree $gitRoot -ArgumentList @('rev-parse', 'HEAD')
-$head = [string]$headProbe.Text
-if ($headProbe.ExitCode -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
-    throw 'could not resolve the exact reboot-bundle commit'
+$headProbe = Invoke-GitCapture -GitContext $GitContext -Worktree $gitRoot -ArgumentList @('rev-parse', 'HEAD')
+if ($headProbe.ExitCode -ne 0 -or [string]$headProbe.Text -cne $head) {
+    throw 'reboot-bundle HEAD changed after freezing its Mind members'
 }
 $branchProbe = Invoke-GitCapture `
+    -GitContext $GitContext `
     -Worktree $gitRoot `
     -ArgumentList @('branch', '--show-current')
 if ($branchProbe.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($branchProbe.Text)) {
@@ -1369,6 +1624,7 @@ if ($branchProbe.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($branchProbe.Te
 }
 $branch = [string]$branchProbe.Text
 $upstreamProbe = Invoke-GitCapture `
+    -GitContext $GitContext `
     -Worktree $gitRoot `
     -ArgumentList @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}')
 $upstream = [string]$upstreamProbe.Text
@@ -1376,6 +1632,7 @@ if ($upstreamProbe.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($upstream)) {
     throw 'reboot-bundle branch has no upstream; push it before deployment'
 }
 $upstreamHeadProbe = Invoke-GitCapture `
+    -GitContext $GitContext `
     -Worktree $gitRoot `
     -ArgumentList @('rev-parse', '@{u}')
 $upstreamHead = [string]$upstreamHeadProbe.Text
@@ -1403,6 +1660,7 @@ $materializationRoot = Assert-ChildPath `
 try {
 $archivePath = Join-Path $materializationRoot 'head.zip'
 $archiveProbe = Invoke-GitCapture `
+    -GitContext $GitContext `
     -Worktree $gitRoot `
     -ArgumentList (@(
         '-c', 'core.autocrlf=false',
@@ -1445,6 +1703,7 @@ if (-not (Test-Path -LiteralPath $identityRegistrySource -PathType Leaf)) {
     throw "commit archive is missing bridge identity registry: $identityRegistrySource"
 }
 
+Assert-WdMindPackageArchive -ArchiveRoot $archiveRoot -Package $mindPackage
 $sourceHashes = Get-RelativeFileHashMap -Root $materializedRebootRoot
 $sourcePaths = @{}
 foreach ($name in $sourceHashes.Keys) {
@@ -1478,7 +1737,7 @@ $sourcePaths[$identityRegistryRelative] = $identityRegistrySource
 $bridgeCodePackage = Get-WdBridgeCodePackageDefinition `
     -Path (Join-Path $materializedRebootRoot 'bridge-code-files.json')
 $bridgeCodeDefinition = $bridgeCodePackage.Definition
-foreach ($relativeCodeFile in @($bridgeCodeDefinition.python_files | ForEach-Object { [string]$_ })) {
+foreach ($relativeCodeFile in @(@($bridgeCodeDefinition.python_files | ForEach-Object { [string]$_ }) + @($mindPackage.files | ForEach-Object { [string]$_.relative_path }) | Select-Object -Unique)) {
     $codeSource = Join-Path $archiveRoot ($relativeCodeFile.Replace('/', '\'))
     if (-not (Test-Path -LiteralPath $codeSource -PathType Leaf)) {
         throw "commit archive is missing pinned bridge code file: $relativeCodeFile"
@@ -1625,6 +1884,14 @@ $manifestObject = [ordered]@{
         wheel_count = @($bridgePythonStage.Wheels.Keys).Count
         site_file_count = @($bridgePythonStage.Site.Keys).Count
         isolation_scope = 'per_tool_call_only'
+        mind_modules = $mindPackage
+        git_provenance = [ordered]@{
+            schema = 'wd.native-git-input.v1'
+            executable = $GitContext.Path
+            expected_sha256 = $GitContext.ExpectedSha256
+            pin_origin = 'caller_supplied_not_authenticated'
+            policy = 'protected_native_path_sha256_read_handle_v1'
+        }
     }
     files = $sourceHashes
 }
@@ -2098,3 +2365,6 @@ finally {
             -ErrorAction SilentlyContinue
     }
 }
+
+}
+finally { Close-WdPinnedGit -GitContext $GitContext }

@@ -487,6 +487,11 @@ def create_local_candidate_service(*, enabled=False, owner=None, pipe_name=None)
     return _LocalCandidateService(owner, pipe_name)
 
 
+# Fixed stage tokens for a refused local candidate query; never content or an OS message.
+_LOCAL_CANDIDATE_REFUSALS = frozenset({'PIPE_ACCESS_DENIED', 'PIPE_NOT_FOUND', 'PIPE_CONNECT_FAILED',
+                                       'PIPE_IO', 'PIPE_REPLY_TIMEOUT', 'PIPE_REPLY_INVALID'})
+
+
 class _LocalCandidateQuery:
     """A retained bounded-wait client; received hashes remain untrusted proposals."""
     def __init__(self, name, request):
@@ -494,6 +499,7 @@ class _LocalCandidateQuery:
         self._thread = None
         self._done, self._lock = threading.Event(), threading.Lock()
         self._result, self._timed_out, self._start_uncertain, self._closed = None, False, False, False
+        self._refusal = None
 
     def start(self):
         with self._lock:
@@ -509,14 +515,29 @@ class _LocalCandidateQuery:
 
     def _run(self):
         from multiprocessing.connection import Client
-        result = None
+        result, refusal = None, 'PIPE_IO'
         try:
-            with Client(address=self._name, family='AF_PIPE', authkey=None) as connection:
+            # The stage of a refusal is kept as a fixed token only (C15): a lane
+            # read inside a sandbox must say whether it could reach the pipe at all.
+            try:
+                connection = Client(address=self._name, family='AF_PIPE', authkey=None)
+            except PermissionError:
+                refusal = 'PIPE_ACCESS_DENIED'
+                raise
+            except FileNotFoundError:
+                refusal = 'PIPE_NOT_FOUND'
+                raise
+            except BaseException:
+                refusal = 'PIPE_CONNECT_FAILED'
+                raise
+            with connection:
                 connection.send_bytes(_local_candidate_encode(self._request))
                 if not connection.poll(90):
+                    refusal = 'PIPE_REPLY_TIMEOUT'
                     raise ValueError('timeout')
-                response = _local_candidate_reply(_local_candidate_json(connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)),
-                                                  self._request)
+                raw = connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)
+                refusal = 'PIPE_REPLY_INVALID'
+                response = _local_candidate_reply(_local_candidate_json(raw), self._request)
                 result = _local_candidate_encode(response)
         except BaseException:
             pass
@@ -524,6 +545,7 @@ class _LocalCandidateQuery:
             with self._lock:
                 if not self._timed_out:
                     self._result = result
+                    self._refusal = None if result is not None else refusal
             self._done.set()
 
     def wait(self, *, timeout):
@@ -537,8 +559,9 @@ class _LocalCandidateQuery:
             raw = None if self._timed_out else self._result
             status = ('HOLD' if self._start_uncertain and not self._done.is_set() else
                       'TIMEOUT' if self._timed_out else ('REFUSED' if raw is None else _local_candidate_json(raw)['status']))
+            refusal = self._refusal if status == 'REFUSED' and self._refusal in _LOCAL_CANDIDATE_REFUSALS else None
         return {'status':status, 'authority':'none', 'sender_authentication':'UNKNOWN',
-                'source_verification':'UNVERIFIED', 'candidate_frame':raw}
+                'source_verification':'UNVERIFIED', 'candidate_frame':raw, 'refusal':refusal}
 
     def _thread_exited_locked(self):
         # done is set in the worker's finally, before native thread exit. An

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tools.bridge_capacity_advisor import _profile_checks
+from tools.lane_effective_model import classify
 from tools.lane_profile_catalog import (
     CatalogError,
     is_signed,
@@ -142,10 +143,10 @@ def test_default_below_floor_is_refused():
 
 
 def test_non_finite_json_and_oversize_are_refused(tmp_path):
-    path = tmp_path / "catalog.json"
-    path.write_text(SHIPPED.read_text(encoding="utf-8").replace('"floor": 1', '"floor": NaN', 1),
-                    encoding="utf-8")
-    with pytest.raises(CatalogError):
+    catalog = shipped()
+    catalog["lanes"]["codex-tools-1"]["floor"] = float("nan")
+    path = write(tmp_path, catalog)
+    with pytest.raises(CatalogError, match="non-finite JSON number"):
         load_catalog(path)
     path.write_bytes(b" " * (256 * 1024 + 1))
     with pytest.raises(CatalogError, match="size bound"):
@@ -428,11 +429,17 @@ def test_loader_requests_at_most_the_bound_plus_one_byte(tmp_path, monkeypatch):
 
 ACCEPTED = {   # lane: (default, boot_profile, steady allowlist strongest first, burst_profiles)
     "codex-lead-1": ("codex-gpt-6-sol-high", "codex-gpt-6-astra-medium",
-                     ["codex-gpt-6-astra-medium", "codex-gpt-6-sol-xhigh", "codex-gpt-6-sol-high", "codex-gpt-6-sol-medium"],
+                     ["codex-gpt-6-astra-medium",
+                      "codex-gpt-6-sol-xhigh", "codex-gpt-6.2-sol-xhigh",
+                      "codex-gpt-6-sol-high", "codex-gpt-6.2-sol-high",
+                      "codex-gpt-6-sol-medium", "codex-gpt-6.2-sol-medium"],
                      ["codex-gpt-6-astra-xhigh", "codex-gpt-6-astra-max", "codex-gpt-6-astra-ultra"]),
     "codex-tools-1": ("codex-gpt-6-sol-medium", "codex-gpt-6-sol-high",
-                      ["codex-gpt-6-sol-high", "codex-gpt-6-sol-medium"],
-                      ["codex-gpt-6-sol-xhigh", "codex-gpt-6-sol-max", "codex-gpt-6-sol-ultra"]),
+                      ["codex-gpt-6-sol-high", "codex-gpt-6.2-sol-high",
+                       "codex-gpt-6-sol-medium", "codex-gpt-6.2-sol-medium"],
+                      ["codex-gpt-6-sol-xhigh", "codex-gpt-6.2-sol-xhigh",
+                       "codex-gpt-6-sol-max", "codex-gpt-6.2-sol-max",
+                       "codex-gpt-6-sol-ultra", "codex-gpt-6.2-sol-ultra"]),
     "claude-rco-1": ("claude-opus-5-5-medium", "claude-opus-5-5-high",
                      ["claude-opus-5-5-xhigh", "claude-opus-5-5-high", "claude-opus-5-5-medium"], ["claude-opus-5-5-max"]),
     "claude-rco-2": ("claude-opus-5-5-medium", "claude-opus-5-5-high",
@@ -460,6 +467,18 @@ def test_retired_profiles_are_gone_and_bursts_are_max_ultra_or_above_the_ceiling
         binding = catalog["capacity_policy"]["agents"][lane]["profiles"]
         assert not set(spec["burst_profiles"]) & set(binding)   # the advisor can never pick a burst
         assert spec["default"] not in spec["burst_profiles"] and spec["boot_profile"] in spec["allowed_profiles"]
+
+
+@pytest.mark.parametrize("lane", ["codex-lead-1", "codex-tools-1"])
+def test_sol_62_native_preflight_matches_sol_steady_efforts(lane):
+    catalog = shipped()
+    for effort in catalog["providers"]["codex"]["efforts"]:
+        settings = {"provider": "codex", "resolved": True, "effort": effort}
+        legacy = classify(catalog, lane, dict(settings, model="gpt-6-sol"))
+        current = classify(catalog, lane, dict(settings, model="gpt-6.2-sol"))
+        assert current["verdict"] == legacy["verdict"], (lane, effort)
+        if legacy["verdict"] == "allowed":
+            assert current["profile"] == f"codex-gpt-6.2-sol-{effort}"
 
 
 def test_the_shipped_catalog_is_unsigned_so_nothing_is_approved():
@@ -548,9 +567,9 @@ def test_a_boot_profile_below_the_floor_is_refused():
     # claude-rco-2 N3 on #1746: a lane must never boot straight into a below-floor profile.
     catalog = shipped()
     lead = catalog["lanes"]["codex-lead-1"]
-    lead["floor"] = 2                                   # sol high is now the weakest allowed choice
-    lead["boot_profile"] = "codex-gpt-6-sol-medium"     # index 3: below the floor
+    lead["floor"] = lead["allowed_profiles"].index("codex-gpt-6-sol-high")
+    lead["boot_profile"] = "codex-gpt-6-sol-medium"     # below the floor
     with pytest.raises(CatalogError, match="boot_profile must not be below its floor"):
         validate_catalog(catalog)
-    lead["boot_profile"] = "codex-gpt-6-sol-high"       # index 2: exactly at the floor is the success twin
+    lead["boot_profile"] = "codex-gpt-6-sol-high"       # exactly at the floor
     validate_catalog(catalog)

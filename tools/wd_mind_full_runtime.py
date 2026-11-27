@@ -3887,7 +3887,7 @@ class _SingleManifestOwner:
                 elif stage == 'HANDLER_BUILD' and type(exc) is _OwnerMeterUnavailable:
                     stage = 'OWNER_METER_UNAVAILABLE'
                 elif stage == 'HANDLER_BUILD' and type(exc) is _OwnerMemoryBudgetRefused:
-                    stage = 'SOURCE_BUDGET'
+                    stage = 'OWNER_MEMORY_BUDGET'
                 self._start_failure = (stage, next((name for kind, name in _START_ERROR_TYPES.items() if type(exc) is kind), 'UNKNOWN'))
                 # Unknown post-launch states are never declared exited. The
                 # saved owner (if present) remains reachable for explicit EOF.

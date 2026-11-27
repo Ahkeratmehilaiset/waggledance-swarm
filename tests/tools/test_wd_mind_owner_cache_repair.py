@@ -5,6 +5,7 @@ import struct
 import pytest
 
 from test_wd_mind_cache_builder_integration import VECTOR, fixtures, synthetic
+from test_wd_mind_owner_diagnostics import _owner
 from tools import wd_mind_full_runtime as runtime
 from tools import wd_mind_vector_cache as cache
 
@@ -55,6 +56,17 @@ def test_memory_drop_after_reencoding_preserves_previous_cache(synthetic, monkey
         synthetic.build(binding)
     assert len(synthetic.passages) == 1
     assert synthetic.cache_path.read_bytes() == previous
+
+
+def test_owner_start_reports_handler_memory_budget_refusal(monkeypatch, tmp_path):
+    owner, _ = _owner(monkeypatch, tmp_path)
+
+    def refuse_build(handler):
+        raise runtime._OwnerMemoryBudgetRefused("OWNER_MEMORY_BUDGET")
+
+    monkeypatch.setattr(runtime._FlatRequestHandler, "build", refuse_build)
+    assert owner.start()["state"] == "HOLD"
+    assert owner.start_diagnostic()["reason"] == "OWNER_MEMORY_BUDGET"
 
 
 def test_failed_passage_identity_is_checked_against_screened_source(synthetic):

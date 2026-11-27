@@ -1477,7 +1477,7 @@ def _cache_old_projection(snapshot, offset, prefix_sha256):
     return reader.rederive_complete_message_projection(**inputs)
 
 
-def _cache_verified_reusable(snapshot, projection, by_id, cache_result):
+def _cache_verified_reusable(snapshot, projection, by_id, cache_result, failed_keys=()):
     """Require the complete old screened record set before using any vector."""
     stored, rows = cache_result.binding, cache_result.rows
     offset, old_sha = stored['prefix_offset'], stored['prefix_sha256']
@@ -1486,9 +1486,6 @@ def _cache_verified_reusable(snapshot, projection, by_id, cache_result):
     if not hmac.compare_digest(_cache_projection_sha256(old_projection), stored['projection_sha256']):
         raise _CacheProjectionMismatch('cache_projection_changed')
     old_records = old_projection['messages']['records']
-    # Strict readers have only complete rows. Repair readers also supply the
-    # verified manifest keys for slots whose vector bytes failed validation.
-    failed_keys = getattr(cache_result, 'failed_keys', ())
     old_keys = {_cache_record_keys(record) for record in old_records}
     stored_keys = {(record_key, passage_key) for record_key, passage_key, _ in rows}
     stored_keys.update(failed_keys)
@@ -1747,7 +1744,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                     if cached.binding['prefix_offset'] < len(immutable_prefix):
                         require_cache_memory(cached.binding['prefix_offset'] * reader._EAGER_MEMORY_BYTES_PER_SOURCE_BYTE
                                              + len(ids) * _CACHE_ROW_OBJECT_BYTES)
-                    reusable = _cache_verified_reusable(frozen, projection, by_id, cached)
+                    reusable = _cache_verified_reusable(frozen, projection, by_id, cached, cached.failed_keys)
                     failed_rows = len(cached.failed_keys)
                     checked_rows = len(cached.rows) + failed_rows
                     cache_status = 'HIT'

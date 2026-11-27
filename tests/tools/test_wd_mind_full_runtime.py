@@ -197,7 +197,7 @@ def test_cache_requires_complete_screened_old_prefix_set(monkeypatch):
     vector = struct.pack('<384f', 1.0, *([0.0] * 383))
     binding = {'prefix_offset': 10, 'prefix_sha256': 'a' * 64,
                'projection_sha256': runtime._cache_projection_sha256(previous)}
-    result = SimpleNamespace(binding=binding, rows=((key, passage, vector),), failed_keys=())
+    result = SimpleNamespace(binding=binding, rows=((key, passage, vector),))
     assert runtime._cache_verified_reusable(snapshot, current, {'old': old, 'new': new}, result) == {'old': vector}
     result.rows = ()
     with pytest.raises(ValueError, match='cache_record_set_changed'):
@@ -675,6 +675,29 @@ def test_corrupt_cache_payload_rebuilds_only_after_source_verification(monkeypat
     binding, _ = case.snapshot()
     assert case.build(binding).cache_status == 'MISS_STORED'
     assert len(case.passages) == 2
+
+
+def test_missing_memory_meter_at_manifest_admission_preserves_cache(monkeypatch, tmp_path):
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_vector_cache as cache
+    from test_wd_mind_cache_builder_integration import _synthetic_case
+    location = tmp_path / '.codex-audit'
+    location.mkdir()
+    case = _synthetic_case(location, monkeypatch)
+    binding, _ = case.snapshot()
+    case.build(binding)
+    original = case.cache_path.read_bytes()
+    case.passages.clear()
+    def unavailable():
+        raise OSError('synthetic meter unavailable')
+    load = cache.load_cache_for_repair
+    def change_meter(*args, **kwargs):
+        monkeypatch.setattr(runtime, '_owner_memory_headroom', unavailable)
+        return load(*args, **kwargs)
+    monkeypatch.setattr(cache, 'load_cache_for_repair', change_meter)
+    with pytest.raises(runtime._OwnerMeterUnavailable, match='^OWNER_METER_UNAVAILABLE$'):
+        case.build(binding)
+    assert case.passages == [] and case.cache_path.read_bytes() == original
 
 
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):

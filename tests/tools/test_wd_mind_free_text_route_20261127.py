@@ -48,8 +48,14 @@ QUESTIONS = [
     ('nfc', 'é', True),
     ('finnish', 'mikä on seuraava askel?', True),
     ('bytes', b'abc', False),
+    ('startup_sentence', 'current task active work next step recent status', False),
+    ('startup_sentence_spaced', 'current task active work next step recent status ', True),
     ('none', None, False),
 ]
+
+
+def test_the_reserved_sentence_is_the_startup_sentence():
+    assert process.FREE_TEXT_RESERVED == runtime._STARTUP_PIPE_QUERY
 
 
 @pytest.mark.parametrize('name, value, ok', QUESTIONS, ids=[q[0] for q in QUESTIONS])
@@ -94,6 +100,7 @@ def test_client_request_shapes(request_, ok):
     (_startup(), True), (_free(), True),
     (_startup(query='x'), False), ({k: v for k, v in _free().items() if k != 'query'}, False),
     (_free(query='a' * 513), False), (_free(query='a\nb'), False), (_free(extra='x'), False),
+    (_free(query=runtime._STARTUP_PIPE_QUERY), False),     # refused before the lock, so READY stays READY
 ])
 def test_the_owner_candidate_request_validates_before_any_state(monkeypatch, request_, passes):
     owner = object.__new__(runtime._SingleManifestOwner)
@@ -172,7 +179,7 @@ def test_free_text_ranks_by_cosine_without_the_startup_band():
 
 # ---------------------------------------------------------------- session CLI: the question comes from a pinned file
 
-def _ask_args(tmp_path, question_bytes, *, sha=None):
+def _ask_args(tmp_path, question_bytes):
     policy = b'{"private":"synthetic-only"}'
     policy_path = tmp_path / 'policy.json'
     policy_path.write_bytes(policy)
@@ -181,8 +188,7 @@ def _ask_args(tmp_path, question_bytes, *, sha=None):
     return ['--mind-local-candidate-ask', '--policy-path', str(policy_path),
             '--policy-sha256', hashlib.sha256(policy).hexdigest(),
             '--approval-reference-sha256', 'c' * 64, '--lane', 'codex-lead-1', '--timeout-seconds', '10',
-            '--question-path', str(question_path),
-            '--question-sha256', sha or hashlib.sha256(question_bytes).hexdigest()]
+            '--question-path', str(question_path)]
 
 
 def _run_ask(monkeypatch, args):
@@ -228,17 +234,37 @@ def test_ask_mode_refuses_a_bad_question_with_one_fixed_token(monkeypatch, tmp_p
     assert err == b'{"error":"mind_session_content_refused","reason":"QUESTION_INVALID","authority":"none"}\n'
 
 
-def test_ask_mode_refuses_a_question_file_with_another_hash(monkeypatch, tmp_path):
-    code, out, err, sent = _run_ask(monkeypatch, _ask_args(tmp_path, MARKER.encode(), sha='e' * 64))
-    assert (code, out, sent) == (2, b'', [])
-    assert MARKER.encode() not in err and b'QUESTION_INVALID' in err
+def test_ask_mode_refuses_a_question_path_that_is_no_plain_file(monkeypatch, tmp_path):
+    args = _ask_args(tmp_path, MARKER.encode())
+    for path in (tmp_path / 'missing.txt', tmp_path / 'folder', Path('relative.txt')):
+        if path.name == 'folder':
+            path.mkdir()
+        code, out, err, sent = _run_ask(monkeypatch, args[:-1] + [str(path)])
+        assert (code, out, sent) == (2, b'', [])
+        assert err == b'{"error":"mind_session_content_refused","reason":"QUESTION_INVALID","authority":"none"}\n'
+
+
+def test_the_question_never_reaches_argv(tmp_path):
+    # No digest or text of the question in the command line (RCO2 on PR 2201).
+    args = _ask_args(tmp_path, MARKER.encode())
+    assert not any(MARKER in a or hashlib.sha256(MARKER.encode()).hexdigest() in a for a in args)
+
+
+def test_the_policy_reader_still_checks_its_pin(tmp_path):
+    path = tmp_path / 'policy.json'
+    path.write_bytes(b'{}')
+    assert session._selected_pin_read(path, hashlib.sha256(b'{}').hexdigest(), 64) == b'{}'
+    with pytest.raises(ValueError):
+        session._selected_pin_read(path, 'e' * 64, 64)
+    with pytest.raises(ValueError):
+        session._selected_pin_read(path, 'not-a-pin', 64)
 
 
 @pytest.mark.parametrize('mutate', [
-    lambda a: a[:-2],                                             # no question hash
-    lambda a: a[:-4],                                             # no question file
+    lambda a: a[:-2],                                             # no question file
+    lambda a: a + ['--question-sha256', 'e' * 64],                # no pin argument any more
     lambda a: ['--mind-local-candidate-read'] + a[1:],            # the read mode takes no question
-    lambda a: a[:-1] + ['not-a-hash'],
+    lambda a: a[:-2] + ['--question-file', a[-1]],
 ])
 def test_ask_mode_argument_shapes(monkeypatch, tmp_path, mutate):
     code, out, err, sent = _run_ask(monkeypatch, mutate(_ask_args(tmp_path, MARKER.encode())))

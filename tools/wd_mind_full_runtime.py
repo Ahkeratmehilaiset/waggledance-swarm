@@ -4000,11 +4000,17 @@ def _pipe_request_keys(request):
 
 
 def _free_text_question_ok(value):
-    """True only for an allowed free-text question; never raises or echoes the text."""
+    """True only for an allowed free-text question; never raises or echoes the text.
+
+    Ranking keys on the startup text, so that exact sentence is refused here, in
+    every first validation and before any owner state (Lead on PR 2201): a refusal
+    inside the owner's fault region would turn READY into HOLD.
+    """
     try:
         return (type(value) is str and 1 <= len(value) <= 512 and bool(value.strip()) and value.isprintable()
                 and reader.unicodedata.normalize('NFC', value) == value
-                and len(json.dumps(value, ensure_ascii=True)) - 2 <= 2048)
+                and len(json.dumps(value, ensure_ascii=True)) - 2 <= 2048
+                and value != _STARTUP_PIPE_QUERY)
     except Exception:
         return False
 
@@ -4115,10 +4121,7 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_l
                 or frozen['query_id'] not in ('startup_work_overview', _FREE_TEXT_QUERY_ID)
                 or not reader._hex(frozen['nonce']) or frozen['lane'] not in reader._LANES
                 or frozen['scope'] not in ('own', 'shared')
-                or (free and not _free_text_question_ok(frozen['query']))
-                # Ranking is chosen by the startup text, so the free route never
-                # carries that exact text; the fixed route already asks it.
-                or (free and frozen['query'] == _STARTUP_PIPE_QUERY)):
+                or (free and not _free_text_question_ok(frozen['query']))):
             raise ValueError('request')
         reply = handler.lane_view(frozen['lane']).handle({
             'schema': 'wd.mind-flat-owner-request.v1', 'lane': frozen['lane'],

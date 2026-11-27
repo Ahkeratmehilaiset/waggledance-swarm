@@ -609,10 +609,14 @@ def _preflight_selected_source_prefix(budget, offset):
         raise
 
 
-def _question_from_file(path, expected, allowed):
-    """One hash-pinned UTF-8 question, or None. The text never reaches an error or a log."""
+def _question_from_file(path, allowed):
+    """One UTF-8 question from a stable plain file, or None. The text never reaches an error or a log.
+
+    Not hash-pinned: a digest in argv would let a process listing guess a short
+    question (RCO2 on PR 2201), and the question is the asking lane's own input.
+    """
     try:
-        raw = _selected_pin_read(path, expected, _QUESTION_FILE_LIMIT)
+        raw = _selected_stable_read(path, _QUESTION_FILE_LIMIT)
         for ending in (b'\r\n', b'\n'):
             if raw.endswith(ending):
                 raw = raw[:-len(ending)]
@@ -627,6 +631,14 @@ def _selected_pin_read(path, expected, limit):
     """Read a pinned plain file without importing code from the bundle."""
     if type(expected) is not str or _SHA256.fullmatch(expected) is None:
         raise ValueError('pin')
+    raw = _selected_stable_read(path, limit)
+    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected):
+        raise ValueError('pin')
+    return raw
+
+
+def _selected_stable_read(path, limit):
+    """Read a plain file that is no link and does not change while it is read."""
     if not path.is_absolute() or '..' in path.parts:
         raise ValueError('path')
     for index, component in enumerate((path, *path.parents)):
@@ -644,8 +656,7 @@ def _selected_pin_read(path, expected, limit):
     identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
     if (len(raw) > limit or len(raw) != opened.st_size
             or identity(before) != identity(opened) or identity(opened) != identity(after)
-            or identity(after) != identity(current)
-            or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected)):
+            or identity(after) != identity(current)):
         raise ValueError('pin')
     return raw
 
@@ -1608,10 +1619,10 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         _reap_local_candidate_pending()
         names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
         controlled = bool(argv and argv[0] == '--mind-local-candidate-read-controlled')
-        # C10: the free-text mode adds one hash-pinned question file and is never controlled.
+        # C10: the free-text mode adds one question file and is never controlled.
         ask = bool(argv and argv[0] == '--mind-local-candidate-ask')
         if ask:
-            names = names | {'--question-path', '--question-sha256'}
+            names = names | {'--question-path'}
         if (len(argv) != 1 + 2 * len(names)
                 or argv[0] not in ('--mind-local-candidate-read', '--mind-local-candidate-read-controlled',
                                    '--mind-local-candidate-ask')
@@ -1621,8 +1632,6 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
         if len(pairs) != len(names) or {key for key, _ in pairs} != names:
             raise ValueError('args')
         args = dict(pairs)
-        if ask and not _SHA256.fullmatch(args['--question-sha256']):
-            raise ValueError('args')
         policy_pin, approval = args['--policy-sha256'], args['--approval-reference-sha256']
         lane = args['--lane']
         scope = _startup_scope_for_lane(lane)
@@ -1661,8 +1670,7 @@ def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin, contr
                 request = {'schema':'wd.mind-pipe-request.v2', 'query_id':'startup_work_overview',
                            'nonce':nonce, 'lane':lane, 'scope':scope}
                 if ask:
-                    question = _question_from_file(Path(args['--question-path']), args['--question-sha256'],
-                                                   runtime_process.free_text_question_ok)
+                    question = _question_from_file(Path(args['--question-path']), runtime_process.free_text_question_ok)
                     if question is None:
                         with state['result_lock']:
                             if state['reason'] is None and not state['abandoned']:

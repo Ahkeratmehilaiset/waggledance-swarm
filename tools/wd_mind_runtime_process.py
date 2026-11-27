@@ -159,10 +159,15 @@ def _local_candidate_encode(value):
 
 # Train 4 item C10: one free-text question beside the fixed startup question.
 FREE_TEXT_QUERY_ID = 'free_text_v1'
+# At most 512 code points, AND at most 2048 bytes once ASCII-escaped: the JSON
+# frame is escaped (a supplementary character takes 12 bytes) and capped at
+# _LOCAL_CANDIDATE_MAX_BYTES, so a question of non-ASCII text is shorter.
 FREE_TEXT_MAX_CHARS = 512
-# The JSON frame is ASCII-escaped (a supplementary character takes 12 bytes) and
-# capped at _LOCAL_CANDIDATE_MAX_BYTES, so the escaped question is bounded too.
 FREE_TEXT_MAX_ESCAPED_BYTES = 2048
+# The fixed startup sentence (tools/wd_mind_full_runtime.py _STARTUP_PIPE_QUERY).
+# Ranking keys on that text, so it is never a free question; refusing it here and
+# in the owner's first validation keeps the refusal before any owner state.
+FREE_TEXT_RESERVED = 'current task active work next step recent status'
 
 
 def free_text_question_ok(value):
@@ -170,7 +175,8 @@ def free_text_question_ok(value):
     try:
         return (type(value) is str and 1 <= len(value) <= FREE_TEXT_MAX_CHARS and bool(value.strip())
                 and value.isprintable() and unicodedata.normalize('NFC', value) == value
-                and len(json.dumps(value, ensure_ascii=True)) - 2 <= FREE_TEXT_MAX_ESCAPED_BYTES)
+                and len(json.dumps(value, ensure_ascii=True)) - 2 <= FREE_TEXT_MAX_ESCAPED_BYTES
+                and value != FREE_TEXT_RESERVED)
     except Exception:
         return False
 

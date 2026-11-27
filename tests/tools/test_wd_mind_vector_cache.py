@@ -25,6 +25,31 @@ def rows():
             ("c" * 64, "d" * 64, struct.pack("<384f", 0.0, 1.0, *([0.0] * 382))))
 
 
+def _v2_bytes(stored_binding, stored_rows):
+    """Encode the on-disk contract independently of the implementation under test."""
+    def canonical(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")
+
+    manifest = bytearray()
+    record_set = hashlib.sha256()
+    for slot, (record, passage, vector) in enumerate(stored_rows):
+        keys = bytes.fromhex(record + passage)
+        checksum = hashlib.sha256(b"WDMVC2/row\0" + struct.pack("<I", slot) + keys + vector)
+        manifest.extend(keys + checksum.digest())
+        record_set.update(bytes.fromhex(record))
+    count = len(stored_rows)
+    manifest_hash = hashlib.sha256(
+        b"WDMVC2/manifest\0" + struct.pack("<I", count) + canonical(stored_binding) + manifest
+    )
+    header = canonical({
+        "schema": "wd.mind-vector-cache.v2", "binding": stored_binding, "dimension": 384,
+        "dtype": "f32le", "count": count, "manifest_sha256": manifest_hash.hexdigest(),
+        "record_set_sha256": record_set.hexdigest(),
+    })
+    return (b"WDMVC2\n" + struct.pack("<I", len(header)) + header + manifest
+            + b"".join(row[2] for row in stored_rows))
+
+
 @pytest.fixture
 def private_dir(tmp_path, monkeypatch):
     if os.name != "nt":
@@ -59,10 +84,7 @@ def test_round_trip_and_raw_text_absent(private_dir):
     raw = path.read_bytes()
     assert b"not included raw sample text" not in raw
     assert b"stored_text" not in raw and b"passage: " not in raw
-    header_len = struct.unpack("<I", raw[len(cache._MAGIC):len(cache._MAGIC) + 4])[0]
-    header_end = len(cache._MAGIC) + 4 + header_len
-    assert raw[header_end:] == b"".join(cache._encoded(rows()))
-    assert json.loads(raw[len(cache._MAGIC) + 4:header_end]) == cache._header(binding(), rows())
+    assert raw == _v2_bytes(binding(), rows())
 
 
 def test_preflight_missing_only_inside_valid_private_root_and_then_present(private_dir):
@@ -158,8 +180,9 @@ def test_pin_change_refuses_whole_cache(private_dir, key):
     cache.write_cache(path, binding(), rows())
     current = binding()
     current[key] = "f" * 64
-    with pytest.raises(cache.CacheRefused):
-        cache.load_cache(path, current, lambda *_: True)
+    for load in (cache.load_cache, cache.load_cache_for_repair):
+        with pytest.raises(cache.CacheMiss, match="binding_changed"):
+            load(path, current, lambda *_: True)
 
 
 def test_append_requires_valid_old_prefix(private_dir):
@@ -220,15 +243,15 @@ def test_unknown_header_field_refused(private_dir):
     header["unknown"] = "not allowed"
     changed = cache._canonical(header)
     path.write_bytes(cache._MAGIC + struct.pack("<I", len(changed)) + changed + raw[start + old_len:])
-    with pytest.raises(cache.CacheRefused, match="header"):
-        cache.load_cache(path, binding(), lambda *_: True)
+    for load in (cache.load_cache, cache.load_cache_for_repair):
+        with pytest.raises(cache.CacheMiss, match="header"):
+            load(path, binding(), lambda *_: True)
 
 
 def test_nonunit_vector_refused_even_if_checksums_are_recomputed(private_dir):
     path = private_dir / "vectors.bin"
     invalid = (("a" * 64, "b" * 64, bytes(1536)),)
-    header = cache._canonical(cache._header(binding(), invalid))
-    path.write_bytes(cache._MAGIC + struct.pack("<I", len(header)) + header + b"".join(cache._encoded(invalid)))
+    path.write_bytes(_v2_bytes(binding(), invalid))
     user = subprocess.check_output(["whoami"], text=True).strip()
     result = subprocess.run(["icacls", str(path), "/setowner", user], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

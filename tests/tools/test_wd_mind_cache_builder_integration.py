@@ -392,9 +392,9 @@ def test_unexpected_cache_or_control_failures_do_not_become_miss(synthetic, monk
         def fail(): raise ValueError('synthetic_cache_origin')
         synthetic.adapter._verify = fail
     elif fault in ('unexpected_read', 'memory_error_read'):
-        def fail(*args):
+        def fail(*args, **kwargs):
             raise MemoryError('synthetic_memory') if fault == 'memory_error_read' else RuntimeError('synthetic_read')
-        monkeypatch.setattr(cache, 'load_cache', fail)
+        monkeypatch.setattr(cache, 'load_cache_for_repair', fail)
     else:
         def fail(*args):
             raise MemoryError('synthetic_memory') if fault == 'memory_error_write' else RuntimeError('synthetic_write')

@@ -611,7 +611,7 @@ def test_cache_loader_uses_pinned_source_and_rejects_tampering(monkeypatch, tmp_
         runtime._CACHE_MODULE_ATTESTATION = previous_attestation
 
 
-@pytest.mark.parametrize('operation', ['load_cache', 'write_cache'])
+@pytest.mark.parametrize('operation', ['load_cache_for_repair', 'write_cache'])
 def test_cache_security_refusal_does_not_become_miss_or_memory(monkeypatch, tmp_path, operation):
     from tools import wd_mind_vector_cache as vector_cache
     from test_wd_mind_cache_builder_integration import _synthetic_case
@@ -631,7 +631,7 @@ def test_cache_security_refusal_does_not_become_miss_or_memory(monkeypatch, tmp_
     monkeypatch.setattr(vector_cache, operation, refuse)
     with pytest.raises(ValueError, match='snapshot_build_refused'):
         case.build(binding)
-    if operation == 'load_cache':
+    if operation == 'load_cache_for_repair':
         assert case.passages == []
     assert not case.cache_path.exists()
 
@@ -651,7 +651,7 @@ def test_verified_cache_miss_rebuilds_without_relaxing_refusal(monkeypatch, tmp_
     if reason != 'missing':
         def stale(*args, **kwargs):
             raise vector_cache.CacheMiss(reason)
-        monkeypatch.setattr(vector_cache, 'load_cache', stale)
+        monkeypatch.setattr(vector_cache, 'load_cache_for_repair', stale)
     memory = case.build(binding)
     assert memory.cache_status == 'MISS_STORED'
     assert len(case.passages) == 2 and case.cache_path.exists()
@@ -675,6 +675,29 @@ def test_corrupt_cache_payload_rebuilds_only_after_source_verification(monkeypat
     binding, _ = case.snapshot()
     assert case.build(binding).cache_status == 'MISS_STORED'
     assert len(case.passages) == 2
+
+
+def test_missing_memory_meter_at_manifest_admission_preserves_cache(monkeypatch, tmp_path):
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_vector_cache as cache
+    from test_wd_mind_cache_builder_integration import _synthetic_case
+    location = tmp_path / '.codex-audit'
+    location.mkdir()
+    case = _synthetic_case(location, monkeypatch)
+    binding, _ = case.snapshot()
+    case.build(binding)
+    original = case.cache_path.read_bytes()
+    case.passages.clear()
+    def unavailable():
+        raise OSError('synthetic meter unavailable')
+    load = cache.load_cache_for_repair
+    def change_meter(*args, **kwargs):
+        monkeypatch.setattr(runtime, '_owner_memory_headroom', unavailable)
+        return load(*args, **kwargs)
+    monkeypatch.setattr(cache, 'load_cache_for_repair', change_meter)
+    with pytest.raises(runtime._OwnerMeterUnavailable, match='^OWNER_METER_UNAVAILABLE$'):
+        case.build(binding)
+    assert case.passages == [] and case.cache_path.read_bytes() == original
 
 
 def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):

@@ -1,5 +1,17 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [v3.14.0: Mind free-text route, owner memory gate, vector-cache repair] -- 2026-11-28
+
+Changes on main since v3.13.0 (`d99bcf46..95643d57`, 6 first-parent merges). The README states what is measured and what is not claimed.
+
+- Mind (train 3, installed 2026-11-26): composed query, budget report and README changes (#2194).
+- Mind (train 4): one free-text question route beside the fixed startup question (session command line only; the question is read from a file and never logged); refused owner pipes name their stage; the owner checks its current commit charge before publishing a refresh and keeps the old index on refusal (`OWNER_MEMORY_BUDGET`); operator status view; Tools status projection refreshed at task boundaries (#2206).
+- Mind vector cache: per-row digests, and damage in at most 5 % of rows is repaired by re-encoding only those rows within the owner memory budget (#2203).
+- Lane launch: the launcher pins no model and accepts the operator's own model and effort choice (#2198).
+- Capacity: offline capacity replay and reserve estimates (#2199).
+- Tests: swarm test fixes of main and the lane catalog entry for gpt-6.2-sol (#2197).
+- Version fields: `pyproject.toml` and `waggledance/__init__.py` stay at 3.12.0, as at v3.13.0. The Mind content reader pins the bytes of `waggledance/__init__.py` (`_REQUIRED_CODE` in `tools/wd_mind_content_query_readonly.py`). Aligning the version therefore needs a Mind-class change and new operator content decisions, so it is left for a separate PR.
+
 ## [Bridge fleet: review gates, wake delivery, capacity and writer hardening] -- 2026-09-13 to 2026-10-11
 
 Component-scoped bridge changes on main (`32c16efc..46e60547`, 53 first-parent

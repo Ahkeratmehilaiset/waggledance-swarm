@@ -2,7 +2,7 @@
 
 ## [v3.14.0: Mind free-text route, owner memory gate, vector-cache repair] -- 2026-11-28
 
-Changes on main since v3.13.0 (`d99bcf46..95643d57`, 6 first-parent merges). Full release notes are on the GitHub release; the README states what is measured and what is not claimed.
+Changes on main since v3.13.0 (`d99bcf46..95643d57`, 6 first-parent merges). The README states what is measured and what is not claimed.
 
 - Mind (train 3, installed 2026-11-26): composed query, budget report and README changes (#2194).
 - Mind (train 4): one free-text question route beside the fixed startup question (session command line only; the question is read from a file and never logged); refused owner pipes name their stage; the owner checks its current commit charge before publishing a refresh and keeps the old index on refusal (`OWNER_MEMORY_BUDGET`); operator status view; Tools status projection refreshed at task boundaries (#2206).

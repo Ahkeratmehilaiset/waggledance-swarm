@@ -10,7 +10,7 @@ Changes on main since v3.13.0 (`d99bcf46..95643d57`, 6 first-parent merges). Ful
 - Lane launch: the operator's own model and effort choice is accepted at launch; no model is a fixed default (#2198).
 - Capacity: offline capacity replay and reserve estimates (#2199).
 - Tests: swarm test fixes of main and the lane catalog entry for gpt-6.2-sol (#2197).
-- Version: `pyproject.toml` and `waggledance/__init__.py` say 3.14.0.
+- Version fields: `pyproject.toml` and `waggledance/__init__.py` stay at 3.12.0, as at v3.13.0. The Mind content reader pins the bytes of `waggledance/__init__.py` (`_REQUIRED_CODE` in `tools/wd_mind_content_query_readonly.py`). Aligning the version therefore needs a Mind-class change and new operator content decisions, so it is left for a separate PR.
 
 ## [Bridge fleet: review gates, wake delivery, capacity and writer hardening] -- 2026-09-13 to 2026-10-11
 
